@@ -1,8 +1,8 @@
 <?php
 
+use App\Http\Controllers\WhatsApp\WebhookController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Webhook\WhatsAppWebhookController;
 use App\Http\Middleware\VerifyWhatsAppWebhook;
 
 /*
@@ -31,12 +31,12 @@ Route::prefix('webhook')->group(function () {
 
     // WhatsApp Webhook Verification (GET request from Meta)
     // This is called once when you register the webhook URL in Meta Developer Console
-    Route::get('/whatsapp', [WhatsAppWebhookController::class, 'verify'])
+    Route::get('/whatsapp', [WebhookController::class, 'verify'])
         ->name('webhook.whatsapp.verify');
 
     // WhatsApp Webhook Handler (POST request for incoming events)
     // Protected by signature verification middleware
-    Route::post('/whatsapp', [WhatsAppWebhookController::class, 'handle'])
+    Route::post('/whatsapp', [WebhookController::class, 'handle'])
         ->middleware(VerifyWhatsAppWebhook::class)
         ->name('webhook.whatsapp.handle');
 });
