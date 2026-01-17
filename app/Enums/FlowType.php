@@ -45,17 +45,17 @@ enum FlowType: string
     public function handlerClass(): string
     {
         return match ($this) {
-            self::REGISTRATION => \App\Services\Flow\Handlers\RegistrationHandler::class,
+            self::REGISTRATION => \App\Services\Flow\Handlers\RegistrationFlowHandler::class,
             self::MAIN_MENU => \App\Services\Flow\Handlers\MainMenuHandler::class,
-            self::OFFERS_BROWSE => \App\Services\Flow\Handlers\OffersBrowseHandler::class,
-            self::OFFERS_UPLOAD => \App\Services\Flow\Handlers\OffersUploadHandler::class,
-            self::OFFERS_MANAGE => \App\Services\Flow\Handlers\OffersManageHandler::class,
-            self::PRODUCT_SEARCH => \App\Services\Flow\Handlers\ProductSearchHandler::class,
-            self::PRODUCT_RESPOND => \App\Services\Flow\Handlers\ProductRespondHandler::class,
-            self::AGREEMENT_CREATE => \App\Services\Flow\Handlers\AgreementCreateHandler::class,
-            self::AGREEMENT_CONFIRM => \App\Services\Flow\Handlers\AgreementConfirmHandler::class,
-            self::AGREEMENT_LIST => \App\Services\Flow\Handlers\AgreementListHandler::class,
-            self::SETTINGS => \App\Services\Flow\Handlers\SettingsHandler::class,
+            self::OFFERS_BROWSE => \App\Services\Flow\Handlers\OfferBrowseFlowHandler::class,
+            self::OFFERS_UPLOAD => \App\Services\Flow\Handlers\OfferUploadFlowHandler::class,
+            self::OFFERS_MANAGE => \App\Services\Flow\Handlers\OfferManageFlowHandler::class,
+            self::PRODUCT_SEARCH => \App\Services\Flow\Handlers\ProductSearchFlowHandler::class,
+            self::PRODUCT_RESPOND => \App\Services\Flow\Handlers\ProductResponseFlowHandler::class,
+            self::AGREEMENT_CREATE => \App\Services\Flow\Handlers\AgreementCreateFlowHandler::class,
+            self::AGREEMENT_CONFIRM => \App\Services\Flow\Handlers\AgreementConfirmFlowHandler::class,
+            self::AGREEMENT_LIST => \App\Services\Flow\Handlers\AgreementListFlowHandler::class,
+            // self::SETTINGS => \App\Services\Flow\Handlers\SettingsFlowHandler::class,
         };
     }
 
