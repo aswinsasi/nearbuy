@@ -405,7 +405,7 @@ class RegistrationService
      */
     protected function parseCategory(string $category): ShopCategory
     {
-        return ShopCategory::from(strtoupper($category));
+        return ShopCategory::from(strtolower($category));
     }
 
     /**
@@ -415,7 +415,7 @@ class RegistrationService
     {
         $map = [
             'immediate' => NotificationFrequency::IMMEDIATE,
-            '2hours' => NotificationFrequency::TWO_HOURS,
+            '2hours' => NotificationFrequency::EVERY_2_HOURS,
             'twice_daily' => NotificationFrequency::TWICE_DAILY,
             'daily' => NotificationFrequency::DAILY,
         ];

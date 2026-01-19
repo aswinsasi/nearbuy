@@ -673,7 +673,7 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
         $sections = [
             [
-                'title' => 'Shop Responses (by price)',
+                'title' => 'Responses (by price)',
                 'rows' => array_slice($rows, 0, 10),
             ],
         ];

@@ -193,25 +193,16 @@ class OfferMessages
     public static function getCategorySections(array $categoryCounts = []): array
     {
         $categories = [
+            ['id' => 'all', 'icon' => '🔍', 'name' => 'All Categories'],
             ['id' => 'grocery', 'icon' => '🛒', 'name' => 'Grocery'],
             ['id' => 'electronics', 'icon' => '📱', 'name' => 'Electronics'],
             ['id' => 'clothes', 'icon' => '👕', 'name' => 'Clothes'],
             ['id' => 'medical', 'icon' => '💊', 'name' => 'Medical'],
-            ['id' => 'furniture', 'icon' => '🪑', 'name' => 'Furniture'],
-            ['id' => 'mobile', 'icon' => '📲', 'name' => 'Mobile'],
-            ['id' => 'appliances', 'icon' => '🔌', 'name' => 'Appliances'],
-            ['id' => 'hardware', 'icon' => '🔧', 'name' => 'Hardware'],
             ['id' => 'restaurant', 'icon' => '🍽️', 'name' => 'Restaurant'],
-            ['id' => 'bakery', 'icon' => '🍞', 'name' => 'Bakery'],
-        ];
-
-        $moreCategories = [
-            ['id' => 'stationery', 'icon' => '📚', 'name' => 'Stationery'],
+            ['id' => 'furniture', 'icon' => '🪑', 'name' => 'Furniture'],
             ['id' => 'beauty', 'icon' => '💄', 'name' => 'Beauty'],
+            ['id' => 'hardware', 'icon' => '🔧', 'name' => 'Hardware'],
             ['id' => 'automotive', 'icon' => '🚗', 'name' => 'Automotive'],
-            ['id' => 'jewelry', 'icon' => '💍', 'name' => 'Jewelry'],
-            ['id' => 'sports', 'icon' => '⚽', 'name' => 'Sports'],
-            ['id' => 'all', 'icon' => '🔍', 'name' => 'All Categories'],
         ];
 
         $formatRow = function ($cat) use ($categoryCounts) {
@@ -226,12 +217,8 @@ class OfferMessages
 
         return [
             [
-                'title' => 'Popular Categories',
+                'title' => 'Shop Categories',
                 'rows' => array_map($formatRow, $categories),
-            ],
-            [
-                'title' => 'More Categories',
-                'rows' => array_map($formatRow, $moreCategories),
             ],
         ];
     }

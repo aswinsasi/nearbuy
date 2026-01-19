@@ -340,7 +340,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             $message,
             '📦 Select Category',
             $sections,
-            OfferMessages::BROWSE_START
+            '📍 Offers Near You'
         );
     }
 

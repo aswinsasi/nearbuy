@@ -586,13 +586,31 @@ class ProductResponseFlowHandler implements FlowHandlerInterface
         $message = "🔔 *New Response to #{$request->request_number}*\n\n" .
             "🏪 *{$shop->shop_name}* has responded:\n\n" .
             "💰 *Price:* ₹" . number_format($response->price) . "\n\n" .
+            ($response->description ? "📝 *Details:* {$response->description}\n\n" : "") .
             "Check all responses from the main menu.";
 
-        // Send response image if available
-        if ($response->image_url) {
-            $this->whatsApp->sendImage($customer->phone, $response->image_url, $message);
+        // Send response image if available (using photo_url, not image_url!)
+        if ($response->photo_url) {
+            $this->whatsApp->sendImage($customer->phone, $response->photo_url, $message);
+            
+            // Send buttons separately after image
+            $this->whatsApp->sendButtons(
+                $customer->phone,
+                "What would you like to do?",
+                [
+                    ['id' => 'view_responses', 'title' => '📬 View All Responses'],
+                    ['id' => 'menu', 'title' => '🏠 Main Menu'],
+                ]
+            );
         } else {
-            $this->whatsApp->sendText($customer->phone, $message);
+            $this->whatsApp->sendButtons(
+                $customer->phone,
+                $message,
+                [
+                    ['id' => 'view_responses', 'title' => '📬 View All Responses'],
+                    ['id' => 'menu', 'title' => '🏠 Main Menu'],
+                ]
+            );
         }
     }
 

@@ -70,7 +70,7 @@ class ProductResponseService
             'is_available' => true,
             'price' => $data['price'],
             'description' => $data['description'] ?? null,
-            'image_url' => $data['image_url'] ?? null,
+            'photo_url' => $data['image_url'] ?? null,
         ]);
 
         // Increment response count on request
@@ -270,7 +270,7 @@ class ProductResponseService
         }
 
         if (isset($data['image_url'])) {
-            $updateData['image_url'] = $data['image_url'];
+            $updateData['photo_url'] = $data['image_url'];
         }
 
         if (!empty($updateData)) {

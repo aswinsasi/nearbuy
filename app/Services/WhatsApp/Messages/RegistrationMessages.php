@@ -146,7 +146,7 @@ class RegistrationMessages
 
     /**
      * Get shop category list sections.
-     * Split into 2 sections to stay under WhatsApp's 10 item limit per section.
+     * Limited to 10 items total as per WhatsApp requirements.
      */
     public static function getCategorySections(): array
     {
@@ -155,31 +155,18 @@ class RegistrationMessages
             ['id' => 'electronics', 'title' => '📱 Electronics', 'description' => 'Gadgets & electronic items'],
             ['id' => 'clothes', 'title' => '👕 Clothes', 'description' => 'Fashion & apparel'],
             ['id' => 'medical', 'title' => '💊 Medical', 'description' => 'Pharmacy & health products'],
-            ['id' => 'furniture', 'title' => '🪑 Furniture', 'description' => 'Home & office furniture'],
-            ['id' => 'mobile', 'title' => '📲 Mobile', 'description' => 'Phones & accessories'],
-            ['id' => 'appliances', 'title' => '🔌 Appliances', 'description' => 'Home appliances'],
-            ['id' => 'hardware', 'title' => '🔧 Hardware', 'description' => 'Tools & building materials'],
             ['id' => 'restaurant', 'title' => '🍽️ Restaurant', 'description' => 'Food & dining'],
-            ['id' => 'bakery', 'title' => '🍞 Bakery', 'description' => 'Baked goods & sweets'],
-        ];
-
-        $moreCategories = [
-            ['id' => 'stationery', 'title' => '📚 Stationery', 'description' => 'Books & office supplies'],
+            ['id' => 'furniture', 'title' => '🪑 Furniture', 'description' => 'Home & office furniture'],
             ['id' => 'beauty', 'title' => '💄 Beauty', 'description' => 'Cosmetics & personal care'],
+            ['id' => 'hardware', 'title' => '🔧 Hardware', 'description' => 'Tools & building materials'],
             ['id' => 'automotive', 'title' => '🚗 Automotive', 'description' => 'Vehicle parts & services'],
-            ['id' => 'jewelry', 'title' => '💍 Jewelry', 'description' => 'Ornaments & accessories'],
-            ['id' => 'sports', 'title' => '⚽ Sports', 'description' => 'Sports goods & fitness'],
             ['id' => 'other', 'title' => '📦 Other', 'description' => 'Other categories'],
         ];
 
         return [
             [
-                'title' => 'Popular Categories',
+                'title' => 'Shop Categories',
                 'rows' => $categories,
-            ],
-            [
-                'title' => 'More Categories',
-                'rows' => $moreCategories,
             ],
         ];
     }
