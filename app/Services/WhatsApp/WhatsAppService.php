@@ -17,32 +17,6 @@ use Illuminate\Support\Facades\Storage;
 
 /**
  * WhatsApp Cloud API Service for NearBuy.
- *
- * Handles all communication with WhatsApp Business Platform API including:
- * - Sending various message types (text, interactive, media)
- * - Downloading media from WhatsApp
- * - Uploading media to S3
- * - Marking messages as read
- *
- * @example
- * // Using the service
- * $whatsapp = app(WhatsAppService::class);
- *
- * // Send a text message
- * $whatsapp->sendText('919876543210', 'Hello from NearBuy!');
- *
- * // Send interactive buttons
- * $whatsapp->sendButtons(
- *     '919876543210',
- *     'Welcome! What would you like to do?',
- *     [
- *         ['id' => 'browse', 'title' => '🛍️ Browse Offers'],
- *         ['id' => 'search', 'title' => '🔍 Search Product'],
- *     ]
- * );
- *
- * // Request location
- * $whatsapp->requestLocation('919876543210', 'Please share your location');
  */
 class WhatsAppService
 {
@@ -80,12 +54,6 @@ class WhatsAppService
 
     /**
      * Send an interactive button message.
-     *
-     * @param string $to Recipient phone number
-     * @param string $body Message body
-     * @param array<int, array{id: string, title: string}> $buttons Button options (max 3)
-     * @param string|null $header Optional header text
-     * @param string|null $footer Optional footer text
      */
     public function sendButtons(
         string $to,
@@ -111,13 +79,6 @@ class WhatsAppService
 
     /**
      * Send an interactive list message.
-     *
-     * @param string $to Recipient phone number
-     * @param string $body Message body
-     * @param string $buttonText Text for the button that opens the list
-     * @param array<int, array{title: string, rows: array}> $sections List sections
-     * @param string|null $header Optional header text
-     * @param string|null $footer Optional footer text
      */
     public function sendList(
         string $to,
@@ -181,11 +142,6 @@ class WhatsAppService
 
     /**
      * Send an image message.
-     *
-     * @param string $to Recipient phone number
-     * @param string $urlOrMediaId Image URL or WhatsApp media ID
-     * @param string|null $caption Optional caption
-     * @param bool $isMediaId Whether the second parameter is a media ID
      */
     public function sendImage(
         string $to,
@@ -210,12 +166,6 @@ class WhatsAppService
 
     /**
      * Send a document message.
-     *
-     * @param string $to Recipient phone number
-     * @param string $urlOrMediaId Document URL or WhatsApp media ID
-     * @param string|null $filename Display filename
-     * @param string|null $caption Optional caption
-     * @param bool $isMediaId Whether the second parameter is a media ID
      */
     public function sendDocument(
         string $to,
@@ -245,19 +195,60 @@ class WhatsAppService
 
     /**
      * Send a raw message payload (for custom builders).
+     * 
+     * UPDATED: Now includes API response logging for debugging
      */
     public function sendMessage(array $payload): array
     {
+        // Validate configuration
+        if (empty($this->phoneNumberId)) {
+            Log::error('WhatsApp API: Phone number ID not configured');
+            return [
+                'success' => false,
+                'error' => 'Phone number ID not configured',
+            ];
+        }
+
+        if (empty($this->accessToken)) {
+            Log::error('WhatsApp API: Access token not configured');
+            return [
+                'success' => false,
+                'error' => 'Access token not configured',
+            ];
+        }
+
         $url = "{$this->baseUrl}/{$this->apiVersion}/{$this->phoneNumberId}/messages";
 
         $this->logOutgoing($payload);
 
         try {
             $response = $this->httpClient()
+                ->timeout(30)
                 ->post($url, $payload);
 
-            return $this->handleResponse($response, 'sendMessage');
+            $result = $this->handleResponse($response, 'sendMessage');
+
+            // ============ API RESPONSE LOGGING FOR DEBUGGING ============
+            Log::info('WhatsApp API Response', [
+                'to' => $payload['to'] ?? 'unknown',
+                'type' => $payload['type'] ?? 'unknown',
+                'success' => $result['success'],
+                'message_id' => $result['message_id'] ?? null,
+                'error' => $result['error'] ?? null,
+                'error_code' => $result['error_code'] ?? null,
+                'http_status' => $response->status(),
+            ]);
+
+            return $result;
+
         } catch (\Exception $e) {
+            Log::error('WhatsApp API Exception', [
+                'to' => $payload['to'] ?? 'unknown',
+                'type' => $payload['type'] ?? 'unknown',
+                'error' => $e->getMessage(),
+                'exception_class' => get_class($e),
+            ]);
+
             return $this->handleException($e, 'sendMessage');
         }
     }
@@ -270,23 +261,15 @@ class WhatsAppService
 
     /**
      * Download media from WhatsApp (2-step process).
-     *
-     * Step 1: Get the media URL from the media ID
-     * Step 2: Download the actual file content
-     *
-     * @param string $mediaId WhatsApp media ID
-     * @return array{success: bool, content?: string, mime_type?: string, error?: string}
      */
     public function downloadMedia(string $mediaId): array
     {
-        // Step 1: Get media URL
         $mediaUrl = $this->getMediaUrl($mediaId);
 
         if (!$mediaUrl['success']) {
             return $mediaUrl;
         }
 
-        // Step 2: Download the file
         return $this->downloadFromUrl($mediaUrl['url']);
     }
 
@@ -350,10 +333,6 @@ class WhatsAppService
 
     /**
      * Download media and upload to S3.
-     *
-     * @param string $mediaId WhatsApp media ID
-     * @param string $path Storage path (e.g., 'offers/image.jpg')
-     * @return array{success: bool, url?: string, path?: string, error?: string}
      */
     public function downloadAndStoreMedia(string $mediaId, string $path): array
     {
@@ -422,57 +401,36 @@ class WhatsAppService
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Create a text message builder.
-     */
     public function text(string $to): TextMessageBuilder
     {
         return TextMessageBuilder::create($to);
     }
 
-    /**
-     * Create a button message builder.
-     */
     public function buttons(string $to): ButtonMessageBuilder
     {
         return ButtonMessageBuilder::create($to);
     }
 
-    /**
-     * Create a list message builder.
-     */
     public function list(string $to): ListMessageBuilder
     {
         return ListMessageBuilder::create($to);
     }
 
-    /**
-     * Create a location request builder.
-     */
     public function locationRequest(string $to): LocationRequestBuilder
     {
         return LocationRequestBuilder::create($to);
     }
 
-    /**
-     * Create a location message builder.
-     */
     public function location(string $to): LocationMessageBuilder
     {
         return LocationMessageBuilder::create($to);
     }
 
-    /**
-     * Create an image message builder.
-     */
     public function image(string $to): ImageMessageBuilder
     {
         return ImageMessageBuilder::create($to);
     }
 
-    /**
-     * Create a document message builder.
-     */
     public function document(string $to): DocumentMessageBuilder
     {
         return DocumentMessageBuilder::create($to);
@@ -496,7 +454,6 @@ class WhatsAppService
                 config('whatsapp.retry.max_attempts', 3),
                 config('whatsapp.retry.delay', 1000),
                 function (\Exception $exception, PendingRequest $request) {
-                    // Retry on rate limit or server errors
                     if ($exception instanceof \Illuminate\Http\Client\RequestException) {
                         $status = $exception->response->status();
                         return in_array($status, config('whatsapp.retry.retry_on_status', [429, 500, 502, 503, 504]));
@@ -565,10 +522,9 @@ class WhatsAppService
             return;
         }
 
-        Log::channel(config('whatsapp.logging.channel', 'whatsapp'))
-            ->info('WhatsApp outgoing message', [
-                'to' => $payload['to'] ?? 'unknown',
-                'type' => $payload['type'] ?? 'unknown',
-            ]);
+        Log::info('WhatsApp outgoing message', [
+            'to' => $payload['to'] ?? 'unknown',
+            'type' => $payload['type'] ?? 'unknown',
+        ]);
     }
 }

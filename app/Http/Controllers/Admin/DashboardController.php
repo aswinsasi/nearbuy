@@ -40,9 +40,7 @@ class DashboardController extends Controller
             'shop_owners' => User::whereHas('shop')->count(),
             'total_shops' => Shop::count(),
             'verified_shops' => Shop::where('verified', true)->count(),
-            'active_offers' => Offer::where('is_active', true)
-                ->where('valid_until', '>', now())
-                ->count(),
+            'active_offers' => Offer::active()->count(),
             'requests_today' => ProductRequest::whereDate('created_at', today())->count(),
             'requests_this_week' => ProductRequest::whereBetween('created_at', [
                 now()->startOfWeek(),

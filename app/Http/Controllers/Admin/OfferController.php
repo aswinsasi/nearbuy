@@ -18,16 +18,14 @@ class OfferController extends Controller
     {
         $query = Offer::with('shop.owner');
 
-        // Filter by status
+        // Filter by status (using model scopes)
         if ($request->filled('status')) {
-            if ($request->status === 'active') {
-                $query->where('is_active', true)
-                    ->where('valid_until', '>', now());
-            } elseif ($request->status === 'expired') {
-                $query->where('valid_until', '<', now());
-            } elseif ($request->status === 'inactive') {
-                $query->where('is_active', false);
-            }
+            match ($request->status) {
+                'active' => $query->active(),
+                'expired' => $query->expired(),
+                'inactive' => $query->where('is_active', false),
+                default => null,
+            };
         }
 
         // Filter by category
@@ -41,8 +39,7 @@ class OfferController extends Controller
         if ($request->filled('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
-                $q->where('title', 'like', "%{$search}%")
-                    ->orWhere('description', 'like', "%{$search}%")
+                $q->where('caption', 'like', "%{$search}%")
                     ->orWhereHas('shop', function ($q) use ($search) {
                         $q->where('shop_name', 'like', "%{$search}%");
                     });

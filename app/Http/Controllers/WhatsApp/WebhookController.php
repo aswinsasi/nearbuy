@@ -4,6 +4,9 @@ namespace App\Http\Controllers\WhatsApp;
 
 use App\DTOs\IncomingMessage;
 use App\Http\Controllers\Controller;
+use App\Models\ConversationSession;
+use App\Enums\FlowType;
+use App\Services\Flow\FlowRouter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -20,6 +23,10 @@ use Illuminate\Support\Facades\Log;
  */
 class WebhookController extends Controller
 {
+    public function __construct(
+        protected FlowRouter $flowRouter,
+    ) {}
+
     /**
      * Handle webhook verification (GET request).
      *
@@ -167,6 +174,7 @@ class WebhookController extends Controller
         } catch (\Exception $e) {
             Log::error('WhatsApp Webhook: Failed to process message', [
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
                 'message_id' => $message['id'] ?? 'unknown',
             ]);
         }
@@ -174,35 +182,48 @@ class WebhookController extends Controller
 
     /**
      * Dispatch message to appropriate handler.
-     *
-     * This method can be extended to:
-     * - Dispatch to a queue job for async processing
-     * - Call a flow manager/router service
-     * - Emit events
      */
     private function dispatchMessage(IncomingMessage $message, array $metadata): void
     {
-        // Option 1: Dispatch to a job (recommended for production)
-        // ProcessWhatsAppMessage::dispatch($message, $metadata);
-
-        // Option 2: Handle synchronously via service
-        // app(MessageRouter::class)->handle($message, $metadata);
-
-        // Option 3: Fire an event
-        // event(new WhatsAppMessageReceived($message, $metadata));
-
-        // For now, log the parsed message
         Log::debug('WhatsApp Webhook: Message dispatched', [
             'from' => $message->from,
             'type' => $message->type,
             'content' => $this->getMessageSummary($message),
         ]);
 
-        // TODO: Implement your message handling logic here
-        // Example:
-        // $session = ConversationSession::getActiveOrReset($message->from);
-        // $flowManager = app(FlowManager::class);
-        // $flowManager->handle($session, $message);
+        try {
+            // Get or create session for this user
+            $session = $this->getOrCreateSession($message->from);
+
+            // Update last activity
+            $session->update(['last_activity_at' => now()]);
+
+            // Route message through FlowRouter
+            $this->flowRouter->route($message, $session);
+
+        } catch (\Exception $e) {
+            Log::error('WhatsApp Webhook: Failed to dispatch message', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'from' => $this->maskPhone($message->from),
+            ]);
+        }
+    }
+
+    /**
+     * Get or create a conversation session for the phone number.
+     */
+    private function getOrCreateSession(string $phone): ConversationSession
+    {
+        return ConversationSession::firstOrCreate(
+            ['phone' => $phone],
+            [
+                'current_flow' => FlowType::MAIN_MENU->value,
+                'current_step' => 'idle',
+                'temp_data' => [],
+                'last_activity_at' => now(),
+            ]
+        );
     }
 
     /**

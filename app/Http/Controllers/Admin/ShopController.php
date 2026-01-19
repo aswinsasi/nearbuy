@@ -47,7 +47,7 @@ class ShopController extends Controller
             });
         }
 
-        $shops = $query->withCount(['offers', 'responses'])
+        $shops = $query->withCount(['offers', 'productResponses'])
             ->latest()
             ->paginate(20)
             ->withQueryString();
@@ -74,9 +74,9 @@ class ShopController extends Controller
 
         $stats = [
             'total_offers' => $shop->offers()->count(),
-            'active_offers' => $shop->offers()->where('is_active', true)->count(),
-            'total_responses' => $shop->responses()->count(),
-            'available_responses' => $shop->responses()->where('is_available', true)->count(),
+            'active_offers' => $shop->offers()->active()->count(),
+            'total_responses' => $shop->productResponses()->count(),
+            'available_responses' => $shop->productResponses()->where('is_available', true)->count(),
             'avg_response_time' => $this->calculateAvgResponseTime($shop),
         ];
 

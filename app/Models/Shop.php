@@ -67,6 +67,11 @@ class Shop extends Model
         return $this->user();
     }
 
+    public function responses(): HasMany
+    {
+        return $this->productResponses();
+    }
+
     /**
      * Get offers from this shop.
      */
