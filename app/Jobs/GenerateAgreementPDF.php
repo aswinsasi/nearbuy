@@ -104,9 +104,9 @@ class GenerateAgreementPDF implements ShouldQueue
         }
 
         // Send to counterparty
-        if ($this->agreement->counterparty_phone) {
+        if ($this->agreement->to_phone) {
             $whatsApp->sendDocument(
-                $this->agreement->counterparty_phone,
+                $this->agreement->to_phone,
                 $pdfUrl,
                 $filename,
                 $caption
@@ -114,7 +114,7 @@ class GenerateAgreementPDF implements ShouldQueue
 
             Log::debug('PDF sent to counterparty', [
                 'agreement_id' => $this->agreement->id,
-                'phone' => $this->agreement->counterparty_phone,
+                'phone' => $this->agreement->to_phone,
             ]);
         }
     }

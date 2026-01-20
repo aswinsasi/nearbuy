@@ -80,7 +80,7 @@ class ExpireAgreements extends Command
                 $agreement->id,
                 $agreement->agreement_number,
                 $agreement->creator?->name ?? 'Unknown',
-                $agreement->counterparty_name,
+                $agreement->to_name,
                 '₹' . number_format($agreement->amount),
                 $agreement->expires_at->format('Y-m-d H:i'),
             ];

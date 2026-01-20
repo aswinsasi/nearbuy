@@ -492,7 +492,7 @@ class AgreementCreateFlowHandler implements FlowHandlerInterface
             // Send success message
             $message = AgreementMessages::format(AgreementMessages::CREATE_SUCCESS, [
                 'agreement_number' => $agreement->agreement_number,
-                'other_party_name' => $agreement->counterparty_name,
+                'other_party_name' => $agreement->to_name,
             ]);
 
             $this->whatsApp->sendButtons(
@@ -545,7 +545,7 @@ class AgreementCreateFlowHandler implements FlowHandlerInterface
         ]);
 
         $this->whatsApp->sendButtons(
-            $agreement->counterparty_phone,
+            $agreement->to_phone,
             $message,
             AgreementMessages::getConfirmButtons()
         );

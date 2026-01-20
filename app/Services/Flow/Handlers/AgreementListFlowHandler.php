@@ -190,7 +190,7 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
             // Determine other party name
             $otherPartyName = $agreement->creator_id === $user->id
-                ? $agreement->counterparty_name
+                ? $agreement->to_name
                 : $agreement->creator->name ?? 'Unknown';
 
             $rows[] = [
@@ -240,11 +240,11 @@ class AgreementListFlowHandler implements FlowHandlerInterface
         $direction = $isUserCreditor ? 'receiving' : 'giving';
 
         $otherPartyName = $isCreator
-            ? $agreement->counterparty_name
+            ? $agreement->to_name
             : $agreement->creator->name ?? 'Unknown';
 
         $otherPartyPhone = $isCreator
-            ? $agreement->counterparty_phone
+            ? $agreement->to_phone
             : $agreement->creator->phone ?? 'Unknown';
 
         $message = AgreementMessages::format(AgreementMessages::AGREEMENT_DETAIL, [
@@ -370,7 +370,7 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
             // Notify other party
             $otherPartyPhone = $agreement->creator_id === $user->id
-                ? $agreement->counterparty_phone
+                ? $agreement->to_phone
                 : $agreement->creator->phone;
 
             $this->whatsApp->sendText(
@@ -417,14 +417,14 @@ class AgreementListFlowHandler implements FlowHandlerInterface
             ]);
 
         $this->whatsApp->sendButtons(
-            $agreement->counterparty_phone,
+            $agreement->to_phone,
             $message,
             AgreementMessages::getConfirmButtons()
         );
 
         $this->agreementService->markReminderSent($agreement);
 
-        $this->whatsApp->sendText($session->phone, "✅ Reminder sent to {$agreement->counterparty_name}.");
+        $this->whatsApp->sendText($session->phone, "✅ Reminder sent to {$agreement->to_name}.");
 
         $this->showAgreementDetail($session);
     }

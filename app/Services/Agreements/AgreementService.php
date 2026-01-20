@@ -72,43 +72,50 @@ class AgreementService
         // Parse purpose
         $purpose = AgreementPurpose::tryFrom(strtoupper($data['purpose'])) ?? AgreementPurpose::OTHER;
 
+        // Parse direction
+        $direction = \App\Enums\AgreementDirection::tryFrom(strtoupper($data['direction'])) 
+            ?? \App\Enums\AgreementDirection::GIVING;
+
         // Generate verification token
         $verificationToken = $this->generateVerificationToken();
 
-        // Determine who is creditor/debtor based on direction
-        $isCreatorGiving = $data['direction'] === 'giving';
-
         $agreement = Agreement::create([
             'agreement_number' => $this->generateAgreementNumber(),
-            'creator_id' => $creator->id,
-            'counterparty_id' => $otherPartyUser?->id,
-            'counterparty_phone' => $otherPartyPhone,
-            'counterparty_name' => trim($data['other_party_name']),
 
-            // If creator is giving, creator is creditor (lender)
-            // If creator is receiving, creator is debtor (borrower)
-            'creditor_id' => $isCreatorGiving ? $creator->id : $otherPartyUser?->id,
-            'debtor_id' => $isCreatorGiving ? $otherPartyUser?->id : $creator->id,
+            // From (creator) details
+            'from_user_id' => $creator->id,
+            'from_name' => $creator->name ?? 'Unknown',
+            'from_phone' => $creator->phone,
 
+            // To (counterparty) details
+            'to_user_id' => $otherPartyUser?->id,
+            'to_name' => trim($data['other_party_name']),
+            'to_phone' => $otherPartyPhone,
+
+            // Direction
+            'direction' => $direction,
+
+            // Financial details
             'amount' => $data['amount'],
-            'amount_words' => $this->convertAmountToWords($data['amount']),
-            'purpose' => $purpose,
+            'amount_in_words' => $this->convertAmountToWords($data['amount']),
+            'purpose_type' => $purpose,
             'description' => $data['description'] ?? null,
             'due_date' => $data['due_date'] ?? null,
 
+            // Status
             'status' => AgreementStatus::PENDING,
-            'creator_confirmed_at' => now(),
-            'counterparty_confirmed_at' => null,
+            'from_confirmed_at' => now(),
+            'to_confirmed_at' => null,
 
+            // Verification
             'verification_token' => $verificationToken,
             'pdf_url' => null,
-            'expires_at' => now()->addDays(config('nearbuy.agreements.confirmation_expiry_days', 7)),
         ]);
 
         Log::info('Agreement created', [
             'agreement_id' => $agreement->id,
             'agreement_number' => $agreement->agreement_number,
-            'creator_id' => $creator->id,
+            'from_user_id' => $creator->id,
             'amount' => $data['amount'],
         ]);
 
@@ -163,7 +170,7 @@ class AgreementService
 
         $agreement->update([
             'status' => AgreementStatus::CONFIRMED,
-            'counterparty_confirmed_at' => now(),
+            'to_confirmed_at' => now(),
         ]);
 
         Log::info('Agreement confirmed by counterparty', [
@@ -298,9 +305,9 @@ class AgreementService
     {
         return Agreement::query()
             ->where(function ($query) use ($user) {
-                $query->where('creator_id', $user->id)
-                    ->orWhere('counterparty_id', $user->id)
-                    ->orWhere('counterparty_phone', $user->phone);
+                $query->where('from_user_id', $user->id)
+                    ->orWhere('to_user_id', $user->id)
+                    ->orWhere('to_phone', $user->phone); // ← Changed
             })
             ->orderBy('created_at', 'desc')
             ->limit($limit)
@@ -317,9 +324,9 @@ class AgreementService
     {
         return Agreement::query()
             ->where(function ($query) use ($user) {
-                $query->where('creator_id', $user->id)
-                    ->orWhere('counterparty_id', $user->id)
-                    ->orWhere('counterparty_phone', $user->phone);
+                $query->where('from_user_id', $user->id) // ← Changed
+                    ->orWhere('to_user_id', $user->id) // ← Changed
+                    ->orWhere('to_phone', $user->phone); // ← Changed
             })
             ->whereIn('status', [
                 AgreementStatus::PENDING,
@@ -339,11 +346,11 @@ class AgreementService
     {
         return Agreement::query()
             ->where(function ($query) use ($user) {
-                $query->where('counterparty_id', $user->id)
-                    ->orWhere('counterparty_phone', $user->phone);
+                $query->where('to_user_id', $user->id) // ← Changed
+                    ->orWhere('to_phone', $user->phone); // ← Changed
             })
             ->where('status', AgreementStatus::PENDING)
-            ->where('expires_at', '>', now())
+            ->whereNull('to_confirmed_at') // ← Changed
             ->orderBy('created_at', 'desc')
             ->get();
     }
@@ -390,9 +397,9 @@ class AgreementService
      */
     public function isPartyToAgreement(Agreement $agreement, User $user): bool
     {
-        return $agreement->creator_id === $user->id
-            || $agreement->counterparty_id === $user->id
-            || $agreement->counterparty_phone === $user->phone;
+        return $agreement->from_user_id === $user->id // ← Changed
+            || $agreement->to_user_id === $user->id // ← Changed
+            || $agreement->to_phone === $user->phone; // ← Changed
     }
 
     /**
@@ -404,11 +411,11 @@ class AgreementService
      */
     public function getUserRole(Agreement $agreement, User $user): ?string
     {
-        if ($agreement->creator_id === $user->id) {
+        if ($agreement->from_user_id === $user->id) { // ← Changed
             return 'creator';
         }
 
-        if ($agreement->counterparty_id === $user->id || $agreement->counterparty_phone === $user->phone) {
+        if ($agreement->to_user_id === $user->id || $agreement->to_phone === $user->phone) { // ← Changed
             return 'counterparty';
         }
 

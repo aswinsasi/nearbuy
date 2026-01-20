@@ -334,8 +334,8 @@ class AgreementConfirmFlowHandler implements FlowHandlerInterface
 
             // Link counterparty user if not already linked
             $user = $this->sessionManager->getUser($session);
-            if (!$agreement->counterparty_id && $user) {
-                $agreement->update(['counterparty_id' => $user->id]);
+            if (!$agreement->to_user_id && $user) {
+                $agreement->update(['to_user_id' => $user->id]);
             }
 
             // Confirm the agreement
@@ -497,7 +497,7 @@ class AgreementConfirmFlowHandler implements FlowHandlerInterface
         $creator = $agreement->creator;
 
         $message = AgreementMessages::format(AgreementMessages::CREATOR_NOTIFIED_CONFIRMED, [
-            'other_party_name' => $agreement->counterparty_name,
+            'other_party_name' => $agreement->to_name,
             'agreement_number' => $agreement->agreement_number,
         ]);
 
@@ -517,7 +517,7 @@ class AgreementConfirmFlowHandler implements FlowHandlerInterface
         $creator = $agreement->creator;
 
         $message = AgreementMessages::format(AgreementMessages::CREATOR_NOTIFIED_REJECTED, [
-            'other_party_name' => $agreement->counterparty_name,
+            'other_party_name' => $agreement->to_name,
             'agreement_number' => $agreement->agreement_number,
             'reason' => 'Details are incorrect',
         ]);
@@ -530,7 +530,7 @@ class AgreementConfirmFlowHandler implements FlowHandlerInterface
         $creator = $agreement->creator;
 
         $message = AgreementMessages::format(AgreementMessages::CREATOR_NOTIFIED_DISPUTED, [
-            'other_party_name' => $agreement->counterparty_name,
+            'other_party_name' => $agreement->to_name,
             'agreement_number' => $agreement->agreement_number,
         ]);
 

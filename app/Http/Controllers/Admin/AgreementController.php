@@ -45,8 +45,8 @@ class AgreementController extends Controller
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->where('agreement_number', 'like', "%{$search}%")
-                    ->orWhere('counterparty_name', 'like', "%{$search}%")
-                    ->orWhere('counterparty_phone', 'like', "%{$search}%")
+                    ->orWhere('to_name', 'like', "%{$search}%")
+                    ->orWhere('to_phone', 'like', "%{$search}%")
                     ->orWhereHas('creator', function ($q) use ($search) {
                         $q->where('name', 'like', "%{$search}%")
                             ->orWhere('phone', 'like', "%{$search}%");

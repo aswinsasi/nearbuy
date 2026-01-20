@@ -107,8 +107,8 @@ class AgreementVerificationController extends Controller
 
             'partyB' => [
                 'label' => $isCreatorCreditor ? 'Debtor (Borrower)' : 'Creditor (Lender)',
-                'name' => $agreement->counterparty_name,
-                'phone' => $this->maskPhone($agreement->counterparty_phone),
+                'name' => $agreement->to_name,
+                'phone' => $this->maskPhone($agreement->to_phone),
             ],
 
             'amount' => '₹' . number_format($agreement->amount, 2),
@@ -121,8 +121,8 @@ class AgreementVerificationController extends Controller
             'creatorConfirmed' => $agreement->creator_confirmed_at
                 ? $agreement->creator_confirmed_at->format('F j, Y \a\t h:i A')
                 : 'Pending',
-            'counterpartyConfirmed' => $agreement->counterparty_confirmed_at
-                ? $agreement->counterparty_confirmed_at->format('F j, Y \a\t h:i A')
+            'counterpartyConfirmed' => $agreement->to_confirmed_at
+                ? $agreement->to_confirmed_at->format('F j, Y \a\t h:i A')
                 : 'Pending',
 
             'isConfirmed' => $agreement->status->value === 'confirmed',

@@ -114,7 +114,7 @@
                     </td>
                     <td class="px-6 py-4">
                         <div class="text-sm text-gray-900">{{ $agreement->creator->name ?? 'Unknown' }}</div>
-                        <div class="text-sm text-gray-500">↔ {{ $agreement->counterparty_name }}</div>
+                        <div class="text-sm text-gray-500">↔ {{ $agreement->to_name }}</div>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">
                         <div class="text-sm font-semibold text-gray-900">₹{{ number_format($agreement->amount) }}</div>

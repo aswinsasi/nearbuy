@@ -60,10 +60,10 @@
                     <dt class="text-sm text-gray-500">Created</dt>
                     <dd class="text-sm font-medium text-gray-800">{{ $agreement->created_at->format('F j, Y H:i') }}</dd>
                 </div>
-                @if($agreement->counterparty_confirmed_at)
+                @if($agreement->to_confirmed_at)
                 <div>
                     <dt class="text-sm text-gray-500">Confirmed At</dt>
-                    <dd class="text-sm font-medium text-gray-800">{{ $agreement->counterparty_confirmed_at->format('F j, Y H:i') }}</dd>
+                    <dd class="text-sm font-medium text-gray-800">{{ $agreement->to_confirmed_at->format('F j, Y H:i') }}</dd>
                 </div>
                 @endif
             </dl>
@@ -147,17 +147,17 @@
                 <div class="p-4 border border-gray-200 rounded-lg">
                     <div class="flex items-center mb-3">
                         <div class="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                            <span class="text-green-600 font-medium">{{ substr($agreement->counterparty_name ?? 'N', 0, 1) }}</span>
+                            <span class="text-green-600 font-medium">{{ substr($agreement->to_name ?? 'N', 0, 1) }}</span>
                         </div>
                         <div class="ml-3">
-                            <p class="font-medium text-gray-800">{{ $agreement->counterparty_name }}</p>
+                            <p class="font-medium text-gray-800">{{ $agreement->to_name }}</p>
                             <p class="text-xs text-gray-500">
                                 {{ $agreement->direction === 'giving' ? '💰 Debtor (Receiving)' : '💸 Creditor (Giving)' }}
                             </p>
                         </div>
                     </div>
                     <div class="text-sm text-gray-500">
-                        <p>📱 {{ $agreement->counterparty_phone }}</p>
+                        <p>📱 {{ $agreement->to_phone }}</p>
                         <p class="mt-1">
                             @if($agreement->counterpartyUser)
                                 <span class="text-green-600">Registered User</span>
@@ -210,14 +210,14 @@
                     @endif
 
                     <!-- Counterparty Action -->
-                    @if($agreement->counterparty_confirmed_at)
+                    @if($agreement->to_confirmed_at)
                     <div class="relative flex items-start ml-10">
                         <div class="absolute -left-10 w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
                             <span class="text-green-600">✓✓</span>
                         </div>
                         <div>
                             <p class="font-medium text-gray-800">Counterparty Confirmed</p>
-                            <p class="text-sm text-gray-500">{{ $agreement->counterparty_confirmed_at->format('M j, Y H:i') }}</p>
+                            <p class="text-sm text-gray-500">{{ $agreement->to_confirmed_at->format('M j, Y H:i') }}</p>
                         </div>
                     </div>
                     @elseif($agreement->status->value === 'rejected')

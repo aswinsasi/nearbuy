@@ -159,7 +159,7 @@
                                 <p class="font-medium text-gray-800">₹{{ number_format($agreement->amount) }}</p>
                                 <p class="text-sm text-gray-500">
                                     {{ $agreement->agreement_number }} •
-                                    with {{ $agreement->creator_id === $user->id ? $agreement->counterparty_name : $agreement->creator->name }}
+                                    with {{ $agreement->creator_id === $user->id ? $agreement->to_name : $agreement->creator->name }}
                                 </p>
                             </div>
                             <div class="text-right">

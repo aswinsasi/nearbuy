@@ -531,7 +531,7 @@ class NotificationService
         ]);
 
         SendWhatsAppMessage::dispatch(
-            $agreement->counterparty_phone,
+            $agreement->to_phone,
             $message,
             'buttons',
             NotificationMessages::getAgreementReminderButtons()
@@ -548,7 +548,7 @@ class NotificationService
     public function sendAgreementDueSoonReminder(\App\Models\Agreement $agreement, User $recipient): void
     {
         $otherParty = $agreement->creator_id === $recipient->id
-            ? $agreement->counterparty_name
+            ? $agreement->to_name
             : $agreement->creator->name;
 
         $daysRemaining = now()->diffInDays($agreement->due_date);

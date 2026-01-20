@@ -143,8 +143,8 @@ class AgreementPDFService
             ];
             $partyB = [
                 'label' => 'DEBTOR (Borrower)',
-                'name' => $agreement->counterparty_name,
-                'phone' => $this->formatPhoneForDisplay($agreement->counterparty_phone),
+                'name' => $agreement->to_name,
+                'phone' => $this->formatPhoneForDisplay($agreement->to_phone),
                 'role' => 'Receiving Money',
             ];
         } else {
@@ -156,8 +156,8 @@ class AgreementPDFService
             ];
             $partyB = [
                 'label' => 'CREDITOR (Lender)',
-                'name' => $agreement->counterparty_name,
-                'phone' => $this->formatPhoneForDisplay($agreement->counterparty_phone),
+                'name' => $agreement->to_name,
+                'phone' => $this->formatPhoneForDisplay($agreement->to_phone),
                 'role' => 'Giving Money',
             ];
         }
@@ -174,7 +174,7 @@ class AgreementPDFService
             'dueDate' => $agreement->due_date ? $agreement->due_date->format('F j, Y') : 'No fixed date',
             'createdAt' => $agreement->created_at->format('F j, Y \a\t h:i A'),
             'creatorConfirmedAt' => $agreement->creator_confirmed_at?->format('F j, Y \a\t h:i A'),
-            'counterpartyConfirmedAt' => $agreement->counterparty_confirmed_at?->format('F j, Y \a\t h:i A'),
+            'toConfirmedAt' => $agreement->to_confirmed_at?->format('F j, Y \a\t h:i A'),
             'status' => $this->formatStatus($agreement->status->value ?? 'pending'),
             'qrCode' => $qrCode,
             'verificationUrl' => $this->getVerificationUrl($agreement),

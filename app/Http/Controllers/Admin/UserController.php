@@ -70,8 +70,8 @@ class UserController extends Controller
             ->get();
 
         $agreements = Agreement::where('creator_id', $user->id)
-            ->orWhere('counterparty_id', $user->id)
-            ->orWhere('counterparty_phone', $user->phone)
+            ->orWhere('to_user_id', $user->id)
+            ->orWhere('to_phone', $user->phone)
             ->latest()
             ->take(10)
             ->get();
@@ -80,7 +80,8 @@ class UserController extends Controller
             'total_requests' => ProductRequest::where('user_id', $user->id)->count(),
             'total_responses' => $user->shop ? $user->shop->responses()->count() : 0,
             'total_agreements' => Agreement::where('creator_id', $user->id)
-                ->orWhere('counterparty_id', $user->id)
+                ->orWhere('to_user_id', $user->id)
+                ->orWhere('to_phone', $user->phone)
                 ->count(),
         ];
 
@@ -105,7 +106,7 @@ class UserController extends Controller
     public function destroy(User $user)
     {
         // Check if user has important data
-        $hasAgreements = Agreement::where('creator_id', $user->id)->exists();
+        $hasAgreements = Agreement::where('creator_id', $user->id)->orWhere('to_user_id', $user->id)->orWhere('to_phone', $user->phone)->exists();
 
         if ($hasAgreements) {
             // Soft delete / deactivate
