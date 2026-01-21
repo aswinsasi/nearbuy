@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Flow\Handlers;
 
 use App\Contracts\FlowHandlerInterface;
@@ -17,14 +19,33 @@ use Illuminate\Support\Facades\Log;
 /**
  * Handles the offer browsing flow for customers.
  *
- * Flow Steps:
+ * Flow Steps (FR-OFR-10 to FR-OFR-16):
  * 1. select_category - Choose a category to browse
- * 2. show_offers - Display list of nearby offers
+ * 2. show_offers - Display list of nearby offers (sorted by distance)
  * 3. view_offer - Show offer details with actions
  * 4. show_location - Send shop location
+ *
+ * ENHANCEMENTS:
+ * - "All Categories" quick browse option
+ * - Better location handling and recovery
+ * - View/location tap analytics
+ * - Improved category matching
+ * - Session state recovery
+ *
+ * @see SRS Section 3.2.3 - Customer Offer Browsing Requirements
  */
 class OfferBrowseFlowHandler implements FlowHandlerInterface
 {
+    /**
+     * Default search radius in kilometers.
+     */
+    protected const DEFAULT_RADIUS_KM = 5;
+
+    /**
+     * Maximum search radius in kilometers.
+     */
+    protected const MAX_RADIUS_KM = 50;
+
     public function __construct(
         protected SessionManager $sessionManager,
         protected WhatsAppService $whatsApp,
@@ -32,7 +53,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     ) {}
 
     /**
-     * Get the flow name.
+     * {@inheritdoc}
      */
     public function getName(): string
     {
@@ -40,7 +61,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Check if this handler can process the given step.
+     * {@inheritdoc}
      */
     public function canHandleStep(string $step): bool
     {
@@ -50,7 +71,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             OfferStep::SHOW_OFFERS->value,
             OfferStep::VIEW_OFFER->value,
             OfferStep::SHOW_LOCATION->value,
-        ]);
+        ], true);
     }
 
     /**
@@ -60,20 +81,20 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     {
         $user = $this->sessionManager->getUser($session);
 
-        // Check if user has location
-        if (!$user || !$user->hasLocation()) {
+        // Check if user has location (FR-OFR-11: spatial queries require location)
+        if (!$user || !$this->hasValidLocation($user)) {
             $this->requestLocation($session);
             return;
         }
 
-        // Store user location in temp data
+        // Initialize session data
         $this->sessionManager->mergeTempData($session, [
             'user_lat' => $user->latitude,
             'user_lng' => $user->longitude,
-            'radius' => config('nearbuy.offers.default_radius_km', 5),
+            'radius' => config('nearbuy.offers.default_radius_km', self::DEFAULT_RADIUS_KM),
         ]);
 
-        // Clear any previous offer data
+        // Clear previous browsing state
         $this->sessionManager->removeTempData($session, 'current_offer_id');
         $this->sessionManager->removeTempData($session, 'selected_category');
 
@@ -84,6 +105,10 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
         );
 
         $this->showCategorySelection($session);
+
+        Log::info('Offer browse started', [
+            'phone' => $this->maskPhone($session->phone),
+        ]);
     }
 
     /**
@@ -94,7 +119,10 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
         $step = OfferStep::tryFrom($session->current_step);
 
         if (!$step) {
-            Log::warning('Invalid offer browse step', ['step' => $session->current_step]);
+            Log::warning('Invalid offer browse step', [
+                'step' => $session->current_step,
+                'phone' => $this->maskPhone($session->phone),
+            ]);
             $this->start($session);
             return;
         }
@@ -110,7 +138,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Handle invalid input.
+     * Handle invalid input with helpful re-prompting.
      */
     public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
     {
@@ -132,31 +160,18 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     */
 
     /**
-     * Handle category selection.
+     * Handle category selection (FR-OFR-10).
      */
     protected function handleCategorySelection(IncomingMessage $message, ConversationSession $session): void
     {
-        // Handle location message if user shares location
+        // Handle location share during category selection
         if ($message->isLocation()) {
-            $coords = $message->getCoordinates();
-            $this->sessionManager->mergeTempData($session, [
-                'user_lat' => $coords['latitude'],
-                'user_lng' => $coords['longitude'],
-            ]);
+            $this->handleLocationShare($message, $session);
             $this->showCategorySelection($session);
             return;
         }
 
-        $category = null;
-
-        if ($message->isListReply()) {
-            $category = $message->getSelectionId();
-        } elseif ($message->isButtonReply()) {
-            $category = $message->getSelectionId();
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            $category = $this->matchCategory($text);
-        }
+        $category = $this->extractCategory($message);
 
         if (!$category) {
             $this->handleInvalidInput($message, $session);
@@ -164,6 +179,11 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
         }
 
         $this->sessionManager->setTempData($session, 'selected_category', $category);
+
+        Log::debug('Category selected', [
+            'category' => $category,
+            'phone' => $this->maskPhone($session->phone),
+        ]);
 
         // Show offers for this category
         $this->sessionManager->setStep($session, OfferStep::SHOW_OFFERS->value);
@@ -175,23 +195,19 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
      */
     protected function handleRadiusSelection(IncomingMessage $message, ConversationSession $session): void
     {
-        $radius = null;
+        $radius = $this->extractRadius($message);
 
-        if ($message->isButtonReply()) {
-            $radius = (int) $message->getSelectionId();
-        } elseif ($message->isText()) {
-            $text = trim($message->text ?? '');
-            if (is_numeric($text)) {
-                $radius = (int) $text;
-            }
-        }
-
-        if (!$radius || $radius < 1 || $radius > 50) {
+        if (!$radius) {
             $this->handleInvalidInput($message, $session);
             return;
         }
 
         $this->sessionManager->setTempData($session, 'radius', $radius);
+
+        Log::debug('Radius selected', [
+            'radius' => $radius,
+            'phone' => $this->maskPhone($session->phone),
+        ]);
 
         // Show offers with new radius
         $this->sessionManager->setStep($session, OfferStep::SHOW_OFFERS->value);
@@ -199,76 +215,57 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Handle offer selection from list.
+     * Handle offer selection from list (FR-OFR-13).
      */
     protected function handleOfferSelection(IncomingMessage $message, ConversationSession $session): void
     {
-        $offerId = null;
-
-        if ($message->isListReply()) {
+        // Check for navigation actions
+        if ($message->isListReply() || $message->isButtonReply()) {
             $selectionId = $message->getSelectionId();
+
             if (str_starts_with($selectionId, 'offer_')) {
                 $offerId = (int) str_replace('offer_', '', $selectionId);
-            } elseif ($selectionId === 'change_radius') {
-                $this->sessionManager->setStep($session, OfferStep::SELECT_RADIUS->value);
-                $this->showRadiusSelection($session);
-                return;
-            } elseif ($selectionId === 'change_category') {
-                $this->sessionManager->setStep($session, OfferStep::SELECT_CATEGORY->value);
-                $this->showCategorySelection($session);
+                $this->viewOffer($session, $offerId);
                 return;
             }
-        } elseif ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
-            if ($action === 'change_radius') {
-                $this->sessionManager->setStep($session, OfferStep::SELECT_RADIUS->value);
-                $this->showRadiusSelection($session);
-                return;
-            } elseif ($action === 'change_category') {
-                $this->sessionManager->setStep($session, OfferStep::SELECT_CATEGORY->value);
-                $this->showCategorySelection($session);
-                return;
-            } elseif ($action === 'menu') {
-                $this->goToMainMenu($session);
-                return;
-            }
-        }
 
-        if (!$offerId) {
-            $this->handleInvalidInput($message, $session);
+            match ($selectionId) {
+                'change_radius' => $this->showRadiusSelection($session),
+                'change_category' => $this->showCategorySelection($session),
+                'menu' => $this->goToMainMenu($session),
+                default => $this->handleInvalidInput($message, $session),
+            };
             return;
         }
 
-        // Store selected offer
-        $this->sessionManager->setTempData($session, 'current_offer_id', $offerId);
+        // Text input - try to match offer number
+        if ($message->isText()) {
+            $text = trim($message->text ?? '');
 
-        // Show offer details
-        $this->sessionManager->setStep($session, OfferStep::VIEW_OFFER->value);
-        $this->showCurrentOffer($session);
-    }
+            // If user types a number, try to select that offer
+            if (is_numeric($text)) {
+                $offerIndex = (int) $text - 1;
+                $offers = $this->getStoredOffers($session);
 
-    /**
-     * Handle actions on viewed offer.
-     */
-    protected function handleOfferAction(IncomingMessage $message, ConversationSession $session): void
-    {
-        $action = null;
-
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (str_contains($text, 'location') || str_contains($text, 'map')) {
-                $action = 'location';
-            } elseif (str_contains($text, 'call') || str_contains($text, 'contact') || str_contains($text, 'phone')) {
-                $action = 'contact';
-            } elseif (str_contains($text, 'back') || str_contains($text, 'more')) {
-                $action = 'back';
+                if (isset($offers[$offerIndex])) {
+                    $this->viewOffer($session, $offers[$offerIndex]['id']);
+                    return;
+                }
             }
         }
 
+        $this->handleInvalidInput($message, $session);
+    }
+
+    /**
+     * Handle actions on viewed offer (FR-OFR-15).
+     */
+    protected function handleOfferAction(IncomingMessage $message, ConversationSession $session): void
+    {
+        $action = $this->extractAction($message, ['location', 'contact', 'back', 'menu']);
+
         match ($action) {
-            'location' => $this->showShopLocation($session),
+            'location' => $this->showShopLocation($session),    // FR-OFR-16
             'contact' => $this->showShopContact($session),
             'back' => $this->goBackToOffers($session),
             'menu' => $this->goToMainMenu($session),
@@ -281,11 +278,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
      */
     protected function handleLocationAction(IncomingMessage $message, ConversationSession $session): void
     {
-        $action = null;
-
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
-        }
+        $action = $this->extractAction($message, ['contact', 'back', 'menu']);
 
         match ($action) {
             'contact' => $this->showShopContact($session),
@@ -311,19 +304,23 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             OfferMessages::BROWSE_NO_LOCATION
         );
 
-        $this->sessionManager->setStep($session, OfferStep::SELECT_CATEGORY->value);
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::OFFERS_BROWSE,
+            OfferStep::SELECT_CATEGORY->value
+        );
     }
 
     /**
-     * Show category selection.
+     * Show category selection (FR-OFR-10).
      */
     protected function showCategorySelection(ConversationSession $session, bool $isRetry = false): void
     {
         $lat = $this->sessionManager->getTempData($session, 'user_lat');
         $lng = $this->sessionManager->getTempData($session, 'user_lng');
-        $radius = $this->sessionManager->getTempData($session, 'radius', 5);
+        $radius = $this->sessionManager->getTempData($session, 'radius', self::DEFAULT_RADIUS_KM);
 
-        // Get offer counts by category
+        // Get offer counts by category for display
         $counts = [];
         if ($lat && $lng) {
             $counts = $this->offerService->getOfferCountsByCategory($lat, $lng, $radius);
@@ -342,6 +339,8 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             $sections,
             '📍 Offers Near You'
         );
+
+        $this->sessionManager->setStep($session, OfferStep::SELECT_CATEGORY->value);
     }
 
     /**
@@ -358,65 +357,66 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             $message,
             OfferMessages::getRadiusButtons()
         );
+
+        $this->sessionManager->setStep($session, OfferStep::SELECT_RADIUS->value);
     }
 
     /**
-     * Show list of offers.
+     * Show list of offers (FR-OFR-11, FR-OFR-12, FR-OFR-13).
      */
     protected function showOffersList(ConversationSession $session): void
     {
         $lat = $this->sessionManager->getTempData($session, 'user_lat');
         $lng = $this->sessionManager->getTempData($session, 'user_lng');
-        $radius = $this->sessionManager->getTempData($session, 'radius', 5);
+        $radius = $this->sessionManager->getTempData($session, 'radius', self::DEFAULT_RADIUS_KM);
         $category = $this->sessionManager->getTempData($session, 'selected_category');
 
+        // Verify location
         if (!$lat || !$lng) {
             $this->requestLocation($session);
             return;
         }
 
+        // FR-OFR-11: Query offers within configurable radius using spatial queries
+        // FR-OFR-12: Sort results by distance (nearest first)
         $offers = $this->offerService->getOffersNearLocation($lat, $lng, $radius, $category);
 
         if ($offers->isEmpty()) {
-            $message = OfferMessages::format(OfferMessages::NO_OFFERS_IN_CATEGORY, [
-                'category' => OfferMessages::getCategoryLabel($category ?? 'all'),
-                'radius' => $radius,
-            ]);
-
-            $this->whatsApp->sendButtons(
-                $session->phone,
-                $message,
-                [
-                    ['id' => 'change_radius', 'title' => '📍 Change Radius'],
-                    ['id' => 'change_category', 'title' => '📦 Other Category'],
-                    ['id' => 'menu', 'title' => '🏠 Main Menu'],
-                ]
-            );
+            $this->showNoOffersMessage($session, $category, $radius);
             return;
         }
 
+        // Store offers for potential text selection
+        $this->sessionManager->setTempData($session, 'offers_list', $offers->toArray());
+
+        // Build header message
+        $categoryLabel = $category && $category !== 'all'
+            ? OfferMessages::getCategoryLabel($category)
+            : '🔍 All Categories';
+
         $header = OfferMessages::format(OfferMessages::OFFERS_LIST_HEADER, [
-            'category' => OfferMessages::getCategoryLabel($category ?? 'all'),
+            'category' => $categoryLabel,
             'count' => $offers->count(),
         ]);
 
-        // Build offers list for WhatsApp
+        // FR-OFR-13: Display shop list with distance and validity information
         $rows = [];
         foreach ($offers as $offer) {
             $shop = $offer->shop;
             $distance = OfferMessages::formatDistance($offer->distance_km);
+            $expiry = OfferMessages::formatExpiry($offer->expires_at);
 
             $rows[] = [
                 'id' => 'offer_' . $offer->id,
-                'title' => mb_substr($shop->shop_name, 0, 24),
-                'description' => mb_substr("{$distance} • " . OfferMessages::formatExpiry($offer->expires_at), 0, 72),
+                'title' => OfferMessages::truncate($shop->shop_name, 24),
+                'description' => OfferMessages::truncate("{$distance} • {$expiry}", 72),
             ];
         }
 
         $sections = [
             [
                 'title' => 'Nearby Offers',
-                'rows' => array_slice($rows, 0, 10),
+                'rows' => array_slice($rows, 0, 10), // WhatsApp limit
             ],
         ];
 
@@ -426,12 +426,50 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             '👀 View Offers',
             $sections,
             null,
-            "Within {$radius}km • Tap offer to view"
+            "Within {$radius}km • Tap to view"
+        );
+
+        Log::info('Offers list shown', [
+            'count' => $offers->count(),
+            'category' => $category,
+            'radius' => $radius,
+            'phone' => $this->maskPhone($session->phone),
+        ]);
+    }
+
+    /**
+     * Show no offers message with options.
+     */
+    protected function showNoOffersMessage(ConversationSession $session, ?string $category, int $radius): void
+    {
+        $categoryLabel = $category && $category !== 'all'
+            ? OfferMessages::getCategoryLabel($category)
+            : 'any category';
+
+        $message = OfferMessages::format(OfferMessages::NO_OFFERS_IN_CATEGORY, [
+            'category' => $categoryLabel,
+            'radius' => $radius,
+        ]);
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            OfferMessages::getNoOffersButtons()
         );
     }
 
     /**
-     * Show current offer details.
+     * View a specific offer (FR-OFR-14).
+     */
+    protected function viewOffer(ConversationSession $session, int $offerId): void
+    {
+        $this->sessionManager->setTempData($session, 'current_offer_id', $offerId);
+        $this->sessionManager->setStep($session, OfferStep::VIEW_OFFER->value);
+        $this->showCurrentOffer($session);
+    }
+
+    /**
+     * Show current offer details (FR-OFR-14).
      */
     protected function showCurrentOffer(ConversationSession $session): void
     {
@@ -452,29 +490,33 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             return;
         }
 
-        // Increment view count
+        // FR-OFR-06: Track offer view counts
         $this->offerService->incrementViewCount($offer);
 
         $shop = $offer->shop;
+
+        // Build offer card caption
         $caption = OfferMessages::buildOfferCard([
             'shop' => ['shop_name' => $shop->shop_name],
             'expires_at' => $offer->expires_at,
             'caption' => $offer->caption,
-        ], $offer->distance_km);
+        ], $offer->distance_km ?? 0);
 
-        // Send offer media
-        if ($offer->media_type === 'image') {
+        // FR-OFR-14: Send offer image with caption containing shop details
+        if ($offer->media_type === 'image' && $offer->media_url) {
             $this->whatsApp->sendImage($session->phone, $offer->media_url, $caption);
-        } else {
+        } elseif ($offer->media_type === 'pdf' && $offer->media_url) {
             $this->whatsApp->sendDocument(
                 $session->phone,
                 $offer->media_url,
-                'Offer.pdf',
+                "{$shop->shop_name}_Offer.pdf",
                 $caption
             );
+        } else {
+            $this->whatsApp->sendText($session->phone, $caption);
         }
 
-        // Send action buttons
+        // FR-OFR-15: Provide Get Location and Call Shop action buttons
         $this->whatsApp->sendButtons(
             $session->phone,
             "What would you like to do?",
@@ -483,12 +525,13 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
 
         Log::info('Offer viewed', [
             'offer_id' => $offer->id,
+            'shop_id' => $shop->id,
             'phone' => $this->maskPhone($session->phone),
         ]);
     }
 
     /**
-     * Show shop location.
+     * Show shop location (FR-OFR-16).
      */
     protected function showShopLocation(ConversationSession $session): void
     {
@@ -503,10 +546,10 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
 
         $shop = $offer->shop;
 
-        // Increment location tap count
+        // FR-OFR-06: Track location tap metrics
         $this->offerService->incrementLocationTap($offer);
 
-        // Send location
+        // FR-OFR-16: Send shop location as WhatsApp location message type
         $this->whatsApp->sendLocation(
             $session->phone,
             $shop->latitude,
@@ -523,7 +566,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
             $session->phone,
             $message,
             [
-                ['id' => 'contact', 'title' => '📞 Contact Shop'],
+                ['id' => 'contact', 'title' => '📞 Call Shop'],
                 ['id' => 'back', 'title' => '⬅️ More Offers'],
             ]
         );
@@ -553,11 +596,14 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
 
         $shop = $offer->shop;
         $owner = $shop->owner;
-        $phone = $owner ? $owner->phone : 'Not available';
+        $phone = $owner?->phone ?? 'Not available';
+
+        // Format phone for display
+        $displayPhone = $this->formatPhoneForDisplay($phone);
 
         $message = OfferMessages::format(OfferMessages::SHOP_CONTACT, [
             'shop_name' => $shop->shop_name,
-            'phone' => $phone,
+            'phone' => $displayPhone,
         ]);
 
         $this->whatsApp->sendButtons(
@@ -592,9 +638,7 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     protected function goToMainMenu(ConversationSession $session): void
     {
         $this->sessionManager->resetToMainMenu($session);
-
-        $mainMenuHandler = app(MainMenuHandler::class);
-        $mainMenuHandler->start($session);
+        app(MainMenuHandler::class)->start($session);
     }
 
     /*
@@ -604,30 +648,141 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     */
 
     /**
+     * Handle location share during flow.
+     */
+    protected function handleLocationShare(IncomingMessage $message, ConversationSession $session): void
+    {
+        $coords = $message->getCoordinates();
+
+        if ($coords) {
+            $this->sessionManager->mergeTempData($session, [
+                'user_lat' => $coords['latitude'],
+                'user_lng' => $coords['longitude'],
+            ]);
+
+            // Update user location
+            $user = $this->sessionManager->getUser($session);
+            if ($user) {
+                $user->update([
+                    'latitude' => $coords['latitude'],
+                    'longitude' => $coords['longitude'],
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Check if user has valid location.
+     */
+    protected function hasValidLocation($user): bool
+    {
+        return $user->latitude !== null
+            && $user->longitude !== null
+            && abs($user->latitude) <= 90
+            && abs($user->longitude) <= 180;
+    }
+
+    /**
+     * Extract category from message.
+     */
+    protected function extractCategory(IncomingMessage $message): ?string
+    {
+        if ($message->isListReply() || $message->isButtonReply()) {
+            return $message->getSelectionId();
+        }
+
+        if ($message->isText()) {
+            return $this->matchCategory(strtolower(trim($message->text ?? '')));
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract radius from message.
+     */
+    protected function extractRadius(IncomingMessage $message): ?int
+    {
+        $value = null;
+
+        if ($message->isButtonReply()) {
+            $value = (int) $message->getSelectionId();
+        } elseif ($message->isText()) {
+            $text = trim($message->text ?? '');
+            if (is_numeric($text)) {
+                $value = (int) $text;
+            }
+        }
+
+        // Validate radius
+        if ($value && $value >= 1 && $value <= self::MAX_RADIUS_KM) {
+            return $value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract action from message.
+     */
+    protected function extractAction(IncomingMessage $message, array $validActions): ?string
+    {
+        if ($message->isButtonReply()) {
+            $action = $message->getSelectionId();
+            if (in_array($action, $validActions, true)) {
+                return $action;
+            }
+        }
+
+        if ($message->isText()) {
+            $text = strtolower(trim($message->text ?? ''));
+
+            $keywords = [
+                'location' => ['location', 'map', 'where', 'directions', 'navigate'],
+                'contact' => ['contact', 'call', 'phone', 'number'],
+                'back' => ['back', 'more', 'list', 'other'],
+                'menu' => ['menu', 'home', 'main'],
+            ];
+
+            foreach ($keywords as $action => $terms) {
+                if (in_array($action, $validActions, true)) {
+                    foreach ($terms as $term) {
+                        if (str_contains($text, $term)) {
+                            return $action;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Match text to category.
      */
     protected function matchCategory(string $text): ?string
     {
-        $categories = [
-            'grocery' => ['grocery', 'grocer', 'kirana', 'supermarket', 'provisions'],
-            'electronics' => ['electronics', 'electronic', 'gadget', 'tech'],
-            'clothes' => ['clothes', 'clothing', 'fashion', 'garment', 'dress'],
-            'medical' => ['medical', 'medicine', 'pharmacy', 'drug', 'chemist'],
-            'furniture' => ['furniture', 'wood', 'sofa', 'bed'],
+        $mappings = [
+            'grocery' => ['grocery', 'grocer', 'kirana', 'supermarket', 'provisions', 'vegetable'],
+            'electronics' => ['electronics', 'electronic', 'gadget', 'tech', 'computer', 'laptop'],
+            'clothes' => ['clothes', 'clothing', 'fashion', 'garment', 'dress', 'textile'],
+            'medical' => ['medical', 'medicine', 'pharmacy', 'drug', 'chemist', 'health'],
+            'furniture' => ['furniture', 'wood', 'sofa', 'bed', 'table', 'chair'],
             'mobile' => ['mobile', 'phone', 'cellphone', 'smartphone'],
-            'appliances' => ['appliance', 'electrical'],
-            'hardware' => ['hardware', 'tools', 'building'],
-            'restaurant' => ['restaurant', 'food', 'hotel', 'cafe', 'eat'],
+            'appliances' => ['appliance', 'electrical', 'ac', 'fridge', 'washing'],
+            'hardware' => ['hardware', 'tools', 'building', 'plumbing', 'paint'],
+            'restaurant' => ['restaurant', 'food', 'hotel', 'cafe', 'eat', 'dining'],
             'bakery' => ['bakery', 'bake', 'bread', 'cake', 'sweet'],
-            'stationery' => ['stationery', 'book', 'office'],
-            'beauty' => ['beauty', 'cosmetic', 'salon', 'parlor'],
-            'automotive' => ['automotive', 'auto', 'car', 'vehicle', 'bike'],
-            'jewelry' => ['jewelry', 'jewellery', 'gold', 'ornament'],
+            'stationery' => ['stationery', 'book', 'office', 'paper'],
+            'beauty' => ['beauty', 'cosmetic', 'salon', 'parlor', 'makeup'],
+            'automotive' => ['automotive', 'auto', 'car', 'vehicle', 'bike', 'garage'],
+            'jewelry' => ['jewelry', 'jewellery', 'gold', 'ornament', 'silver'],
             'sports' => ['sports', 'sport', 'fitness', 'gym'],
-            'all' => ['all', 'any', 'everything'],
+            'all' => ['all', 'any', 'everything', 'browse'],
         ];
 
-        foreach ($categories as $category => $keywords) {
+        foreach ($mappings as $category => $keywords) {
             foreach ($keywords as $keyword) {
                 if (str_contains($text, $keyword)) {
                     return $category;
@@ -639,14 +794,36 @@ class OfferBrowseFlowHandler implements FlowHandlerInterface
     }
 
     /**
+     * Get stored offers from session.
+     */
+    protected function getStoredOffers(ConversationSession $session): array
+    {
+        return $this->sessionManager->getTempData($session, 'offers_list', []);
+    }
+
+    /**
+     * Format phone number for display.
+     */
+    protected function formatPhoneForDisplay(string $phone): string
+    {
+        // Remove country code for display if Indian number
+        if (str_starts_with($phone, '91') && strlen($phone) === 12) {
+            $phone = substr($phone, 2);
+            return '+91 ' . substr($phone, 0, 5) . ' ' . substr($phone, 5);
+        }
+
+        return '+' . $phone;
+    }
+
+    /**
      * Mask phone number for logging.
      */
     protected function maskPhone(string $phone): string
     {
-        if (strlen($phone) < 6) {
-            return $phone;
+        $length = strlen($phone);
+        if ($length < 6) {
+            return str_repeat('*', $length);
         }
-
-        return substr($phone, 0, 3) . '****' . substr($phone, -3);
+        return substr($phone, 0, 3) . str_repeat('*', $length - 6) . substr($phone, -3);
     }
 }

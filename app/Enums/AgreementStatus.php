@@ -4,6 +4,8 @@ namespace App\Enums;
 
 /**
  * Agreement status values.
+ *
+ * @srs-ref Section 6.3 Enumeration Values - agreements.status
  */
 enum AgreementStatus: string
 {
@@ -32,7 +34,25 @@ enum AgreementStatus: string
     }
 
     /**
+     * Get short label (for list items).
+     */
+    public function shortLabel(): string
+    {
+        return match ($this) {
+            self::PENDING => 'Pending',
+            self::CONFIRMED => 'Active',
+            self::COMPLETED => 'Done',
+            self::DISPUTED => 'Disputed',
+            self::REJECTED => 'Rejected',
+            self::CANCELLED => 'Cancelled',
+            self::EXPIRED => 'Expired',
+        };
+    }
+
+    /**
      * Get Malayalam label.
+     *
+     * @srs-ref NFR-U-05 Support English and Malayalam
      */
     public function labelMl(): string
     {
@@ -44,6 +64,17 @@ enum AgreementStatus: string
             self::REJECTED => 'നിരസിച്ചു',
             self::CANCELLED => 'റദ്ദാക്കി',
             self::EXPIRED => 'കാലഹരണപ്പെട്ടു',
+        };
+    }
+
+    /**
+     * Get label by language code.
+     */
+    public function labelByLang(string $lang = 'en'): string
+    {
+        return match ($lang) {
+            'ml' => $this->labelMl(),
+            default => $this->label(),
         };
     }
 
@@ -64,6 +95,22 @@ enum AgreementStatus: string
     }
 
     /**
+     * Get badge (icon + label) for display.
+     */
+    public function badge(): string
+    {
+        return $this->icon() . ' ' . $this->label();
+    }
+
+    /**
+     * Get short badge (icon + short label).
+     */
+    public function shortBadge(): string
+    {
+        return $this->icon() . ' ' . $this->shortLabel();
+    }
+
+    /**
      * Get badge color for UI.
      */
     public function badgeColor(): string
@@ -80,11 +127,67 @@ enum AgreementStatus: string
     }
 
     /**
+     * Get CSS/Tailwind class for badge.
+     */
+    public function badgeClass(): string
+    {
+        return match ($this) {
+            self::PENDING => 'bg-yellow-100 text-yellow-800',
+            self::CONFIRMED => 'bg-green-100 text-green-800',
+            self::COMPLETED => 'bg-blue-100 text-blue-800',
+            self::DISPUTED => 'bg-orange-100 text-orange-800',
+            self::REJECTED => 'bg-red-100 text-red-800',
+            self::CANCELLED => 'bg-gray-100 text-gray-800',
+            self::EXPIRED => 'bg-gray-100 text-gray-600',
+        };
+    }
+
+    /**
+     * Get description of the status.
+     */
+    public function description(): string
+    {
+        return match ($this) {
+            self::PENDING => 'Waiting for the other party to confirm',
+            self::CONFIRMED => 'Both parties have confirmed the agreement',
+            self::COMPLETED => 'The agreement has been settled',
+            self::DISPUTED => 'There is a dispute about this agreement',
+            self::REJECTED => 'The other party rejected the agreement details',
+            self::CANCELLED => 'This agreement was cancelled',
+            self::EXPIRED => 'The confirmation period has expired',
+        };
+    }
+
+    /**
      * Check if agreement is confirmed/active.
      */
     public function isActive(): bool
     {
         return $this === self::CONFIRMED;
+    }
+
+    /**
+     * Check if agreement is pending.
+     */
+    public function isPending(): bool
+    {
+        return $this === self::PENDING;
+    }
+
+    /**
+     * Check if agreement is completed.
+     */
+    public function isCompleted(): bool
+    {
+        return $this === self::COMPLETED;
+    }
+
+    /**
+     * Check if agreement is in a problem state.
+     */
+    public function isProblem(): bool
+    {
+        return in_array($this, [self::DISPUTED, self::REJECTED, self::EXPIRED]);
     }
 
     /**
@@ -108,13 +211,21 @@ enum AgreementStatus: string
      */
     public function canBeDisputed(): bool
     {
-        return $this === self::PENDING;
+        return in_array($this, [self::PENDING, self::CONFIRMED]);
     }
 
     /**
      * Check if agreement can be cancelled.
      */
     public function canBeCancelled(): bool
+    {
+        return $this === self::PENDING;
+    }
+
+    /**
+     * Check if agreement can be rejected.
+     */
+    public function canBeRejected(): bool
     {
         return $this === self::PENDING;
     }
@@ -128,11 +239,19 @@ enum AgreementStatus: string
     }
 
     /**
-     * Check if agreement is pending.
+     * Check if status allows editing.
      */
-    public function isPending(): bool
+    public function allowsEditing(): bool
     {
         return $this === self::PENDING;
+    }
+
+    /**
+     * Check if PDF should be generated for this status.
+     */
+    public function shouldGeneratePdf(): bool
+    {
+        return $this === self::CONFIRMED;
     }
 
     /**
@@ -152,10 +271,62 @@ enum AgreementStatus: string
     }
 
     /**
+     * Check if can transition to a specific status.
+     */
+    public function canTransitionTo(self $newStatus): bool
+    {
+        return in_array($newStatus, $this->validTransitions());
+    }
+
+    /**
+     * Get sort order for status (for ordering in lists).
+     */
+    public function sortOrder(): int
+    {
+        return match ($this) {
+            self::PENDING => 1,
+            self::CONFIRMED => 2,
+            self::DISPUTED => 3,
+            self::COMPLETED => 4,
+            self::REJECTED => 5,
+            self::CANCELLED => 6,
+            self::EXPIRED => 7,
+        };
+    }
+
+    /**
      * Get all values as array.
      */
     public static function values(): array
     {
         return array_column(self::cases(), 'value');
+    }
+
+    /**
+     * Get statuses that are considered "active" (not terminal).
+     */
+    public static function activeStatuses(): array
+    {
+        return [self::PENDING, self::CONFIRMED, self::DISPUTED];
+    }
+
+    /**
+     * Get terminal statuses.
+     */
+    public static function terminalStatuses(): array
+    {
+        return [self::COMPLETED, self::CANCELLED, self::REJECTED, self::EXPIRED];
+    }
+
+    /**
+     * Get statuses for filtering in admin.
+     */
+    public static function filterOptions(): array
+    {
+        return array_map(fn(self $status) => [
+            'value' => $status->value,
+            'label' => $status->label(),
+            'icon' => $status->icon(),
+        ], self::cases());
     }
 }

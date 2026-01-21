@@ -7,7 +7,7 @@ use Carbon\Carbon;
 /**
  * Data Transfer Object for incoming WhatsApp messages.
  *
- * Represents a parsed webhook payload with all relevant message data.
+ * ENHANCED: Added isInteractive() and other helper methods
  */
 readonly class IncomingMessage
 {
@@ -180,6 +180,16 @@ readonly class IncomingMessage
     }
 
     /**
+     * Check if message is any interactive type (button or list reply).
+     * 
+     * NEW METHOD - Added for enhanced flow handling
+     */
+    public function isInteractive(): bool
+    {
+        return $this->type === 'interactive';
+    }
+
+    /**
      * Check if message is a button reply.
      */
     public function isButtonReply(): bool
@@ -195,6 +205,17 @@ readonly class IncomingMessage
     {
         return $this->type === 'interactive' 
             && ($this->interactive['type'] ?? '') === 'list_reply';
+    }
+
+    /**
+     * Check if message is a flow reply (WhatsApp Flows).
+     * 
+     * NEW METHOD
+     */
+    public function isFlowReply(): bool
+    {
+        return $this->type === 'interactive' 
+            && ($this->interactive['type'] ?? '') === 'flow_reply';
     }
 
     /**
@@ -222,6 +243,26 @@ readonly class IncomingMessage
     }
 
     /**
+     * Check if message is any media type (image or document).
+     * 
+     * NEW METHOD
+     */
+    public function isMedia(): bool
+    {
+        return $this->isImage() || $this->isDocument();
+    }
+
+    /**
+     * Check if message is a template button response.
+     * 
+     * NEW METHOD
+     */
+    public function isTemplateButton(): bool
+    {
+        return $this->type === 'button';
+    }
+
+    /**
      * Get the text content regardless of message type.
      */
     public function getTextContent(): ?string
@@ -238,6 +279,10 @@ readonly class IncomingMessage
             return $this->interactive['title'] ?? null;
         }
 
+        if ($this->isTemplateButton()) {
+            return $this->button['text'] ?? null;
+        }
+
         return null;
     }
 
@@ -250,7 +295,26 @@ readonly class IncomingMessage
             return $this->interactive['id'] ?? null;
         }
 
+        // Also check for template button payload
+        if ($this->isTemplateButton()) {
+            return $this->button['payload'] ?? null;
+        }
+
         return null;
+    }
+
+    /**
+     * Get the interactive type (button_reply, list_reply, flow_reply).
+     * 
+     * NEW METHOD
+     */
+    public function getInteractiveType(): ?string
+    {
+        if (!$this->isInteractive()) {
+            return null;
+        }
+
+        return $this->interactive['type'] ?? null;
     }
 
     /**
@@ -266,6 +330,20 @@ readonly class IncomingMessage
             'latitude' => $this->location['latitude'],
             'longitude' => $this->location['longitude'],
         ];
+    }
+
+    /**
+     * Get full location data including name and address.
+     * 
+     * NEW METHOD
+     */
+    public function getLocationData(): ?array
+    {
+        if (!$this->isLocation()) {
+            return null;
+        }
+
+        return $this->location;
     }
 
     /**
@@ -285,6 +363,56 @@ readonly class IncomingMessage
     }
 
     /**
+     * Get media MIME type.
+     * 
+     * NEW METHOD
+     */
+    public function getMediaMimeType(): ?string
+    {
+        if ($this->isImage()) {
+            return $this->image['mime_type'] ?? null;
+        }
+
+        if ($this->isDocument()) {
+            return $this->document['mime_type'] ?? null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get image caption or document filename.
+     * 
+     * NEW METHOD
+     */
+    public function getMediaCaption(): ?string
+    {
+        if ($this->isImage()) {
+            return $this->image['caption'] ?? null;
+        }
+
+        if ($this->isDocument()) {
+            return $this->document['caption'] ?? null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get document filename.
+     * 
+     * NEW METHOD
+     */
+    public function getDocumentFilename(): ?string
+    {
+        if (!$this->isDocument()) {
+            return null;
+        }
+
+        return $this->document['filename'] ?? null;
+    }
+
+    /**
      * Check if this is a reply to a previous message.
      */
     public function isReply(): bool
@@ -298,6 +426,60 @@ readonly class IncomingMessage
     public function getReplyToMessageId(): ?string
     {
         return $this->context['message_id'] ?? null;
+    }
+
+    /**
+     * Check if message came from a referral (ad, etc).
+     * 
+     * NEW METHOD
+     */
+    public function hasReferral(): bool
+    {
+        return !empty($this->referral);
+    }
+
+    /**
+     * Get referral source.
+     * 
+     * NEW METHOD
+     */
+    public function getReferralSource(): ?string
+    {
+        return $this->referral['source'] ?? null;
+    }
+
+    /**
+     * Check if the message is empty or contains only whitespace.
+     * 
+     * NEW METHOD
+     */
+    public function isEmpty(): bool
+    {
+        if ($this->isText()) {
+            return empty(trim($this->text ?? ''));
+        }
+
+        return false;
+    }
+
+    /**
+     * Get a human-readable description of the message type.
+     * 
+     * NEW METHOD
+     */
+    public function getTypeDescription(): string
+    {
+        return match (true) {
+            $this->isText() => 'text message',
+            $this->isButtonReply() => 'button selection',
+            $this->isListReply() => 'list selection',
+            $this->isFlowReply() => 'flow response',
+            $this->isLocation() => 'location',
+            $this->isImage() => 'image',
+            $this->isDocument() => 'document',
+            $this->isTemplateButton() => 'quick reply',
+            default => 'unknown message type',
+        };
     }
 
     /**
@@ -318,6 +500,17 @@ readonly class IncomingMessage
             'document' => $this->document,
             'button' => $this->button,
             'context' => $this->context,
+            'referral' => $this->referral,
         ];
+    }
+
+    /**
+     * Convert to JSON string.
+     * 
+     * NEW METHOD
+     */
+    public function toJson(): string
+    {
+        return json_encode($this->toArray());
     }
 }

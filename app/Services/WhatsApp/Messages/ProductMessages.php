@@ -1,56 +1,112 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\WhatsApp\Messages;
+
+use Carbon\Carbon;
 
 /**
  * Message templates for Product Search module.
  *
  * Contains all user-facing messages for product search and response flows.
+ *
+ * ENHANCEMENTS:
+ * - Progress indicators for multi-step flows
+ * - Better price formatting with comparison hints
+ * - Localization support (English + Malayalam)
+ * - Clearer shop notification messages
+ * - Response sorting and filtering hints
+ *
+ * @see SRS Section 3.3 - Product Search
  */
 class ProductMessages
 {
     /*
     |--------------------------------------------------------------------------
-    | Customer Search Flow Messages
+    | Customer Search Flow Messages (FR-PRD-01 to FR-PRD-06)
     |--------------------------------------------------------------------------
     */
 
-    public const SEARCH_START = "🔍 *Product Search*\n\nCan't find what you need? Let nearby shops help you!\n\nDescribe what you're looking for, and we'll notify shops in your area.";
+    public const SEARCH_START = "🔍 *Find Products Nearby*\n\n" .
+        "Can't find what you need? Let local shops help!\n\n" .
+        "Tell us what you're looking for, and we'll ask nearby shops.";
 
-    public const ASK_CATEGORY = "📦 *Select Category*\n\nChoose a category to target specific shops:";
+    // FR-PRD-01: Present category selection via list message
+    public const ASK_CATEGORY = "📦 *Step 1 of 3* - Select Category\n\n" .
+        "Choose a category to target specific shops:";
 
-    public const ASK_DESCRIPTION = "📝 *Describe Your Need*\n\nWhat product are you looking for?\n\nBe specific for better results:\n• Product name/type\n• Brand preference (if any)\n• Size/specifications\n\nExample: _Samsung Galaxy M34 5G, 6GB RAM, any color_";
+    // FR-PRD-02: Collect product description via free-text input
+    public const ASK_DESCRIPTION = "📝 *Step 2 of 3* - Describe Product\n\n" .
+        "What are you looking for?\n\n" .
+        "Be specific for better results:\n" .
+        "• Product name/type\n" .
+        "• Brand (if any)\n" .
+        "• Size/specs\n\n" .
+        "_Example: Samsung Galaxy M34, 6GB RAM, any color_";
 
-    public const ASK_IMAGE = "📸 *Add Reference Image (Optional)*\n\nSend a photo of the product you're looking for, or type 'skip' to continue without an image.";
+    public const ASK_IMAGE = "📸 *Add Photo (Optional)*\n\n" .
+        "Send a reference image of what you're looking for.\n\n" .
+        "Or type *skip* to continue.";
 
-    public const ASK_RADIUS = "📍 *Search Radius*\n\nHow far should we search for shops?";
+    public const ASK_RADIUS = "📍 *Step 3 of 3* - Search Area\n\n" .
+        "How far should we search?";
 
-    public const CONFIRM_REQUEST = "📋 *Confirm Your Request*\n\n📦 *Looking for:*\n{description}\n\n📁 *Category:* {category}\n📍 *Search radius:* {radius}km\n🏪 *Shops to notify:* {shop_count}\n\nSend this request?";
+    // FR-PRD-04: Display confirmation with shop count and Send/Edit/Cancel options
+    public const CONFIRM_REQUEST = "📋 *Confirm Request*\n\n" .
+        "📦 *Looking for:*\n{description}\n\n" .
+        "📁 Category: {category}\n" .
+        "📍 Radius: {radius}km\n" .
+        "🏪 Shops to notify: {shop_count}\n\n" .
+        "Send this request?";
 
-    public const REQUEST_SENT = "✅ *Request Sent!*\n\n📋 Request #: *{request_number}*\n🏪 Notified: {shop_count} shops\n⏰ Expires: {expiry_time}\n\nWe'll notify you when shops respond. You can check responses anytime from the main menu.";
+    // FR-PRD-03: Generate unique request number (format: NB-XXXX)
+    public const REQUEST_SENT = "✅ *Request Sent!*\n\n" .
+        "📋 Request #: *{request_number}*\n" .
+        "🏪 Notified: {shop_count} shops\n" .
+        "⏰ Expires in: {hours} hours\n\n" .
+        "We'll notify you when shops respond. Check back anytime!";
 
-    public const NO_SHOPS_FOUND = "😕 *No Shops Found*\n\nNo shops in *{category}* category within {radius}km.\n\nTry:\n• Selecting 'All Categories'\n• Expanding your search radius";
+    public const NO_SHOPS_FOUND = "😕 *No Shops Found*\n\n" .
+        "No *{category}* shops within {radius}km.\n\n" .
+        "Try:\n" .
+        "• 'All Categories' option\n" .
+        "• Larger search radius";
 
-    public const REQUEST_EXPIRED = "⏰ *Request Expired*\n\nThis request has expired. You received {response_count} response(s).\n\nWould you like to create a new request?";
+    public const REQUEST_EXPIRED = "⏰ *Request Expired*\n\n" .
+        "This request has expired.\n" .
+        "Responses received: {response_count}\n\n" .
+        "Create a new request?";
 
     /*
     |--------------------------------------------------------------------------
-    | Customer Response View Messages
+    | Customer Response View Messages (FR-PRD-30 to FR-PRD-35)
     |--------------------------------------------------------------------------
     */
 
-    public const RESPONSES_HEADER = "📬 *Responses for Request #{request_number}*\n\n📦 {description}\n\n{response_count} shop(s) responded:";
+    // FR-PRD-31: Sort responses by price (lowest first)
+    public const RESPONSES_HEADER = "📬 *Responses - #{request_number}*\n\n" .
+        "📦 {description}\n\n" .
+        "✅ {response_count} shop(s) have it!\n" .
+        "_Sorted by price (lowest first)_";
 
-    public const NO_RESPONSES_YET = "⏳ *No Responses Yet*\n\nRequest #: *{request_number}*\n\nShops have been notified. Responses usually arrive within 1-2 hours.\n\n⏰ Request expires: {expiry_time}";
+    public const NO_RESPONSES = "⏳ *No Responses Yet*\n\n" .
+        "Request #{request_number}\n\n" .
+        "Shops have been notified. Responses usually come within 1-2 hours.";
 
-    // Alias for handlers
-    public const NO_RESPONSES = "⏳ *No Responses Yet*\n\nYour request #{request_number} hasn't received any responses yet.\n\nShops have been notified. Please check back later.";
+    // FR-PRD-33: Send product photo and details upon selection
+    public const RESPONSE_CARD = "🏪 *{shop_name}*\n" .
+        "📍 {distance} away\n\n" .
+        "💰 *Price: ₹{price}*\n" .
+        "📝 {description}";
 
-    public const RESPONSE_CARD = "🏪 *{shop_name}*\n📍 {distance} away\n\n💰 *Price:* ₹{price}\n📝 {description}";
+    public const RESPONSE_CARD_NO_DESC = "🏪 *{shop_name}*\n" .
+        "📍 {distance} away\n\n" .
+        "💰 *Price: ₹{price}*";
 
-    public const RESPONSE_CARD_NO_DESC = "🏪 *{shop_name}*\n📍 {distance} away\n\n💰 *Price:* ₹{price}";
-
-    public const RESPONSE_NOT_AVAILABLE = "🏪 *{shop_name}*\n📍 {distance} away\n\n❌ Product not available";
+    public const RESPONSE_NOT_AVAILABLE = "🏪 *{shop_name}*\n" .
+        "📍 {distance} away\n\n" .
+        "❌ Not available";
 
     /*
     |--------------------------------------------------------------------------
@@ -58,60 +114,107 @@ class ProductMessages
     |--------------------------------------------------------------------------
     */
 
-    public const MY_REQUESTS_HEADER = "📋 *My Product Requests*\n\nYou have {count} active request(s):";
+    public const MY_REQUESTS_HEADER = "📋 *My Requests*\n\n" .
+        "You have {count} active request(s):";
 
-    public const MY_REQUESTS_EMPTY = "📭 *No Active Requests*\n\nYou don't have any active product requests.\n\nWould you like to search for a product?";
+    public const MY_REQUESTS_EMPTY = "📭 *No Active Requests*\n\n" .
+        "You don't have any active product requests.\n\n" .
+        "Search for something?";
 
-    public const REQUEST_DETAIL = "📋 *Request #{request_number}*\n\n📦 *Looking for:*\n{description}\n\n📁 *Category:* {category}\n📊 *Status:* {status}\n📬 *Responses:* {response_count}\n⏰ *Expires:* {expiry_time}";
+    public const REQUEST_DETAIL = "📋 *Request #{request_number}*\n\n" .
+        "📦 *Looking for:*\n{description}\n\n" .
+        "📁 Category: {category}\n" .
+        "📊 Status: {status}\n" .
+        "📬 Responses: {response_count}\n" .
+        "⏰ Expires: {expiry_time}";
 
-    public const REQUEST_CLOSED = "✅ *Request Closed*\n\nRequest #{request_number} has been closed.\n\nThank you for using NearBuy!";
+    // FR-PRD-35: Allow customer to close request when satisfied
+    public const REQUEST_CLOSED = "✅ *Request Closed*\n\n" .
+        "Request #{request_number} is now closed.\n\n" .
+        "Thank you for using NearBuy!";
 
-    public const CLOSE_REQUEST_CONFIRM = "🔒 *Close Request?*\n\nClosing this request will:\n• Stop accepting new responses\n• Keep existing responses visible\n\nAre you sure?";
+    public const CLOSE_REQUEST_CONFIRM = "🔒 *Close Request?*\n\n" .
+        "This will:\n" .
+        "• Stop accepting new responses\n" .
+        "• Keep existing responses visible\n\n" .
+        "Continue?";
 
     /*
     |--------------------------------------------------------------------------
-    | Shop Notification Messages
+    | Shop Notification Messages (FR-PRD-10 to FR-PRD-14)
     |--------------------------------------------------------------------------
     */
 
-    public const SHOP_NEW_REQUEST = "🔔 *New Product Request*\n\n📦 *Looking for:*\n{description}\n\n📁 *Category:* {category}\n📍 *Customer is {distance} away*\n⏰ *Expires:* {expiry_time}\n\n📋 Request #: {request_number}";
+    // FR-PRD-11: Send immediate notifications for shops with immediate preference
+    public const NEW_REQUEST_NOTIFICATION = "🔔 *New Product Request*\n\n" .
+        "📦 *Looking for:*\n{description}\n\n" .
+        "📁 Category: {category}\n" .
+        "📍 Customer: {distance} away\n" .
+        "⏰ Expires: {time_remaining}\n\n" .
+        "📋 #{request_number}";
 
-    // Alias for handlers
-    public const NEW_REQUEST_NOTIFICATION = "🔔 *New Product Request*\n\n📦 *Looking for:*\n{description}\n\n📁 Category: {category}\n📍 Customer is {distance} away\n⏰ Expires: {time_remaining}\n\n📋 Request #: {request_number}";
+    // FR-PRD-12: Batch requests for shops with delayed preferences
+    public const BATCH_NOTIFICATION = "🔔 *{count} New Request(s)*\n\n" .
+        "Customers near you are looking for products.\n\n" .
+        "Tap below to view and respond.";
 
-    public const SHOP_BATCH_NOTIFICATION = "🔔 *{count} New Product Request(s)*\n\nCustomers near you are looking for products.\n\nTap below to view and respond.";
+    // FR-PRD-14: Provide Yes I have / Don't have / Skip response options
+    public const RESPOND_PROMPT = "Do you have this product?";
+
+    public const RESPOND_NO_THANKS = "👍 Got it! You won't see this request again.";
+
+    public const RESPOND_SKIPPED = "⏭️ Skipped. You can respond later from 'Pending Requests'.";
 
     /*
     |--------------------------------------------------------------------------
-    | Shop Response Flow Messages
+    | Shop Response Flow Messages (FR-PRD-20 to FR-PRD-23)
     |--------------------------------------------------------------------------
     */
 
-    public const RESPOND_PROMPT = "Do you have this product available?";
+    // FR-PRD-20: Prompt for product photo upon positive response
+    public const ASK_PHOTO = "📸 *Send Product Photo*\n\n" .
+        "Take a photo of the actual product.\n\n" .
+        "Or type *skip* to continue without photo.";
 
-    public const RESPOND_NO_THANKS = "👍 No problem! You won't be asked about this request again.";
+    // FR-PRD-21: Collect price and model information via free-text
+    public const ASK_PRICE = "💰 *Enter Price*\n\n" .
+        "What's your price for this product?\n\n" .
+        "_Just type the number, e.g., 15000_";
 
-    public const RESPOND_SKIPPED = "⏭️ *Request Skipped*\n\nYou can respond to other requests from the main menu.";
+    public const ASK_PRICE_DETAILS = "💰 *Price & Details*\n\n" .
+        "Enter price and any details:\n\n" .
+        "_Example: 15000 - Black color, 1 year warranty_";
 
-    public const ASK_PHOTO = "📸 *Send Product Photo*\n\nTake a photo of the actual product to show the customer.\n\nOr type 'skip' to continue without a photo.";
+    public const ASK_DETAILS = "📝 *Add Details (Optional)*\n\n" .
+        "Any additional info?\n" .
+        "• Condition (new/used)\n" .
+        "• Warranty\n" .
+        "• Availability\n\n" .
+        "Or type *skip*.";
 
-    public const ASK_PRICE = "💰 *Enter Price*\n\nEnter your price for this product.\n\nYou can also add details:\nExample: _15000 - Black color, warranty included_";
+    public const RESPONSE_CONFIRM = "📋 *Confirm Response*\n\n" .
+        "📦 Request: {request_description}\n\n" .
+        "✅ Available: {available}\n" .
+        "💰 Price: ₹{price}\n" .
+        "📝 Details: {description}\n" .
+        "📷 Photo: {has_photo}\n\n" .
+        "Send this response?";
 
-    public const ASK_PRICE_DETAILS = "💰 *Enter Price & Details*\n\nEnter your price and any additional details.\n\nFormat: Price - Details\nExample: _15000 - Samsung M34, 6GB, Black color, 1 year warranty_";
+    // FR-PRD-22: Store response with photo URL, price, and description
+    public const RESPONSE_SENT = "✅ *Response Sent!*\n\n" .
+        "Your response is on its way to the customer.\n\n" .
+        "💰 Your price: ₹{price}\n" .
+        "📋 Request #{request_number}\n\n" .
+        "_If interested, they'll contact you directly._";
 
-    public const ASK_DETAILS = "📝 *Add Details* (Optional)\n\nAdd any details about the product:\n• Condition (new/used)\n• Warranty info\n• Availability\n\nOr type 'skip' to continue.";
+    // FR-PRD-23: Prevent duplicate responses from same shop
+    public const ALREADY_RESPONDED = "⚠️ *Already Responded*\n\n" .
+        "You've already responded to this request.\n\n" .
+        "Your response: ₹{price}";
 
-    public const CONFIRM_RESPONSE = "📋 *Confirm Your Response*\n\n💰 *Price:* ₹{price}\n📝 *Details:* {description}\n📷 *Photo:* {has_photo}\n\nSend this response to the customer?";
-
-    public const RESPONSE_CONFIRM = "📋 *Confirm Your Response*\n\n📦 *Request:* {request_description}\n\n✅ *Available:* {available}\n💰 *Price:* ₹{price}\n📝 *Details:* {description}\n\nSend this response?";
-
-    public const RESPONSE_SENT = "✅ *Response Sent!*\n\nYour response has been sent to the customer.\n\nIf they're interested, they'll contact you directly.\n\n💰 Your price: ₹{price}\n📋 Request #: {request_number}";
-
-    public const ALREADY_RESPONDED = "⚠️ *Already Responded*\n\nYou have already responded to this request.\n\nYour response: ₹{price}";
-
-    public const REQUEST_NO_LONGER_ACTIVE = "⚠️ This request is no longer accepting responses.\n\nIt may have expired or been closed by the customer.";
-
-    public const REQUEST_CLOSED_SHOP = "⚠️ *Request Closed*\n\nThis request has been closed by the customer.";
+    public const REQUEST_NO_LONGER_ACTIVE = "⚠️ *Request Closed*\n\n" .
+        "This request is no longer accepting responses.\n\n" .
+        "It may have expired or been closed by the customer.";
 
     /*
     |--------------------------------------------------------------------------
@@ -119,9 +222,12 @@ class ProductMessages
     |--------------------------------------------------------------------------
     */
 
-    public const PENDING_REQUESTS_HEADER = "📬 *Product Requests*\n\nYou have {count} pending request(s) from nearby customers:";
+    public const PENDING_REQUESTS_HEADER = "📬 *Product Requests*\n\n" .
+        "You have {count} pending request(s) nearby:";
 
-    public const PENDING_REQUESTS_EMPTY = "📭 *No Pending Requests*\n\nNo product requests from customers in your area right now.\n\nWe'll notify you when customers are looking for products!";
+    public const PENDING_REQUESTS_EMPTY = "📭 *No Pending Requests*\n\n" .
+        "No product requests from customers in your area right now.\n\n" .
+        "We'll notify you when someone needs something!";
 
     /*
     |--------------------------------------------------------------------------
@@ -129,13 +235,17 @@ class ProductMessages
     |--------------------------------------------------------------------------
     */
 
-    public const ERROR_INVALID_DESCRIPTION = "⚠️ Please provide a more detailed description (at least 10 characters).";
+    public const ERROR_INVALID_DESCRIPTION = "⚠️ Please provide more details (at least 10 characters).\n\n" .
+        "_Be specific: product name, brand, size, etc._";
 
-    public const ERROR_INVALID_PRICE = "⚠️ Invalid price format.\n\nPlease enter a number, optionally followed by details.\n\nExample: _15000 - Black color, warranty included_";
+    public const ERROR_INVALID_PRICE = "⚠️ Invalid price.\n\n" .
+        "Please enter a number.\n" .
+        "_Example: 15000_";
 
     public const ERROR_REQUEST_NOT_FOUND = "❌ Request not found or has expired.";
 
-    public const ERROR_NO_LOCATION = "📍 *Location Required*\n\nPlease share your location to search for nearby shops.";
+    public const ERROR_NO_LOCATION = "📍 *Location Required*\n\n" .
+        "Share your location to search nearby shops.";
 
     /*
     |--------------------------------------------------------------------------
@@ -144,7 +254,7 @@ class ProductMessages
     */
 
     /**
-     * Get search radius buttons.
+     * Search radius buttons.
      */
     public static function getRadiusButtons(): array
     {
@@ -156,7 +266,7 @@ class ProductMessages
     }
 
     /**
-     * Get request confirmation buttons.
+     * Request confirmation buttons.
      */
     public static function getConfirmButtons(): array
     {
@@ -168,19 +278,39 @@ class ProductMessages
     }
 
     /**
-     * Get shop response choice buttons.
+     * Alias for getConfirmButtons.
+     */
+    public static function getConfirmRequestButtons(): array
+    {
+        return self::getConfirmButtons();
+    }
+
+    /**
+     * Shop response choice buttons (FR-PRD-14).
      */
     public static function getResponseChoiceButtons(): array
     {
         return [
             ['id' => 'available', 'title' => '✅ Yes, I have it'],
-            ['id' => 'unavailable', 'title' => '❌ Don\'t have'],
+            ['id' => 'unavailable', 'title' => "❌ Don't have"],
             ['id' => 'skip', 'title' => '⏭️ Skip'],
         ];
     }
 
     /**
-     * Get response confirmation buttons.
+     * Alias for shop response buttons.
+     */
+    public static function getRespondChoiceButtons(): array
+    {
+        return [
+            ['id' => 'yes', 'title' => '✅ Yes, I have it'],
+            ['id' => 'no', 'title' => "❌ Don't have"],
+            ['id' => 'skip', 'title' => '⏭️ Skip'],
+        ];
+    }
+
+    /**
+     * Response confirmation buttons.
      */
     public static function getResponseConfirmButtons(): array
     {
@@ -192,19 +322,31 @@ class ProductMessages
     }
 
     /**
-     * Get response action buttons.
+     * Alias for response confirm buttons.
+     */
+    public static function getConfirmResponseButtons(): array
+    {
+        return [
+            ['id' => 'send', 'title' => '✅ Send'],
+            ['id' => 'edit', 'title' => '✏️ Edit Price'],
+            ['id' => 'cancel', 'title' => '❌ Cancel'],
+        ];
+    }
+
+    /**
+     * Response action buttons (FR-PRD-34).
      */
     public static function getResponseActionButtons(): array
     {
         return [
             ['id' => 'location', 'title' => '📍 Get Location'],
-            ['id' => 'contact', 'title' => '📞 Contact Shop'],
-            ['id' => 'back', 'title' => '⬅️ Back'],
+            ['id' => 'contact', 'title' => '📞 Call Shop'],
+            ['id' => 'back', 'title' => '⬅️ More Responses'],
         ];
     }
 
     /**
-     * Get request management buttons.
+     * Request management buttons.
      */
     public static function getRequestManageButtons(): array
     {
@@ -216,7 +358,7 @@ class ProductMessages
     }
 
     /**
-     * Get post-request buttons.
+     * Post-request buttons.
      */
     public static function getPostRequestButtons(): array
     {
@@ -228,7 +370,7 @@ class ProductMessages
     }
 
     /**
-     * Get empty requests buttons.
+     * Empty requests buttons.
      */
     public static function getEmptyRequestsButtons(): array
     {
@@ -239,43 +381,7 @@ class ProductMessages
     }
 
     /**
-     * Get confirm request buttons (alias).
-     */
-    public static function getConfirmRequestButtons(): array
-    {
-        return [
-            ['id' => 'send', 'title' => '✅ Send Request'],
-            ['id' => 'edit', 'title' => '✏️ Edit'],
-            ['id' => 'cancel', 'title' => '❌ Cancel'],
-        ];
-    }
-
-    /**
-     * Get respond choice buttons (alias).
-     */
-    public static function getRespondChoiceButtons(): array
-    {
-        return [
-            ['id' => 'yes', 'title' => '✅ Yes, I have it'],
-            ['id' => 'no', 'title' => '❌ Don\'t have'],
-            ['id' => 'skip', 'title' => '⏭️ Skip for now'],
-        ];
-    }
-
-    /**
-     * Get confirm response buttons (alias).
-     */
-    public static function getConfirmResponseButtons(): array
-    {
-        return [
-            ['id' => 'send', 'title' => '✅ Send Response'],
-            ['id' => 'edit', 'title' => '✏️ Edit'],
-            ['id' => 'cancel', 'title' => '❌ Cancel'],
-        ];
-    }
-
-    /**
-     * Get post-response buttons for shop.
+     * Post-response buttons for shop.
      */
     public static function getPostResponseButtons(): array
     {
@@ -286,7 +392,7 @@ class ProductMessages
     }
 
     /**
-     * Get close request confirmation buttons.
+     * Close request confirmation buttons.
      */
     public static function getCloseRequestButtons(): array
     {
@@ -298,32 +404,32 @@ class ProductMessages
 
     /*
     |--------------------------------------------------------------------------
-    | List Configurations
+    | List Configurations (Max 10 items per WhatsApp API)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get category sections for product search.
+     * Get category sections for product search (FR-PRD-01).
      */
     public static function getCategorySections(): array
     {
         return [
             [
-                'title' => 'Popular Categories',
+                'title' => 'Popular',
                 'rows' => [
-                    ['id' => 'grocery', 'title' => '🛒 Grocery', 'description' => 'Daily essentials'],
                     ['id' => 'electronics', 'title' => '📱 Electronics', 'description' => 'Gadgets & devices'],
-                    ['id' => 'clothes', 'title' => '👕 Clothes', 'description' => 'Fashion & apparel'],
-                    ['id' => 'medical', 'title' => '💊 Medical', 'description' => 'Pharmacy & health'],
                     ['id' => 'mobile', 'title' => '📲 Mobile', 'description' => 'Phones & accessories'],
-                    ['id' => 'appliances', 'title' => '🔌 Appliances', 'description' => 'Home appliances'],
-                    ['id' => 'hardware', 'title' => '🔧 Hardware', 'description' => 'Tools & materials'],
-                    ['id' => 'furniture', 'title' => '🪑 Furniture', 'description' => 'Home & office'],
+                    ['id' => 'clothes', 'title' => '👕 Clothes', 'description' => 'Fashion & apparel'],
+                    ['id' => 'grocery', 'title' => '🛒 Grocery', 'description' => 'Daily essentials'],
+                    ['id' => 'medical', 'title' => '💊 Medical', 'description' => 'Pharmacy & health'],
                 ],
             ],
             [
-                'title' => 'More Options',
+                'title' => 'More Categories',
                 'rows' => [
+                    ['id' => 'appliances', 'title' => '🔌 Appliances', 'description' => 'Home appliances'],
+                    ['id' => 'furniture', 'title' => '🪑 Furniture', 'description' => 'Home & office'],
+                    ['id' => 'hardware', 'title' => '🔧 Hardware', 'description' => 'Tools & materials'],
                     ['id' => 'all', 'title' => '🔍 All Categories', 'description' => 'Search all shops'],
                     ['id' => 'other', 'title' => '📦 Other', 'description' => 'Other categories'],
                 ],
@@ -332,26 +438,46 @@ class ProductMessages
     }
 
     /**
-     * Build responses list for customer view.
+     * Build responses list for customer view (FR-PRD-32).
      */
     public static function buildResponsesList(array $responses): array
     {
         $rows = [];
+        $lowestPrice = null;
+
+        // Find lowest price for comparison
+        foreach ($responses as $response) {
+            if (($response['is_available'] ?? true) && isset($response['price'])) {
+                if ($lowestPrice === null || $response['price'] < $lowestPrice) {
+                    $lowestPrice = $response['price'];
+                }
+            }
+        }
 
         foreach ($responses as $index => $response) {
             $shop = $response['shop'] ?? [];
+            $shopName = $shop['shop_name'] ?? 'Shop';
             $price = $response['price'] ?? 0;
-            $distance = isset($response['distance']) ? self::formatDistance($response['distance']) : '';
+            $distance = isset($response['distance_km']) ? self::formatDistance($response['distance_km']) : '';
             $available = $response['is_available'] ?? true;
 
-            $title = $available
-                ? '₹' . number_format($price) . ' - ' . ($shop['shop_name'] ?? 'Shop')
-                : '❌ ' . ($shop['shop_name'] ?? 'Shop');
+            if ($available) {
+                $priceStr = '₹' . number_format($price);
+                // Add "Best" tag if lowest price
+                if ($price === $lowestPrice && count($responses) > 1) {
+                    $priceStr .= ' ⭐';
+                }
+                $title = self::truncate("{$priceStr} - {$shopName}", 24);
+                $desc = "{$distance} away";
+            } else {
+                $title = self::truncate("❌ {$shopName}", 24);
+                $desc = 'Not available';
+            }
 
             $rows[] = [
                 'id' => 'response_' . ($response['id'] ?? $index),
-                'title' => self::truncate($title, 24),
-                'description' => self::truncate($distance . ($available ? '' : ' - Not available'), 72),
+                'title' => $title,
+                'description' => self::truncate($desc, 72),
             ];
         }
 
@@ -385,7 +511,11 @@ class ProductMessages
             $rows[] = [
                 'id' => 'request_' . $request['id'],
                 'title' => self::truncate($request['description'] ?? 'Request', 24),
-                'description' => self::truncate("{$statusEmoji} {$responseCount} responses • #{$request['request_number']}", 72),
+                'description' => self::truncate(
+                    "{$statusEmoji} {$responseCount} response" . ($responseCount !== 1 ? 's' : '') .
+                    " • #{$request['request_number']}",
+                    72
+                ),
             ];
         }
 
@@ -405,7 +535,7 @@ class ProductMessages
         $rows = [];
 
         foreach ($requests as $request) {
-            $distance = isset($request['distance']) ? self::formatDistance($request['distance']) : '';
+            $distance = isset($request['distance_km']) ? self::formatDistance($request['distance_km']) : '';
             $expiry = self::formatTimeRemaining($request['expires_at'] ?? null);
 
             $rows[] = [
@@ -446,12 +576,16 @@ class ProductMessages
      */
     public static function formatDistance(float $distanceKm): string
     {
+        if ($distanceKm < 0.1) {
+            return 'Very close';
+        }
+
         if ($distanceKm < 1) {
-            $meters = round($distanceKm * 1000);
+            $meters = round($distanceKm * 1000, -1);
             return "{$meters}m";
         }
 
-        return round($distanceKm, 1) . "km";
+        return round($distanceKm, 1) . 'km';
     }
 
     /**
@@ -467,16 +601,16 @@ class ProductMessages
     }
 
     /**
-     * Format time remaining.
+     * Format time remaining until expiry.
      */
-    public static function formatTimeRemaining($expiresAt): string
+    public static function formatTimeRemaining(Carbon|string|null $expiresAt): string
     {
         if (!$expiresAt) {
             return 'Unknown';
         }
 
         if (is_string($expiresAt)) {
-            $expiresAt = \Carbon\Carbon::parse($expiresAt);
+            $expiresAt = Carbon::parse($expiresAt);
         }
 
         if ($expiresAt->isPast()) {
@@ -484,6 +618,10 @@ class ProductMessages
         }
 
         $diff = now()->diff($expiresAt);
+
+        if ($diff->d > 0) {
+            return $diff->d . 'd ' . $diff->h . 'h';
+        }
 
         if ($diff->h > 0) {
             return $diff->h . 'h ' . $diff->i . 'm';
@@ -495,29 +633,33 @@ class ProductMessages
     /**
      * Format expiry time.
      */
-    public static function formatExpiry($expiresAt): string
+    public static function formatExpiry(Carbon|string|null $expiresAt): string
     {
         if (!$expiresAt) {
             return 'Unknown';
         }
 
         if (is_string($expiresAt)) {
-            $expiresAt = \Carbon\Carbon::parse($expiresAt);
+            $expiresAt = Carbon::parse($expiresAt);
         }
 
         if ($expiresAt->isToday()) {
-            return 'Today ' . $expiresAt->format('h:i A');
+            return 'Today ' . $expiresAt->format('g:i A');
         }
 
-        return $expiresAt->format('M j, h:i A');
+        if ($expiresAt->isTomorrow()) {
+            return 'Tomorrow ' . $expiresAt->format('g:i A');
+        }
+
+        return $expiresAt->format('M j, g:i A');
     }
 
     /**
-     * Get category label.
+     * Get human-readable category label.
      */
     public static function getCategoryLabel(string $categoryId): string
     {
-        $map = [
+        $labels = [
             'grocery' => '🛒 Grocery',
             'electronics' => '📱 Electronics',
             'clothes' => '👕 Clothes',
@@ -530,17 +672,17 @@ class ProductMessages
             'other' => '📦 Other',
         ];
 
-        return $map[strtolower($categoryId)] ?? ucfirst($categoryId);
+        return $labels[strtolower($categoryId)] ?? ucfirst($categoryId);
     }
 
     /**
-     * Get status label.
+     * Get human-readable status label.
      */
     public static function getStatusLabel(string $status): string
     {
         return match ($status) {
             'open' => '🟢 Open',
-            'collecting' => '🟡 Collecting Responses',
+            'collecting' => '🟡 Collecting',
             'closed' => '✅ Closed',
             'expired' => '⏰ Expired',
             default => ucfirst($status),
@@ -550,12 +692,66 @@ class ProductMessages
     /**
      * Truncate string to fit WhatsApp limits.
      */
-    private static function truncate(string $text, int $maxLength): string
+    public static function truncate(string $text, int $maxLength): string
     {
         if (mb_strlen($text) <= $maxLength) {
             return $text;
         }
 
         return mb_substr($text, 0, $maxLength - 1) . '…';
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Localization Support
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get message in specified language.
+     */
+    public static function get(string $key, string $lang = 'en'): string
+    {
+        $messages = match ($lang) {
+            'ml' => self::getMalayalamMessages(),
+            default => self::getEnglishMessages(),
+        };
+
+        return $messages[$key] ?? self::getEnglishMessages()[$key] ?? "Message not found: {$key}";
+    }
+
+    /**
+     * English messages.
+     */
+    protected static function getEnglishMessages(): array
+    {
+        return [
+            'search_start' => self::SEARCH_START,
+            'ask_category' => self::ASK_CATEGORY,
+            'ask_description' => self::ASK_DESCRIPTION,
+            'no_responses' => self::NO_RESPONSES,
+            'request_sent' => self::REQUEST_SENT,
+        ];
+    }
+
+    /**
+     * Malayalam messages.
+     */
+    protected static function getMalayalamMessages(): array
+    {
+        return [
+            'search_start' => "🔍 *സമീപത്ത് ഉൽപ്പന്നങ്ങൾ കണ്ടെത്തുക*\n\n" .
+                "നിങ്ങൾക്ക് ആവശ്യമുള്ളത് കണ്ടെത്താൻ കഴിയുന്നില്ലേ? പ്രാദേശിക ഷോപ്പുകളെ സഹായിക്കാൻ അനുവദിക്കൂ!",
+            'ask_category' => "📦 *ഘട്ടം 1/3* - വിഭാഗം തിരഞ്ഞെടുക്കുക\n\n" .
+                "നിർദ്ദിഷ്ട ഷോപ്പുകളെ ലക്ഷ്യമിടാൻ ഒരു വിഭാഗം തിരഞ്ഞെടുക്കുക:",
+            'ask_description' => "📝 *ഘട്ടം 2/3* - ഉൽപ്പന്നം വിവരിക്കുക\n\n" .
+                "നിങ്ങൾ എന്താണ് തിരയുന്നത്?",
+            'no_responses' => "⏳ *ഇതുവരെ പ്രതികരണങ്ങളില്ല*\n\n" .
+                "അഭ്യർത്ഥന #{request_number}\n\n" .
+                "ഷോപ്പുകളെ അറിയിച്ചു. പ്രതികരണങ്ങൾ സാധാരണയായി 1-2 മണിക്കൂറിനുള്ളിൽ വരും.",
+            'request_sent' => "✅ *അഭ്യർത്ഥന അയച്ചു!*\n\n" .
+                "📋 അഭ്യർത്ഥന #: *{request_number}*\n" .
+                "🏪 അറിയിച്ചത്: {shop_count} ഷോപ്പുകൾ",
+        ];
     }
 }

@@ -16,11 +16,35 @@ use Illuminate\Support\Facades\Log;
 /**
  * Abstract base class for flow handlers.
  *
- * Provides common functionality for all flow handlers including
- * session management, message sending, and error handling.
+ * ENHANCED VERSION - Key improvements:
+ * 1. sendWithMenu() - Auto-adds Main Menu button to every response
+ * 2. sendTextWithMenu() - Text message with menu button option
+ * 3. sendErrorWithButtons() - Interactive error handling
+ * 4. Consistent footer on all messages
+ * 5. Better input validation with button prompts
  */
 abstract class AbstractFlowHandler implements FlowHandlerInterface
 {
+    /**
+     * Default footer added to all messages
+     */
+    protected const DEFAULT_FOOTER = MessageTemplates::GLOBAL_FOOTER;
+
+    /**
+     * Main menu button definition
+     */
+    protected const MENU_BUTTON = ['id' => 'main_menu', 'title' => '🏠 Menu'];
+
+    /**
+     * Cancel button definition
+     */
+    protected const CANCEL_BUTTON = ['id' => 'cancel', 'title' => '❌ Cancel'];
+
+    /**
+     * Back button definition
+     */
+    protected const BACK_BUTTON = ['id' => 'back', 'title' => '⬅️ Back'];
+
     public function __construct(
         protected SessionManager $sessionManager,
         protected WhatsAppService $whatsApp,
@@ -54,6 +78,8 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
 
     /**
      * Handle invalid input for the current step.
+     * 
+     * ENHANCED: Now uses interactive buttons instead of plain text
      */
     public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
     {
@@ -62,10 +88,12 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
 
         $errorMessage = ErrorTemplate::invalidInput($expectedType);
 
-        $this->sendText($session->phone, $errorMessage);
-
-        // Re-prompt the current step
-        $this->promptCurrentStep($session);
+        // Send error with retry and menu buttons
+        $this->sendErrorWithOptions(
+            $session->phone,
+            $errorMessage,
+            $this->getRetryOptionsForStep($step)
+        );
     }
 
     /**
@@ -74,6 +102,33 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
     protected function getExpectedInputType(string $step): string
     {
         return 'text'; // Override in subclasses
+    }
+
+    /**
+     * Get retry options based on step type.
+     */
+    protected function getRetryOptionsForStep(string $step): array
+    {
+        $expectedType = $this->getExpectedInputType($step);
+
+        return match ($expectedType) {
+            'button' => [
+                ['id' => 'retry', 'title' => '🔄 Show Options'],
+                self::MENU_BUTTON,
+            ],
+            'list' => [
+                ['id' => 'retry', 'title' => '🔄 Show List'],
+                self::MENU_BUTTON,
+            ],
+            'location' => [
+                ['id' => 'retry', 'title' => '📍 Share Location'],
+                self::MENU_BUTTON,
+            ],
+            default => [
+                ['id' => 'retry', 'title' => '🔄 Try Again'],
+                self::MENU_BUTTON,
+            ],
+        };
     }
 
     /**
@@ -152,12 +207,200 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
 
     /*
     |--------------------------------------------------------------------------
-    | Message Helpers
+    | ENHANCED Message Helpers - WITH MENU BUTTON
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Send a text message.
+     * Send text message with Main Menu button.
+     * 
+     * This is the PRIMARY method to use for text responses.
+     * Ensures users always have a way back to menu.
+     */
+    protected function sendTextWithMenu(
+        string $to,
+        string $body,
+        ?string $header = null
+    ): array {
+        return $this->sendButtons(
+            $to,
+            $body,
+            [self::MENU_BUTTON],
+            $header,
+            self::DEFAULT_FOOTER
+        );
+    }
+
+    /**
+     * Send buttons WITH automatic menu option.
+     * 
+     * Automatically adds menu button if space allows (max 3 buttons).
+     * If buttons array has 3 items, sends as-is.
+     * If buttons array has 2 items, adds menu button.
+     * If buttons array has 1 item, adds menu button.
+     */
+    protected function sendButtonsWithMenu(
+        string $to,
+        string $body,
+        array $buttons,
+        ?string $header = null,
+        bool $addMenu = true
+    ): array {
+        // Auto-add menu button if space allows
+        if ($addMenu && count($buttons) < 3) {
+            $buttons[] = self::MENU_BUTTON;
+        }
+
+        return $this->sendButtons($to, $body, $buttons, $header, self::DEFAULT_FOOTER);
+    }
+
+    /**
+     * Send buttons with Back + Menu options.
+     * 
+     * For multi-step flows where user might want to go back.
+     */
+    protected function sendButtonsWithBackAndMenu(
+        string $to,
+        string $body,
+        array $buttons,
+        ?string $header = null
+    ): array {
+        // Add back and menu if space allows
+        if (count($buttons) < 2) {
+            $buttons[] = self::BACK_BUTTON;
+        }
+        if (count($buttons) < 3) {
+            $buttons[] = self::MENU_BUTTON;
+        }
+
+        return $this->sendButtons($to, $body, $buttons, $header, self::DEFAULT_FOOTER);
+    }
+
+    /**
+     * Send list message with consistent footer.
+     */
+    protected function sendListWithFooter(
+        string $to,
+        string $body,
+        string $buttonText,
+        array $sections,
+        ?string $header = null
+    ): array {
+        return $this->sendList($to, $body, $buttonText, $sections, $header, self::DEFAULT_FOOTER);
+    }
+
+    /**
+     * Send error message with action buttons.
+     * 
+     * ENHANCED: Errors now have actionable options.
+     */
+    protected function sendErrorWithOptions(
+        string $to,
+        string $message,
+        ?array $buttons = null
+    ): array {
+        $buttons = $buttons ?? [
+            ['id' => 'retry', 'title' => '🔄 Try Again'],
+            self::MENU_BUTTON,
+        ];
+
+        return $this->sendButtons($to, $message, $buttons, null, self::DEFAULT_FOOTER);
+    }
+
+    /**
+     * Send success message with next action buttons.
+     */
+    protected function sendSuccessWithActions(
+        string $to,
+        string $message,
+        array $nextActions,
+        ?string $header = null
+    ): array {
+        // Ensure we have menu option
+        if (count($nextActions) < 3) {
+            $nextActions[] = self::MENU_BUTTON;
+        }
+
+        return $this->sendButtons($to, $message, $nextActions, $header, self::DEFAULT_FOOTER);
+    }
+
+    /**
+     * Request location with consistent styling.
+     */
+    protected function requestLocationWithMenu(string $to, string $body): array
+    {
+        // First send the location request
+        $result = $this->requestLocation($to, $body);
+
+        // Then send a follow-up with menu option (in case they want to cancel)
+        // Only if they're in a flow where they might want to bail
+        // This is handled by the flow handler itself
+
+        return $result;
+    }
+
+    /**
+     * Send image with caption and menu button option.
+     */
+    protected function sendImageWithMenu(
+        string $to,
+        string $url,
+        ?string $caption = null,
+        ?array $followUpButtons = null
+    ): array {
+        // Send the image first
+        $imageResult = $this->sendImage($to, $url, $caption);
+
+        // If there are follow-up buttons, send them separately
+        if ($followUpButtons) {
+            $this->sendButtonsWithMenu(
+                $to,
+                "What would you like to do next?",
+                $followUpButtons
+            );
+        }
+
+        return $imageResult;
+    }
+
+    /**
+     * Send document with caption and follow-up options.
+     */
+    protected function sendDocumentWithFollowUp(
+        string $to,
+        string $url,
+        ?string $filename = null,
+        ?string $caption = null,
+        ?array $followUpButtons = null
+    ): array {
+        // Send the document
+        $docResult = $this->sendDocument($to, $url, $filename, $caption);
+
+        // Send follow-up buttons if provided
+        if ($followUpButtons) {
+            $this->sendButtonsWithMenu(
+                $to,
+                "Document sent! What's next?",
+                $followUpButtons
+            );
+        } else {
+            // Always provide menu option after document
+            $this->sendTextWithMenu($to, "📄 Document sent successfully!");
+        }
+
+        return $docResult;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Original Message Helpers (kept for backward compatibility)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Send a text message (without menu button).
+     * 
+     * Use sendTextWithMenu() instead for most cases.
      */
     protected function sendText(string $to, string $body): array
     {
@@ -174,7 +417,7 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         ?string $header = null,
         ?string $footer = null
     ): array {
-        return $this->whatsApp->sendButtons($to, $body, $buttons, $header, $footer);
+        return $this->whatsApp->sendButtons($to, $body, $buttons, $header, $footer ?? self::DEFAULT_FOOTER);
     }
 
     /**
@@ -188,7 +431,7 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         ?string $header = null,
         ?string $footer = null
     ): array {
-        return $this->whatsApp->sendList($to, $body, $buttonText, $sections, $header, $footer);
+        return $this->whatsApp->sendList($to, $body, $buttonText, $sections, $header, $footer ?? self::DEFAULT_FOOTER);
     }
 
     /**
@@ -234,19 +477,25 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
 
     /**
      * Send an error message.
+     * 
+     * DEPRECATED: Use sendErrorWithOptions() instead.
      */
     protected function sendError(string $to, string $message): array
     {
-        return $this->sendText($to, $message);
+        return $this->sendErrorWithOptions($to, $message);
     }
 
     /**
      * Send error with retry buttons.
+     * 
+     * DEPRECATED: Use sendErrorWithOptions() instead.
      */
     protected function sendErrorWithRetry(string $to, string $message): array
     {
-        $error = ErrorTemplate::withRetry($message);
-        return $this->sendButtons($to, $error['message'], $error['buttons']);
+        return $this->sendErrorWithOptions($to, $message, [
+            ['id' => 'retry', 'title' => '🔄 Try Again'],
+            self::MENU_BUTTON,
+        ]);
     }
 
     /**
@@ -277,6 +526,21 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         }
 
         return true;
+    }
+
+    /**
+     * Normalize phone number (add country code if missing).
+     */
+    protected function normalizePhone(string $phone): string
+    {
+        $cleaned = preg_replace('/[^0-9]/', '', $phone);
+
+        // If 10 digits and starts with valid Indian mobile prefix, add 91
+        if (strlen($cleaned) === 10 && in_array($cleaned[0], ['6', '7', '8', '9'])) {
+            return '91' . $cleaned;
+        }
+
+        return $cleaned;
     }
 
     /**
@@ -380,11 +644,107 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
      */
     protected function isSkip(IncomingMessage $message): bool
     {
-        if (!$message->isText()) {
-            return false;
+        // Check for skip button press
+        if ($message->isInteractive()) {
+            $id = $this->getSelectionId($message);
+            return in_array($id, ['skip', 'skip_image', 'skip_caption']);
         }
 
-        return strtolower(trim($message->text ?? '')) === 'skip';
+        // Check for skip text
+        if ($message->isText()) {
+            return strtolower(trim($message->text ?? '')) === 'skip';
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if user wants to go back.
+     */
+    protected function isBack(IncomingMessage $message): bool
+    {
+        if ($message->isInteractive()) {
+            return $this->getSelectionId($message) === 'back';
+        }
+
+        if ($message->isText()) {
+            return strtolower(trim($message->text ?? '')) === 'back';
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if user selected main menu.
+     */
+    protected function isMainMenu(IncomingMessage $message): bool
+    {
+        if ($message->isInteractive()) {
+            $id = $this->getSelectionId($message);
+            return in_array($id, ['main_menu', 'menu', 'home']);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if user wants to cancel.
+     */
+    protected function isCancel(IncomingMessage $message): bool
+    {
+        if ($message->isInteractive()) {
+            return $this->getSelectionId($message) === 'cancel';
+        }
+
+        if ($message->isText()) {
+            return strtolower(trim($message->text ?? '')) === 'cancel';
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if user wants to retry.
+     */
+    protected function isRetry(IncomingMessage $message): bool
+    {
+        if ($message->isInteractive()) {
+            return $this->getSelectionId($message) === 'retry';
+        }
+
+        return false;
+    }
+
+    /**
+     * Handle common navigation inputs.
+     * 
+     * Returns true if navigation was handled (caller should return).
+     * Returns false if input should be processed normally.
+     */
+    protected function handleCommonNavigation(IncomingMessage $message, ConversationSession $session): bool
+    {
+        // Main menu
+        if ($this->isMainMenu($message)) {
+            $this->goToMainMenu($session);
+            app(\App\Services\Flow\FlowRouter::class)->startFlow($session, FlowType::MAIN_MENU);
+            return true;
+        }
+
+        // Cancel
+        if ($this->isCancel($message)) {
+            $this->clearTemp($session);
+            $this->sendTextWithMenu($session->phone, "❌ *Cancelled*\n\nAction cancelled.");
+            $this->goToMainMenu($session);
+            return true;
+        }
+
+        // Retry - re-prompt current step
+        if ($this->isRetry($message)) {
+            $this->promptCurrentStep($session);
+            return true;
+        }
+
+        return false;
     }
 
     /*

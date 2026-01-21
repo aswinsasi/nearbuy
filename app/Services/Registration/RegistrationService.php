@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Registration;
 
 use App\Enums\NotificationFrequency;
@@ -10,38 +12,30 @@ use App\Models\Shop;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Service for handling user and shop registration.
  *
- * Creates users and shops with proper validation and data integrity.
+ * VIRAL ADOPTION FEATURES:
+ * - Referral tracking for organic growth measurement
+ * - Analytics events for funnel optimization
+ * - Flexible validation with helpful error messages
+ * - Transaction safety for data integrity
  *
- * @example
- * $service = app(RegistrationService::class);
- *
- * // Create a customer
- * $user = $service->createCustomer([
- *     'phone' => '919876543210',
- *     'name' => 'John Doe',
- *     'latitude' => 9.5916,
- *     'longitude' => 76.5222,
- * ]);
- *
- * // Create a shop owner with shop
- * $user = $service->createShopOwner([
- *     'phone' => '919876543220',
- *     'name' => 'Jane Doe',
- *     'latitude' => 9.5916,
- *     'longitude' => 76.5222,
- *     'shop_name' => 'Jane\'s Store',
- *     'shop_category' => 'grocery',
- *     'shop_latitude' => 9.5920,
- *     'shop_longitude' => 76.5225,
- *     'notification_frequency' => 'immediate',
- * ]);
+ * @see SRS Section 3.1 - User Registration Requirements
+ * @see SRS Section 3.1.3 - Shop Registration Additional Requirements
  */
 class RegistrationService
 {
+    /**
+     * Analytics event types for registration funnel.
+     */
+    public const EVENT_REGISTRATION_STARTED = 'registration.started';
+    public const EVENT_REGISTRATION_COMPLETED = 'registration.completed';
+    public const EVENT_REGISTRATION_ABANDONED = 'registration.abandoned';
+    public const EVENT_SHOP_CREATED = 'shop.created';
+
     /**
      * Create a customer account.
      *
@@ -50,8 +44,9 @@ class RegistrationService
      *     @type string $name User name (required)
      *     @type float $latitude User latitude (required)
      *     @type float $longitude User longitude (required)
-     *     @type string $address Optional address
-     *     @type string $language Optional language code (default: 'en')
+     *     @type string|null $address Optional address
+     *     @type string|null $language Language code (default: 'en')
+     *     @type string|null $referrer_phone Phone of referring user
      * }
      * @return User
      * @throws \InvalidArgumentException
@@ -61,7 +56,6 @@ class RegistrationService
     {
         $this->validateCustomerData($data);
 
-        // Check if phone already exists
         if ($this->phoneExists($data['phone'])) {
             throw new \InvalidArgumentException('Phone number already registered');
         }
@@ -69,13 +63,20 @@ class RegistrationService
         try {
             $user = User::create([
                 'phone' => $this->normalizePhone($data['phone']),
-                'name' => trim($data['name']),
+                'name' => $this->sanitizeName($data['name']),
                 'type' => UserType::CUSTOMER,
-                'latitude' => $data['latitude'],
-                'longitude' => $data['longitude'],
+                'latitude' => (float) $data['latitude'],
+                'longitude' => (float) $data['longitude'],
                 'address' => $data['address'] ?? null,
                 'language' => $data['language'] ?? 'en',
+                'referred_by' => $this->resolveReferrer($data['referrer_phone'] ?? null),
                 'registered_at' => now(),
+            ]);
+
+            $this->trackEvent(self::EVENT_REGISTRATION_COMPLETED, [
+                'user_id' => $user->id,
+                'user_type' => 'customer',
+                'has_referrer' => !empty($data['referrer_phone']),
             ]);
 
             Log::info('Customer registered', [
@@ -97,6 +98,9 @@ class RegistrationService
     /**
      * Create a shop owner account with associated shop.
      *
+     * Uses database transaction to ensure both user and shop
+     * are created atomically (FR-SHOP-05).
+     *
      * @param array $data {
      *     @type string $phone Phone number (required)
      *     @type string $name Owner name (required)
@@ -107,11 +111,12 @@ class RegistrationService
      *     @type float $shop_latitude Shop latitude (required)
      *     @type float $shop_longitude Shop longitude (required)
      *     @type string $notification_frequency Notification preference (required)
-     *     @type string $address Optional owner address
-     *     @type string $shop_address Optional shop address
-     *     @type string $language Optional language code (default: 'en')
+     *     @type string|null $address Optional owner address
+     *     @type string|null $shop_address Optional shop address
+     *     @type string|null $language Language code (default: 'en')
+     *     @type string|null $referrer_phone Phone of referring user
      * }
-     * @return User
+     * @return User User with shop relationship loaded
      * @throws \InvalidArgumentException
      * @throws \Exception
      */
@@ -119,36 +124,50 @@ class RegistrationService
     {
         $this->validateShopOwnerData($data);
 
-        // Check if phone already exists
         if ($this->phoneExists($data['phone'])) {
             throw new \InvalidArgumentException('Phone number already registered');
         }
 
-        // Use transaction for data integrity
         return DB::transaction(function () use ($data) {
-            // Create user
+            // Create user record
             $user = User::create([
                 'phone' => $this->normalizePhone($data['phone']),
-                'name' => trim($data['name']),
+                'name' => $this->sanitizeName($data['name']),
                 'type' => UserType::SHOP,
-                'latitude' => $data['latitude'],
-                'longitude' => $data['longitude'],
+                'latitude' => (float) $data['latitude'],
+                'longitude' => (float) $data['longitude'],
                 'address' => $data['address'] ?? null,
                 'language' => $data['language'] ?? 'en',
+                'referred_by' => $this->resolveReferrer($data['referrer_phone'] ?? null),
                 'registered_at' => now(),
             ]);
 
-            // Create shop
+            // Create shop record (FR-SHOP-05)
             $shop = Shop::create([
                 'user_id' => $user->id,
-                'shop_name' => trim($data['shop_name']),
+                'shop_name' => $this->sanitizeName($data['shop_name']),
                 'category' => $this->parseCategory($data['shop_category']),
-                'latitude' => $data['shop_latitude'],
-                'longitude' => $data['shop_longitude'],
+                'latitude' => (float) $data['shop_latitude'],
+                'longitude' => (float) $data['shop_longitude'],
                 'address' => $data['shop_address'] ?? null,
-                'notification_frequency' => $this->parseNotificationFrequency($data['notification_frequency']),
+                'notification_frequency' => $this->parseNotificationFrequency(
+                    $data['notification_frequency']
+                ),
                 'verified' => false,
                 'is_active' => true,
+            ]);
+
+            // Track analytics events
+            $this->trackEvent(self::EVENT_REGISTRATION_COMPLETED, [
+                'user_id' => $user->id,
+                'user_type' => 'shop',
+                'has_referrer' => !empty($data['referrer_phone']),
+            ]);
+
+            $this->trackEvent(self::EVENT_SHOP_CREATED, [
+                'shop_id' => $shop->id,
+                'user_id' => $user->id,
+                'category' => $data['shop_category'],
             ]);
 
             Log::info('Shop owner registered', [
@@ -156,26 +175,30 @@ class RegistrationService
                 'shop_id' => $shop->id,
                 'phone' => $this->maskPhone($data['phone']),
                 'shop_name' => $data['shop_name'],
+                'category' => $data['shop_category'],
             ]);
 
-            return $user;
+            // Load the shop relationship before returning
+            return $user->load('shop');
         });
     }
 
     /**
-     * Update an existing user's registration.
+     * Update an existing user's profile.
      */
     public function updateUser(User $user, array $data): User
     {
         $updateData = [];
 
-        if (isset($data['name'])) {
-            $updateData['name'] = trim($data['name']);
+        if (isset($data['name']) && $this->isValidName($data['name'])) {
+            $updateData['name'] = $this->sanitizeName($data['name']);
         }
 
-        if (isset($data['latitude']) && isset($data['longitude'])) {
-            $updateData['latitude'] = $data['latitude'];
-            $updateData['longitude'] = $data['longitude'];
+        if (isset($data['latitude'], $data['longitude'])) {
+            if ($this->isValidCoordinates($data['latitude'], $data['longitude'])) {
+                $updateData['latitude'] = (float) $data['latitude'];
+                $updateData['longitude'] = (float) $data['longitude'];
+            }
         }
 
         if (isset($data['address'])) {
@@ -188,6 +211,7 @@ class RegistrationService
 
         if (!empty($updateData)) {
             $user->update($updateData);
+            Log::info('User profile updated', ['user_id' => $user->id]);
         }
 
         return $user->fresh();
@@ -200,17 +224,19 @@ class RegistrationService
     {
         $updateData = [];
 
-        if (isset($data['shop_name'])) {
-            $updateData['shop_name'] = trim($data['shop_name']);
+        if (isset($data['shop_name']) && $this->isValidName($data['shop_name'])) {
+            $updateData['shop_name'] = $this->sanitizeName($data['shop_name']);
         }
 
-        if (isset($data['shop_category'])) {
+        if (isset($data['shop_category']) && $this->isValidCategory($data['shop_category'])) {
             $updateData['category'] = $this->parseCategory($data['shop_category']);
         }
 
-        if (isset($data['shop_latitude']) && isset($data['shop_longitude'])) {
-            $updateData['latitude'] = $data['shop_latitude'];
-            $updateData['longitude'] = $data['shop_longitude'];
+        if (isset($data['shop_latitude'], $data['shop_longitude'])) {
+            if ($this->isValidCoordinates($data['shop_latitude'], $data['shop_longitude'])) {
+                $updateData['latitude'] = (float) $data['shop_latitude'];
+                $updateData['longitude'] = (float) $data['shop_longitude'];
+            }
         }
 
         if (isset($data['shop_address'])) {
@@ -218,26 +244,36 @@ class RegistrationService
         }
 
         if (isset($data['notification_frequency'])) {
-            $updateData['notification_frequency'] = $this->parseNotificationFrequency($data['notification_frequency']);
+            if ($this->isValidNotificationFrequency($data['notification_frequency'])) {
+                $updateData['notification_frequency'] = $this->parseNotificationFrequency(
+                    $data['notification_frequency']
+                );
+            }
         }
 
         if (!empty($updateData)) {
             $shop->update($updateData);
+            Log::info('Shop profile updated', ['shop_id' => $shop->id]);
         }
 
         return $shop->fresh();
     }
 
     /**
-     * Link a session to a newly created user.
+     * Link a conversation session to a newly created user.
      */
     public function linkSessionToUser(ConversationSession $session, User $user): void
     {
         $session->update(['user_id' => $user->id]);
+
+        Log::debug('Session linked to user', [
+            'session_id' => $session->id,
+            'user_id' => $user->id,
+        ]);
     }
 
     /**
-     * Check if a user exists by phone.
+     * Check if a phone number is already registered.
      */
     public function phoneExists(string $phone): bool
     {
@@ -245,7 +281,7 @@ class RegistrationService
     }
 
     /**
-     * Find user by phone.
+     * Find user by phone number.
      */
     public function findByPhone(string $phone): ?User
     {
@@ -253,12 +289,53 @@ class RegistrationService
     }
 
     /**
-     * Check if user is fully registered.
+     * Check if user has completed registration.
      */
     public function isRegistered(string $phone): bool
     {
         $user = $this->findByPhone($phone);
-        return $user && $user->registered_at !== null;
+        return $user !== null && $user->registered_at !== null;
+    }
+
+    /**
+     * Get total registered user count (for social proof).
+     */
+    public function getTotalUserCount(): int
+    {
+        return User::whereNotNull('registered_at')->count();
+    }
+
+    /**
+     * Get referral stats for a user.
+     */
+    public function getReferralStats(User $user): array
+    {
+        $referredCount = User::where('referred_by', $user->id)->count();
+
+        return [
+            'total_referred' => $referredCount,
+            'referred_shops' => User::where('referred_by', $user->id)
+                ->where('type', UserType::SHOP)
+                ->count(),
+            'referred_customers' => User::where('referred_by', $user->id)
+                ->where('type', UserType::CUSTOMER)
+                ->count(),
+        ];
+    }
+
+    /**
+     * Track incomplete registration for follow-up.
+     */
+    public function trackIncompleteRegistration(
+        string $phone,
+        string $lastStep,
+        array $tempData
+    ): void {
+        $this->trackEvent(self::EVENT_REGISTRATION_ABANDONED, [
+            'phone' => $this->maskPhone($phone),
+            'last_step' => $lastStep,
+            'user_type' => $tempData['user_type'] ?? 'unknown',
+        ]);
     }
 
     /*
@@ -269,13 +346,15 @@ class RegistrationService
 
     /**
      * Validate customer registration data.
+     *
+     * @throws \InvalidArgumentException
      */
     protected function validateCustomerData(array $data): void
     {
         $required = ['phone', 'name', 'latitude', 'longitude'];
 
         foreach ($required as $field) {
-            if (empty($data[$field])) {
+            if (!isset($data[$field]) || $data[$field] === '') {
                 throw new \InvalidArgumentException("Missing required field: {$field}");
             }
         }
@@ -285,7 +364,7 @@ class RegistrationService
         }
 
         if (!$this->isValidName($data['name'])) {
-            throw new \InvalidArgumentException('Invalid name format');
+            throw new \InvalidArgumentException('Invalid name format (2-100 characters required)');
         }
 
         if (!$this->isValidCoordinates($data['latitude'], $data['longitude'])) {
@@ -295,17 +374,25 @@ class RegistrationService
 
     /**
      * Validate shop owner registration data.
+     *
+     * @throws \InvalidArgumentException
      */
     protected function validateShopOwnerData(array $data): void
     {
-        // Validate basic user data
+        // Validate basic user data first
         $this->validateCustomerData($data);
 
         // Validate shop-specific fields
-        $shopRequired = ['shop_name', 'shop_category', 'shop_latitude', 'shop_longitude', 'notification_frequency'];
+        $shopRequired = [
+            'shop_name',
+            'shop_category',
+            'shop_latitude',
+            'shop_longitude',
+            'notification_frequency',
+        ];
 
         foreach ($shopRequired as $field) {
-            if (empty($data[$field])) {
+            if (!isset($data[$field]) || $data[$field] === '') {
                 throw new \InvalidArgumentException("Missing required field: {$field}");
             }
         }
@@ -338,35 +425,66 @@ class RegistrationService
 
     /**
      * Validate name format.
+     * Allows letters, spaces, and common punctuation.
      */
     public function isValidName(string $name): bool
     {
         $trimmed = trim($name);
-        return mb_strlen($trimmed) >= 2 && mb_strlen($trimmed) <= 100;
+        $length = mb_strlen($trimmed);
+
+        // Must be 2-100 characters
+        if ($length < 2 || $length > 100) {
+            return false;
+        }
+
+        // Must contain at least one letter
+        if (!preg_match('/\p{L}/u', $trimmed)) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
-     * Validate coordinates.
+     * Validate geographic coordinates.
      */
-    public function isValidCoordinates(float $latitude, float $longitude): bool
+    public function isValidCoordinates(mixed $latitude, mixed $longitude): bool
     {
-        return $latitude >= -90 && $latitude <= 90
-            && $longitude >= -180 && $longitude <= 180;
+        if (!is_numeric($latitude) || !is_numeric($longitude)) {
+            return false;
+        }
+
+        $lat = (float) $latitude;
+        $lng = (float) $longitude;
+
+        return $lat >= -90 && $lat <= 90 && $lng >= -180 && $lng <= 180;
     }
 
     /**
-     * Validate category.
+     * Validate shop category.
      */
     public function isValidCategory(string $category): bool
     {
         $validCategories = [
-            'grocery', 'electronics', 'clothes', 'medical',
-            'furniture', 'mobile', 'appliances', 'hardware',
-            'restaurant', 'bakery', 'stationery', 'beauty',
-            'automotive', 'jewelry', 'sports', 'other',
+            'grocery',
+            'electronics',
+            'clothes',
+            'medical',
+            'furniture',
+            'mobile',
+            'appliances',
+            'hardware',
+            'restaurant',
+            'bakery',
+            'stationery',
+            'beauty',
+            'automotive',
+            'jewelry',
+            'sports',
+            'other',
         ];
 
-        return in_array(strtolower($category), $validCategories);
+        return in_array(strtolower($category), $validCategories, true);
     }
 
     /**
@@ -375,7 +493,7 @@ class RegistrationService
     public function isValidNotificationFrequency(string $frequency): bool
     {
         $valid = ['immediate', '2hours', 'twice_daily', 'daily'];
-        return in_array(strtolower($frequency), $valid);
+        return in_array(strtolower($frequency), $valid, true);
     }
 
     /*
@@ -385,19 +503,33 @@ class RegistrationService
     */
 
     /**
-     * Normalize phone number.
+     * Normalize phone number to standard format.
+     * Assumes Indian numbers if 10 digits.
      */
     protected function normalizePhone(string $phone): string
     {
         // Remove all non-numeric characters
         $cleaned = preg_replace('/[^0-9]/', '', $phone);
 
-        // Ensure it starts with country code (assume India if 10 digits)
+        // Add India country code if 10 digits
         if (strlen($cleaned) === 10) {
             $cleaned = '91' . $cleaned;
         }
 
         return $cleaned;
+    }
+
+    /**
+     * Sanitize name input.
+     */
+    protected function sanitizeName(string $name): string
+    {
+        // Trim whitespace and normalize multiple spaces
+        $name = trim($name);
+        $name = preg_replace('/\s+/', ' ', $name);
+
+        // Title case for names
+        return mb_convert_case($name, MB_CASE_TITLE, 'UTF-8');
     }
 
     /**
@@ -420,18 +552,47 @@ class RegistrationService
             'daily' => NotificationFrequency::DAILY,
         ];
 
-        return $map[strtolower($frequency)] ?? NotificationFrequency::TWICE_DAILY;
+        return $map[strtolower($frequency)] ?? NotificationFrequency::EVERY_2_HOURS;
     }
 
     /**
-     * Mask phone number for logging.
+     * Resolve referrer user ID from phone number.
+     */
+    protected function resolveReferrer(?string $referrerPhone): ?int
+    {
+        if (empty($referrerPhone)) {
+            return null;
+        }
+
+        $referrer = $this->findByPhone($referrerPhone);
+        return $referrer?->id;
+    }
+
+    /**
+     * Track analytics event.
+     * Can be extended to send to analytics service.
+     */
+    protected function trackEvent(string $event, array $data = []): void
+    {
+        Log::channel('analytics')->info($event, array_merge($data, [
+            'timestamp' => now()->toIso8601String(),
+        ]));
+
+        // TODO: Integrate with analytics service (Mixpanel, Amplitude, etc.)
+        // Analytics::track($event, $data);
+    }
+
+    /**
+     * Mask phone number for logging (privacy).
      */
     protected function maskPhone(string $phone): string
     {
-        if (strlen($phone) < 6) {
-            return $phone;
+        $length = strlen($phone);
+
+        if ($length < 6) {
+            return str_repeat('*', $length);
         }
 
-        return substr($phone, 0, 3) . '****' . substr($phone, -3);
+        return substr($phone, 0, 3) . str_repeat('*', $length - 6) . substr($phone, -3);
     }
 }

@@ -2,45 +2,32 @@
 
 namespace App\Services\Flow\Handlers;
 
-use App\Contracts\FlowHandlerInterface;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
 use App\Models\ConversationSession;
 use App\Services\Flow\FlowRouter;
-use App\Services\Session\SessionManager;
-use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\Messages\MainMenuTemplate;
-use App\Services\WhatsApp\Messages\ErrorTemplate;
-use Illuminate\Support\Facades\Log;
+use App\Services\WhatsApp\Messages\MessageTemplates;
 
 /**
- * Handles the main menu flow.
+ * ENHANCED Main Menu Handler.
  *
- * Displays the appropriate menu based on user type and
- * routes menu selections to the correct flow handlers.
+ * Key improvements:
+ * 1. Better user experience with contextual greetings
+ * 2. Proper handling of all menu selections
+ * 3. Quick action buttons for common tasks
+ * 4. About and Help information
  */
-class MainMenuHandler implements FlowHandlerInterface
+class MainMenuHandler extends AbstractFlowHandler
 {
-    public function __construct(
-        protected SessionManager $sessionManager,
-        protected WhatsAppService $whatsApp,
-        protected FlowRouter $router,
-    ) {}
-
-    /**
-     * Get the flow name.
-     */
-    public function getName(): string
+    protected function getFlowType(): FlowType
     {
-        return FlowType::MAIN_MENU->value;
+        return FlowType::MAIN_MENU;
     }
 
-    /**
-     * Check if this handler can process the given step.
-     */
-    public function canHandleStep(string $step): bool
+    protected function getSteps(): array
     {
-        return in_array($step, ['idle', 'show_menu', 'awaiting_selection', 'more_options']);
+        return ['idle', 'show_menu', 'awaiting_selection'];
     }
 
     /**
@@ -52,27 +39,64 @@ class MainMenuHandler implements FlowHandlerInterface
     }
 
     /**
-     * Handle an incoming message.
+     * Handle incoming messages.
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
         $step = $session->current_step;
 
-        switch ($step) {
-            case 'idle':
-            case 'show_menu':
-                $this->showMainMenu($session);
-                break;
+        // Check for "more" button to show full menu
+        if ($message->isInteractive()) {
+            $selection = $this->getSelectionId($message);
 
-            case 'awaiting_selection':
-            case 'more_options':
-                $this->handleSelection($message, $session);
-                break;
+            if ($selection === 'more') {
+                $this->showFullMenu($session);
+                return;
+            }
 
-            default:
-                // For any unknown step, show menu
-                $this->showMainMenu($session);
+            if ($selection === 'about') {
+                $this->showAbout($session);
+                return;
+            }
+
+            // Handle menu selection
+            $this->handleMenuSelection($selection, $session);
+            return;
         }
+
+        // Handle text commands
+        if ($message->isText()) {
+            $text = strtolower(trim($message->text ?? ''));
+
+            // Quick text commands
+            $quickAction = match ($text) {
+                'browse', 'offers' => 'browse_offers',
+                'search', 'find' => 'search_product',
+                'agree', 'agreement' => 'create_agreement',
+                'upload' => 'upload_offer',
+                'about' => 'about',
+                'help', '?' => 'help',
+                default => null,
+            };
+
+            if ($quickAction === 'about') {
+                $this->showAbout($session);
+                return;
+            }
+
+            if ($quickAction === 'help') {
+                $this->showHelp($session);
+                return;
+            }
+
+            if ($quickAction) {
+                $this->handleMenuSelection($quickAction, $session);
+                return;
+            }
+        }
+
+        // Default: show main menu
+        $this->showMainMenu($session);
     }
 
     /**
@@ -80,135 +104,60 @@ class MainMenuHandler implements FlowHandlerInterface
      */
     protected function showMainMenu(ConversationSession $session): void
     {
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
 
-        // Check for pending agreements to notify user
-        $pendingCount = $this->getPendingAgreementsCount($session);
-
+        // Get contextual greeting
         $body = MainMenuTemplate::getBody($user);
 
-        if ($pendingCount > 0) {
-            $body .= "\n\n⚠️ You have *{$pendingCount}* pending agreement(s) to review.";
-        }
-
-        // Use list message for full menu
+        // Build menu sections
         $sections = MainMenuTemplate::buildListSections($user);
 
-        $this->whatsApp->sendList(
+        // Update session state
+        $this->nextStep($session, 'awaiting_selection');
+
+        // Send list message
+        $this->sendListWithFooter(
             $session->phone,
             $body,
             MainMenuTemplate::getButtonText(),
             $sections,
-            MainMenuTemplate::getHeader(),
-            MainMenuTemplate::getFooter()
+            MainMenuTemplate::getHeader()
         );
-
-        $this->sessionManager->setStep($session, 'awaiting_selection');
     }
 
     /**
-     * Show quick buttons menu (alternative to list).
+     * Show full menu (when user clicks "More Options").
+     */
+    protected function showFullMenu(ConversationSession $session): void
+    {
+        $this->showMainMenu($session);
+    }
+
+    /**
+     * Show quick buttons (alternative to list for returning users).
      */
     protected function showQuickMenu(ConversationSession $session): void
     {
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
+
+        // Time-based greeting for returning users
+        $greeting = $user
+            ? MainMenuTemplate::getTimeBasedGreeting($user->name ?? 'there')
+            : "👋 Welcome!";
+
+        $body = $greeting . "\n\nQuick actions:";
+
         $buttons = MainMenuTemplate::buildQuickButtons($user);
 
-        $this->whatsApp->sendButtons(
+        $this->nextStep($session, 'awaiting_selection');
+
+        $this->sendButtonsWithMenu(
             $session->phone,
-            MainMenuTemplate::getBody($user),
+            $body,
             $buttons,
-            MainMenuTemplate::getHeader()
+            MainMenuTemplate::getHeader(),
+            false // Don't add extra menu button
         );
-
-        $this->sessionManager->setStep($session, 'awaiting_selection');
-    }
-
-    /**
-     * Handle menu selection.
-     */
-    protected function handleSelection(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = null;
-
-        // Handle list reply
-        if ($message->isListReply()) {
-            $selectionId = $message->getSelectionId();
-        }
-        // Handle button reply
-        elseif ($message->isButtonReply()) {
-            $selectionId = $message->getSelectionId();
-        }
-        // Handle text input (for quick commands)
-        elseif ($message->isText()) {
-            $selectionId = $this->parseTextAsMenuOption($message->text ?? '');
-        }
-
-        if (!$selectionId) {
-            $this->handleInvalidInput($message, $session);
-            return;
-        }
-
-        Log::info('Menu selection', [
-            'phone' => $this->maskPhone($session->phone),
-            'selection' => $selectionId,
-        ]);
-
-        // Handle "more options" specially
-        if ($selectionId === 'more') {
-            $this->showMainMenu($session);
-            return;
-        }
-
-        // Handle "about" option
-        if ($selectionId === 'about') {
-            $this->showAbout($session);
-            return;
-        }
-
-        // Route to appropriate flow
-        $this->router->handleMenuSelection($selectionId, $session);
-    }
-
-    /**
-     * Parse text input as menu option.
-     */
-    protected function parseTextAsMenuOption(string $text): ?string
-    {
-        $text = strtolower(trim($text));
-
-        // Number shortcuts
-        $numberMap = [
-            '1' => 'browse_offers',
-            '2' => 'search_product',
-            '3' => 'create_agreement',
-            '4' => 'my_agreements',
-            '5' => 'settings',
-        ];
-
-        if (isset($numberMap[$text])) {
-            return $numberMap[$text];
-        }
-
-        // Keyword shortcuts
-        $keywordMap = [
-            'offers' => 'browse_offers',
-            'browse' => 'browse_offers',
-            'search' => 'search_product',
-            'find' => 'search_product',
-            'agreement' => 'create_agreement',
-            'register' => 'register',
-            'settings' => 'settings',
-            'upload' => 'upload_offer',
-        ];
-
-        foreach ($keywordMap as $keyword => $option) {
-            if (str_contains($text, $keyword)) {
-                return $option;
-            }
-        }
-
-        return null;
     }
 
     /**
@@ -216,71 +165,74 @@ class MainMenuHandler implements FlowHandlerInterface
      */
     protected function showAbout(ConversationSession $session): void
     {
-        $aboutText = "ℹ️ *About NearBuy*\n\n" .
-            "NearBuy is your local marketplace on WhatsApp!\n\n" .
-            "🛍️ *Browse Offers* - See daily deals from shops near you\n\n" .
-            "🔍 *Search Products* - Can't find something? Ask local shops!\n\n" .
-            "📝 *Digital Agreements* - Create secure records of loans and payments\n\n" .
-            "No app download needed - everything works right here in WhatsApp!\n\n" .
-            "_Powered by NearBuy_";
+        $aboutMessage = MainMenuTemplate::getAboutMessage();
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtonsWithMenu(
             $session->phone,
-            $aboutText,
+            $aboutMessage,
             [
-                ['id' => 'register', 'title' => '📝 Register Now'],
-                ['id' => 'menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'register', 'title' => '📝 Register Free'],
+                ['id' => 'browse_offers', 'title' => '🛍️ Browse'],
             ]
         );
     }
 
     /**
-     * Handle invalid input.
+     * Show help information.
      */
-    public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
+    protected function showHelp(ConversationSession $session): void
     {
-        $this->whatsApp->sendText(
-            $session->phone,
-            ErrorTemplate::invalidInput('list', "Please select an option from the menu.")
-        );
+        $helpMessage = MainMenuTemplate::getHelpMessage();
 
-        // Show menu again
+        $this->sendTextWithMenu($session->phone, $helpMessage);
+    }
+
+    /**
+     * Handle menu selection and route to appropriate flow.
+     */
+    protected function handleMenuSelection(string $selectionId, ConversationSession $session): void
+    {
+        $flowType = match ($selectionId) {
+            'register' => FlowType::REGISTRATION,
+            'browse_offers', 'browse' => FlowType::OFFERS_BROWSE,
+            'upload_offer', 'upload' => FlowType::OFFERS_UPLOAD,
+            'my_offers' => FlowType::OFFERS_MANAGE,
+            'search_product', 'search' => FlowType::PRODUCT_SEARCH,
+            'my_requests' => FlowType::PRODUCT_SEARCH, // Will show user's requests
+            'product_requests' => FlowType::PRODUCT_RESPOND,
+            'create_agreement', 'agreement' => FlowType::AGREEMENT_CREATE,
+            'my_agreements' => FlowType::AGREEMENT_LIST,
+            'pending_agreements' => FlowType::AGREEMENT_CONFIRM,
+            'settings' => FlowType::SETTINGS,
+            'shop_profile' => FlowType::SETTINGS,
+            default => null,
+        };
+
+        if ($flowType) {
+            // Use the FlowRouter to properly start the flow with access checks
+            app(FlowRouter::class)->startFlow($session, $flowType);
+        } else {
+            $this->logInfo('Unknown menu selection', ['id' => $selectionId]);
+            $this->showMainMenu($session);
+        }
+    }
+
+    /**
+     * Get expected input type for steps.
+     */
+    protected function getExpectedInputType(string $step): string
+    {
+        return match ($step) {
+            'awaiting_selection' => 'list',
+            default => 'text',
+        };
+    }
+
+    /**
+     * Re-prompt current step.
+     */
+    protected function promptCurrentStep(ConversationSession $session): void
+    {
         $this->showMainMenu($session);
-    }
-
-    /**
-     * Get count of pending agreements for user.
-     */
-    protected function getPendingAgreementsCount(ConversationSession $session): int
-    {
-        if (!$session->user_id) {
-            return 0;
-        }
-
-        // Check if Agreement model exists
-        if (!class_exists(\App\Models\Agreement::class)) {
-            return 0;
-        }
-
-        try {
-            return \App\Models\Agreement::where('to_user_id', $session->user_id)
-                ->where('status', 'pending')
-                ->whereNull('to_confirmed_at')
-                ->count();
-        } catch (\Exception $e) {
-            return 0;
-        }
-    }
-
-    /**
-     * Mask phone number for logging.
-     */
-    protected function maskPhone(string $phone): string
-    {
-        if (strlen($phone) < 6) {
-            return $phone;
-        }
-
-        return substr($phone, 0, 3) . '****' . substr($phone, -3);
     }
 }

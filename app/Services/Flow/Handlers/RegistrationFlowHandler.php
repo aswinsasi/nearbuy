@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Flow\Handlers;
 
 use App\Contracts\FlowHandlerInterface;
@@ -7,6 +9,7 @@ use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
 use App\Enums\RegistrationStep;
 use App\Models\ConversationSession;
+use App\Models\User;
 use App\Services\Registration\RegistrationService;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
@@ -16,16 +19,22 @@ use Illuminate\Support\Facades\Log;
 /**
  * Handles the user registration flow.
  *
- * Supports both customer and shop owner registration with
- * step-by-step data collection and validation.
+ * VIRAL ADOPTION OPTIMIZATIONS:
+ * - Progress indicators reduce abandonment (NFR-U-01: ≤5 interactions)
+ * - Incomplete registration recovery
+ * - Referral tracking for organic growth
+ * - "Same location" shortcut for shop owners
+ * - Flexible input matching (buttons + text)
  *
- * CUSTOMER FLOW:
- * 1. ask_type → 2. ask_name → 3. ask_location → 4. confirm → 5. complete
+ * CUSTOMER FLOW (3 steps):
+ * 1. ask_type → 2. ask_name → 3. ask_location → complete
  *
- * SHOP OWNER FLOW:
- * 1. ask_type → 2. ask_name → 3. ask_location → 4. ask_shop_name →
- * 5. ask_shop_category → 6. ask_shop_location → 7. ask_notification_pref →
- * 8. confirm → 9. complete
+ * SHOP OWNER FLOW (5 steps):
+ * 1. ask_type → 2. ask_name → 3. ask_location →
+ * 4. ask_shop_name → 5. ask_shop_category →
+ * 6. ask_shop_location → 7. ask_notification_pref → complete
+ *
+ * @see SRS Section 3.1 - User Registration Requirements
  */
 class RegistrationFlowHandler implements FlowHandlerInterface
 {
@@ -36,7 +45,7 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     ) {}
 
     /**
-     * Get the flow name.
+     * {@inheritdoc}
      */
     public function getName(): string
     {
@@ -44,51 +53,68 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Check if this handler can process the given step.
+     * {@inheritdoc}
      */
     public function canHandleStep(string $step): bool
     {
-        return in_array($step, RegistrationStep::values());
+        return RegistrationStep::tryFrom($step) !== null;
     }
 
     /**
      * Start the registration flow.
+     *
+     * Handles:
+     * - New users: Full registration flow
+     * - Already registered: Redirect to main menu
+     * - Incomplete: Offer to continue or restart
      */
     public function start(ConversationSession $session): void
     {
-        // Check if already registered
+        // Check if already registered (FR-REG-01)
         if ($this->registrationService->isRegistered($session->phone)) {
             $this->whatsApp->sendText(
                 $session->phone,
-                RegistrationMessages::ERROR_PHONE_EXISTS
+                RegistrationMessages::get('error_phone_exists', $this->getLanguage($session))
             );
             $this->sessionManager->resetToMainMenu($session);
             return;
         }
 
-        // Clear any previous temp data
-        $this->sessionManager->clearTempData($session);
+        // Check for incomplete registration
+        $tempData = $session->temp_data ?? [];
+        if (!empty($tempData) && isset($tempData['user_type'])) {
+            $this->offerContinueOrRestart($session, $tempData);
+            return;
+        }
 
-        // Set to first step
+        // Fresh start
+        $this->sessionManager->clearTempData($session);
         $this->sessionManager->setFlowStep(
             $session,
             FlowType::REGISTRATION,
             RegistrationStep::ASK_TYPE->value
         );
 
-        // Send welcome and ask user type
-        $this->askUserType($session);
+        // Track registration started
+        Log::info('Registration started', [
+            'phone' => $this->maskPhone($session->phone),
+        ]);
+
+        $this->sendWelcomeMessage($session);
     }
 
     /**
-     * Handle an incoming message.
+     * Handle an incoming message during registration.
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
         $step = RegistrationStep::tryFrom($session->current_step);
 
         if (!$step) {
-            Log::warning('Invalid registration step', ['step' => $session->current_step]);
+            Log::warning('Invalid registration step', [
+                'step' => $session->current_step,
+                'phone' => $this->maskPhone($session->phone),
+            ]);
             $this->start($session);
             return;
         }
@@ -107,7 +133,7 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Handle invalid input.
+     * Handle invalid input with helpful re-prompting.
      */
     public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
     {
@@ -118,16 +144,16 @@ class RegistrationFlowHandler implements FlowHandlerInterface
             return;
         }
 
-        // Send appropriate error and re-prompt
+        // Re-prompt for current step with error indication
         match ($step) {
-            RegistrationStep::ASK_TYPE => $this->askUserType($session, true),
-            RegistrationStep::ASK_NAME => $this->askName($session, true),
-            RegistrationStep::ASK_LOCATION => $this->askLocation($session, true),
-            RegistrationStep::ASK_SHOP_NAME => $this->askShopName($session, true),
-            RegistrationStep::ASK_SHOP_CATEGORY => $this->askShopCategory($session, true),
-            RegistrationStep::ASK_SHOP_LOCATION => $this->askShopLocation($session, true),
-            RegistrationStep::ASK_NOTIFICATION_PREF => $this->askNotificationPref($session, true),
-            RegistrationStep::CONFIRM => $this->askConfirmation($session),
+            RegistrationStep::ASK_TYPE => $this->promptUserType($session, true),
+            RegistrationStep::ASK_NAME => $this->promptName($session, true),
+            RegistrationStep::ASK_LOCATION => $this->promptLocation($session, true),
+            RegistrationStep::ASK_SHOP_NAME => $this->promptShopName($session, true),
+            RegistrationStep::ASK_SHOP_CATEGORY => $this->promptShopCategory($session, true),
+            RegistrationStep::ASK_SHOP_LOCATION => $this->promptShopLocation($session, true),
+            RegistrationStep::ASK_NOTIFICATION_PREF => $this->promptNotificationPref($session, true),
+            RegistrationStep::CONFIRM => $this->promptConfirmation($session),
             default => $this->start($session),
         };
     }
@@ -139,24 +165,13 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     */
 
     /**
-     * Handle user type selection (customer/shop).
+     * Handle user type selection (FR-REG-02).
      */
     protected function handleUserTypeSelection(IncomingMessage $message, ConversationSession $session): void
     {
-        $selection = null;
+        $selection = $this->extractUserType($message);
 
-        if ($message->isButtonReply()) {
-            $selection = $message->getSelectionId();
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (str_contains($text, 'customer') || $text === '1') {
-                $selection = 'customer';
-            } elseif (str_contains($text, 'shop') || str_contains($text, 'owner') || $text === '2') {
-                $selection = 'shop';
-            }
-        }
-
-        if (!in_array($selection, ['customer', 'shop'])) {
+        if (!$selection) {
             $this->handleInvalidInput($message, $session);
             return;
         }
@@ -169,13 +184,13 @@ class RegistrationFlowHandler implements FlowHandlerInterface
             'type' => $selection,
         ]);
 
-        // Move to next step
+        // Move to name step
         $this->sessionManager->setStep($session, RegistrationStep::ASK_NAME->value);
-        $this->askName($session);
+        $this->promptName($session);
     }
 
     /**
-     * Handle name input.
+     * Handle name input (FR-REG-03).
      */
     protected function handleNameInput(IncomingMessage $message, ConversationSession $session): void
     {
@@ -187,8 +202,11 @@ class RegistrationFlowHandler implements FlowHandlerInterface
         $name = trim($message->text ?? '');
 
         if (!$this->registrationService->isValidName($name)) {
-            $this->whatsApp->sendText($session->phone, RegistrationMessages::ERROR_INVALID_NAME);
-            $this->askName($session);
+            $this->whatsApp->sendText(
+                $session->phone,
+                RegistrationMessages::get('error_invalid_name', $this->getLanguage($session))
+            );
+            $this->promptName($session);
             return;
         }
 
@@ -201,11 +219,11 @@ class RegistrationFlowHandler implements FlowHandlerInterface
 
         // Move to location step
         $this->sessionManager->setStep($session, RegistrationStep::ASK_LOCATION->value);
-        $this->askLocation($session);
+        $this->promptLocation($session);
     }
 
     /**
-     * Handle location input.
+     * Handle location input (FR-REG-04, FR-REG-05).
      */
     protected function handleLocationInput(IncomingMessage $message, ConversationSession $session): void
     {
@@ -216,38 +234,43 @@ class RegistrationFlowHandler implements FlowHandlerInterface
 
         $coords = $message->getCoordinates();
 
-        if (!$coords || !isset($coords['latitude']) || !isset($coords['longitude'])) {
+        if (!$coords || !isset($coords['latitude'], $coords['longitude'])) {
             $this->handleInvalidInput($message, $session);
             return;
         }
 
-        // Store location
+        // Validate coordinates
+        if (!$this->registrationService->isValidCoordinates($coords['latitude'], $coords['longitude'])) {
+            $this->handleInvalidInput($message, $session);
+            return;
+        }
+
+        // Store location (FR-REG-05)
         $this->sessionManager->mergeTempData($session, [
             'latitude' => $coords['latitude'],
             'longitude' => $coords['longitude'],
-            'address' => $message->location['address'] ?? null,
+            'address' => $message->location['address'] ?? $message->location['name'] ?? null,
         ]);
 
         Log::info('Registration: Location saved', [
             'phone' => $this->maskPhone($session->phone),
         ]);
 
-        // Check if customer or shop owner
+        // Branch based on user type
         $userType = $this->sessionManager->getTempData($session, 'user_type');
 
         if ($userType === 'shop') {
             // Continue to shop details
             $this->sessionManager->setStep($session, RegistrationStep::ASK_SHOP_NAME->value);
-            $this->askShopName($session);
+            $this->promptShopName($session);
         } else {
-            // Customer - go to confirmation
-            $this->sessionManager->setStep($session, RegistrationStep::CONFIRM->value);
-            $this->askConfirmation($session);
+            // Customer complete - go directly to completion (skip confirmation for speed)
+            $this->completeRegistration($session);
         }
     }
 
     /**
-     * Handle shop name input.
+     * Handle shop name input (FR-SHOP-01).
      */
     protected function handleShopNameInput(IncomingMessage $message, ConversationSession $session): void
     {
@@ -259,8 +282,11 @@ class RegistrationFlowHandler implements FlowHandlerInterface
         $shopName = trim($message->text ?? '');
 
         if (!$this->registrationService->isValidName($shopName)) {
-            $this->whatsApp->sendText($session->phone, RegistrationMessages::ERROR_INVALID_SHOP_NAME);
-            $this->askShopName($session);
+            $this->whatsApp->sendText(
+                $session->phone,
+                RegistrationMessages::get('error_invalid_shop_name', $this->getLanguage($session))
+            );
+            $this->promptShopName($session);
             return;
         }
 
@@ -273,23 +299,15 @@ class RegistrationFlowHandler implements FlowHandlerInterface
 
         // Move to category selection
         $this->sessionManager->setStep($session, RegistrationStep::ASK_SHOP_CATEGORY->value);
-        $this->askShopCategory($session);
+        $this->promptShopCategory($session);
     }
 
     /**
-     * Handle category selection.
+     * Handle category selection (FR-SHOP-02).
      */
     protected function handleCategorySelection(IncomingMessage $message, ConversationSession $session): void
     {
-        $category = null;
-
-        if ($message->isListReply()) {
-            $category = $message->getSelectionId();
-        } elseif ($message->isText()) {
-            // Try to match text to category
-            $text = strtolower(trim($message->text ?? ''));
-            $category = $this->matchCategory($text);
-        }
+        $category = $this->extractCategory($message);
 
         if (!$category || !$this->registrationService->isValidCategory($category)) {
             $this->handleInvalidInput($message, $session);
@@ -304,43 +322,67 @@ class RegistrationFlowHandler implements FlowHandlerInterface
             'category' => $category,
         ]);
 
-        // Move to shop location
+        // Move to shop location - offer "same location" option
         $this->sessionManager->setStep($session, RegistrationStep::ASK_SHOP_LOCATION->value);
-        $this->askShopLocation($session);
+        $this->promptShopLocationWithOption($session);
     }
 
     /**
-     * Handle shop location input.
+     * Handle shop location input (FR-SHOP-03).
      */
     protected function handleShopLocationInput(IncomingMessage $message, ConversationSession $session): void
     {
-        if (!$message->isLocation()) {
-            // Check if user wants to use same location
-            if ($message->isButtonReply() && $message->getSelectionId() === 'same_location') {
+        // Check for "same location" button
+        if ($message->isButtonReply()) {
+            $buttonId = $message->getSelectionId();
+
+            if ($buttonId === 'same_location') {
+                // Use same coordinates as personal location
                 $this->sessionManager->mergeTempData($session, [
                     'shop_latitude' => $this->sessionManager->getTempData($session, 'latitude'),
                     'shop_longitude' => $this->sessionManager->getTempData($session, 'longitude'),
                     'shop_address' => $this->sessionManager->getTempData($session, 'address'),
                 ]);
-            } else {
-                $this->handleInvalidInput($message, $session);
+
+                Log::info('Registration: Shop location same as personal', [
+                    'phone' => $this->maskPhone($session->phone),
+                ]);
+
+                // Move to notification preferences
+                $this->sessionManager->setStep($session, RegistrationStep::ASK_NOTIFICATION_PREF->value);
+                $this->promptNotificationPref($session);
                 return;
             }
-        } else {
-            $coords = $message->getCoordinates();
 
-            if (!$coords) {
-                $this->handleInvalidInput($message, $session);
+            if ($buttonId === 'different') {
+                // Request different location
+                $this->promptShopLocation($session);
                 return;
             }
-
-            // Store shop location
-            $this->sessionManager->mergeTempData($session, [
-                'shop_latitude' => $coords['latitude'],
-                'shop_longitude' => $coords['longitude'],
-                'shop_address' => $message->location['address'] ?? null,
-            ]);
         }
+
+        // Handle actual location share
+        if (!$message->isLocation()) {
+            $this->handleInvalidInput($message, $session);
+            return;
+        }
+
+        $coords = $message->getCoordinates();
+
+        if (!$coords || !$this->registrationService->isValidCoordinates(
+            $coords['latitude'],
+            $coords['longitude']
+        )) {
+            $this->handleInvalidInput($message, $session);
+            return;
+        }
+
+        // Store shop location
+        $this->sessionManager->mergeTempData($session, [
+            'shop_latitude' => $coords['latitude'],
+            'shop_longitude' => $coords['longitude'],
+            'shop_address' => $message->location['address'] ?? $message->location['name'] ?? null,
+        ]);
 
         Log::info('Registration: Shop location saved', [
             'phone' => $this->maskPhone($session->phone),
@@ -348,22 +390,15 @@ class RegistrationFlowHandler implements FlowHandlerInterface
 
         // Move to notification preferences
         $this->sessionManager->setStep($session, RegistrationStep::ASK_NOTIFICATION_PREF->value);
-        $this->askNotificationPref($session);
+        $this->promptNotificationPref($session);
     }
 
     /**
-     * Handle notification preference selection.
+     * Handle notification preference selection (FR-SHOP-04).
      */
     protected function handleNotificationPrefSelection(IncomingMessage $message, ConversationSession $session): void
     {
-        $pref = null;
-
-        if ($message->isListReply()) {
-            $pref = $message->getSelectionId();
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            $pref = $this->matchNotificationPref($text);
-        }
+        $pref = $this->extractNotificationPref($message);
 
         if (!$pref || !$this->registrationService->isValidNotificationFrequency($pref)) {
             $this->handleInvalidInput($message, $session);
@@ -378,9 +413,8 @@ class RegistrationFlowHandler implements FlowHandlerInterface
             'pref' => $pref,
         ]);
 
-        // Move to confirmation
-        $this->sessionManager->setStep($session, RegistrationStep::CONFIRM->value);
-        $this->askConfirmation($session);
+        // Complete registration (skip confirmation for speed)
+        $this->completeRegistration($session);
     }
 
     /**
@@ -388,20 +422,7 @@ class RegistrationFlowHandler implements FlowHandlerInterface
      */
     protected function handleConfirmation(IncomingMessage $message, ConversationSession $session): void
     {
-        $action = null;
-
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (in_array($text, ['yes', 'confirm', 'ok', '1'])) {
-                $action = 'confirm';
-            } elseif (in_array($text, ['edit', 'change', '2'])) {
-                $action = 'edit';
-            } elseif (in_array($text, ['no', 'cancel', '3'])) {
-                $action = 'cancel';
-            }
-        }
+        $action = $this->extractConfirmationAction($message);
 
         match ($action) {
             'confirm' => $this->completeRegistration($session),
@@ -416,10 +437,9 @@ class RegistrationFlowHandler implements FlowHandlerInterface
      */
     protected function handleComplete(ConversationSession $session): void
     {
-        // Already complete, show main menu
+        // Already complete, redirect to main menu
         $this->sessionManager->resetToMainMenu($session);
 
-        // Trigger main menu handler
         $mainMenuHandler = app(MainMenuHandler::class);
         $mainMenuHandler->start($session);
     }
@@ -431,13 +451,68 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     */
 
     /**
-     * Ask for user type.
+     * Send welcome message with referral awareness.
      */
-    protected function askUserType(ConversationSession $session, bool $isRetry = false): void
+    protected function sendWelcomeMessage(ConversationSession $session): void
     {
+        $lang = $this->getLanguage($session);
+        $referrerPhone = $this->sessionManager->getTempData($session, 'referrer_phone');
+
+        if ($referrerPhone) {
+            $referrer = $this->registrationService->findByPhone($referrerPhone);
+            if ($referrer) {
+                $userCount = $this->registrationService->getTotalUserCount();
+                $message = RegistrationMessages::getFormatted('welcome_referred', [
+                    'referrer_name' => $referrer->name,
+                    'user_count' => number_format($userCount),
+                ], $lang);
+
+                $this->whatsApp->sendText($session->phone, $message);
+                $this->promptUserType($session);
+                return;
+            }
+        }
+
+        // Standard welcome
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            RegistrationMessages::get('welcome_new', $lang) . "\n\n" .
+            RegistrationMessages::get('ask_type', $lang),
+            RegistrationMessages::getUserTypeButtons()
+        );
+    }
+
+    /**
+     * Offer to continue incomplete registration.
+     */
+    protected function offerContinueOrRestart(ConversationSession $session, array $tempData): void
+    {
+        $lastStep = $session->current_step ?? 'ask_type';
+        $stepDescription = RegistrationMessages::getStepDescription($lastStep);
+
+        $message = RegistrationMessages::getFormatted('welcome_back_incomplete', [
+            'last_step' => $stepDescription,
+        ], $this->getLanguage($session));
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            RegistrationMessages::getContinueButtons()
+        );
+
+        // Set a temporary step to handle the continue/restart choice
+        $this->sessionManager->setTempData($session, 'awaiting_continue_choice', true);
+    }
+
+    /**
+     * Prompt for user type (FR-REG-02).
+     */
+    protected function promptUserType(ConversationSession $session, bool $isRetry = false): void
+    {
+        $lang = $this->getLanguage($session);
         $message = $isRetry
-            ? RegistrationMessages::ERROR_SELECT_TYPE
-            : RegistrationMessages::WELCOME_NEW_USER . "\n\n" . RegistrationMessages::ASK_USER_TYPE;
+            ? RegistrationMessages::get('error_select_type', $lang)
+            : RegistrationMessages::get('ask_type', $lang);
 
         $this->whatsApp->sendButtons(
             $session->phone,
@@ -447,51 +522,56 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Ask for name.
+     * Prompt for name.
      */
-    protected function askName(ConversationSession $session, bool $isRetry = false): void
+    protected function promptName(ConversationSession $session, bool $isRetry = false): void
     {
+        $lang = $this->getLanguage($session);
         $userType = $this->sessionManager->getTempData($session, 'user_type');
 
-        $message = $isRetry
-            ? RegistrationMessages::ERROR_INVALID_NAME
-            : ($userType === 'shop' ? RegistrationMessages::ASK_NAME_SHOP : RegistrationMessages::ASK_NAME);
+        $key = ($userType === 'shop') ? 'ask_name_shop' : 'ask_name_customer';
 
-        $this->whatsApp->sendText($session->phone, $message);
+        $this->whatsApp->sendText($session->phone, RegistrationMessages::get($key, $lang));
     }
 
     /**
-     * Ask for location.
+     * Prompt for location (FR-REG-04).
      */
-    protected function askLocation(ConversationSession $session, bool $isRetry = false): void
+    protected function promptLocation(ConversationSession $session, bool $isRetry = false): void
     {
+        $lang = $this->getLanguage($session);
+        $userType = $this->sessionManager->getTempData($session, 'user_type');
+
+        $key = ($userType === 'shop') ? 'ask_location_shop_owner' : 'ask_location_customer';
         $message = $isRetry
-            ? RegistrationMessages::ERROR_LOCATION_REQUIRED
-            : RegistrationMessages::ASK_LOCATION;
+            ? RegistrationMessages::get('error_location_required', $lang)
+            : RegistrationMessages::get($key, $lang);
 
         $this->whatsApp->requestLocation($session->phone, $message);
     }
 
     /**
-     * Ask for shop name.
+     * Prompt for shop name (FR-SHOP-01).
      */
-    protected function askShopName(ConversationSession $session, bool $isRetry = false): void
+    protected function promptShopName(ConversationSession $session, bool $isRetry = false): void
     {
-        $message = $isRetry
-            ? RegistrationMessages::ERROR_INVALID_SHOP_NAME
-            : RegistrationMessages::ASK_SHOP_NAME;
-
-        $this->whatsApp->sendText($session->phone, $message);
+        $lang = $this->getLanguage($session);
+        $this->whatsApp->sendText(
+            $session->phone,
+            RegistrationMessages::get('ask_shop_name', $lang)
+        );
     }
 
     /**
-     * Ask for shop category.
+     * Prompt for shop category (FR-SHOP-02).
      */
-    protected function askShopCategory(ConversationSession $session, bool $isRetry = false): void
+    protected function promptShopCategory(ConversationSession $session, bool $isRetry = false): void
     {
+        $lang = $this->getLanguage($session);
         $message = $isRetry
-            ? RegistrationMessages::ERROR_SELECT_CATEGORY . "\n\n" . RegistrationMessages::ASK_SHOP_CATEGORY
-            : RegistrationMessages::ASK_SHOP_CATEGORY;
+            ? RegistrationMessages::get('error_select_category', $lang) . "\n\n" .
+              RegistrationMessages::get('ask_shop_category', $lang)
+            : RegistrationMessages::get('ask_shop_category', $lang);
 
         $this->whatsApp->sendList(
             $session->phone,
@@ -502,25 +582,43 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Ask for shop location.
+     * Prompt for shop location with "same location" option.
+     * This reduces friction for shop owners (FR-SHOP-03).
      */
-    protected function askShopLocation(ConversationSession $session, bool $isRetry = false): void
+    protected function promptShopLocationWithOption(ConversationSession $session): void
     {
+        $lang = $this->getLanguage($session);
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            RegistrationMessages::get('ask_shop_location_same', $lang),
+            RegistrationMessages::getShopLocationButtons()
+        );
+    }
+
+    /**
+     * Prompt for different shop location.
+     */
+    protected function promptShopLocation(ConversationSession $session, bool $isRetry = false): void
+    {
+        $lang = $this->getLanguage($session);
         $message = $isRetry
-            ? RegistrationMessages::ERROR_LOCATION_REQUIRED
-            : RegistrationMessages::ASK_SHOP_LOCATION;
+            ? RegistrationMessages::get('error_location_required', $lang)
+            : RegistrationMessages::get('ask_shop_location', $lang);
 
         $this->whatsApp->requestLocation($session->phone, $message);
     }
 
     /**
-     * Ask for notification preference.
+     * Prompt for notification preference (FR-SHOP-04).
      */
-    protected function askNotificationPref(ConversationSession $session, bool $isRetry = false): void
+    protected function promptNotificationPref(ConversationSession $session, bool $isRetry = false): void
     {
+        $lang = $this->getLanguage($session);
         $message = $isRetry
-            ? RegistrationMessages::ERROR_SELECT_NOTIFICATION . "\n\n" . RegistrationMessages::ASK_NOTIFICATION_PREF
-            : RegistrationMessages::ASK_NOTIFICATION_PREF;
+            ? RegistrationMessages::get('error_select_notification', $lang) . "\n\n" .
+              RegistrationMessages::get('ask_notification_pref', $lang)
+            : RegistrationMessages::get('ask_notification_pref', $lang);
 
         $this->whatsApp->sendList(
             $session->phone,
@@ -531,28 +629,29 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Ask for confirmation.
+     * Prompt for confirmation.
      */
-    protected function askConfirmation(ConversationSession $session): void
+    protected function promptConfirmation(ConversationSession $session): void
     {
+        $lang = $this->getLanguage($session);
         $userType = $this->sessionManager->getTempData($session, 'user_type');
         $name = $this->sessionManager->getTempData($session, 'name');
 
         if ($userType === 'shop') {
-            $shopName = $this->sessionManager->getTempData($session, 'shop_name');
-            $category = $this->sessionManager->getTempData($session, 'shop_category');
-            $notifPref = $this->sessionManager->getTempData($session, 'notification_frequency');
-
-            $message = RegistrationMessages::format(RegistrationMessages::CONFIRM_SHOP, [
+            $message = RegistrationMessages::getFormatted('confirm_shop', [
                 'name' => $name,
-                'shop_name' => $shopName,
-                'category' => RegistrationMessages::getCategoryLabel($category),
-                'notification_pref' => RegistrationMessages::getNotificationLabel($notifPref),
-            ]);
+                'shop_name' => $this->sessionManager->getTempData($session, 'shop_name'),
+                'category' => RegistrationMessages::getCategoryLabel(
+                    $this->sessionManager->getTempData($session, 'shop_category')
+                ),
+                'notification_pref' => RegistrationMessages::getNotificationLabel(
+                    $this->sessionManager->getTempData($session, 'notification_frequency')
+                ),
+            ], $lang);
         } else {
-            $message = RegistrationMessages::format(RegistrationMessages::CONFIRM_CUSTOMER, [
+            $message = RegistrationMessages::getFormatted('confirm_customer', [
                 'name' => $name,
-            ]);
+            ], $lang);
         }
 
         $this->whatsApp->sendButtons(
@@ -569,18 +668,16 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     */
 
     /**
-     * Complete the registration.
+     * Complete the registration (FR-REG-06, FR-SHOP-05).
      */
     protected function completeRegistration(ConversationSession $session): void
     {
         $userType = $this->sessionManager->getTempData($session, 'user_type');
 
         try {
-            if ($userType === 'shop') {
-                $user = $this->createShopOwner($session);
-            } else {
-                $user = $this->createCustomer($session);
-            }
+            $user = ($userType === 'shop')
+                ? $this->createShopOwner($session)
+                : $this->createCustomer($session);
 
             // Link session to user
             $this->registrationService->linkSessionToUser($session, $user);
@@ -588,15 +685,15 @@ class RegistrationFlowHandler implements FlowHandlerInterface
             // Clear temp data
             $this->sessionManager->clearTempData($session);
 
-            // Send success message
-            $this->sendCompletionMessage($session, $user, $userType);
-
-            // Set to complete step
+            // Mark as complete
             $this->sessionManager->setStep($session, RegistrationStep::COMPLETE->value);
 
+            // Send success message with next actions (FR-REG-07)
+            $this->sendCompletionMessage($session, $user, $userType);
+
             Log::info('Registration completed', [
-                'phone' => $this->maskPhone($session->phone),
                 'user_id' => $user->id,
+                'phone' => $this->maskPhone($session->phone),
                 'type' => $userType,
             ]);
 
@@ -618,7 +715,7 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     /**
      * Create customer from session data.
      */
-    protected function createCustomer(ConversationSession $session): \App\Models\User
+    protected function createCustomer(ConversationSession $session): User
     {
         return $this->registrationService->createCustomer([
             'phone' => $session->phone,
@@ -626,13 +723,15 @@ class RegistrationFlowHandler implements FlowHandlerInterface
             'latitude' => $this->sessionManager->getTempData($session, 'latitude'),
             'longitude' => $this->sessionManager->getTempData($session, 'longitude'),
             'address' => $this->sessionManager->getTempData($session, 'address'),
+            'language' => $this->getLanguage($session),
+            'referrer_phone' => $this->sessionManager->getTempData($session, 'referrer_phone'),
         ]);
     }
 
     /**
      * Create shop owner from session data.
      */
-    protected function createShopOwner(ConversationSession $session): \App\Models\User
+    protected function createShopOwner(ConversationSession $session): User
     {
         return $this->registrationService->createShopOwner([
             'phone' => $session->phone,
@@ -646,24 +745,28 @@ class RegistrationFlowHandler implements FlowHandlerInterface
             'shop_longitude' => $this->sessionManager->getTempData($session, 'shop_longitude'),
             'shop_address' => $this->sessionManager->getTempData($session, 'shop_address'),
             'notification_frequency' => $this->sessionManager->getTempData($session, 'notification_frequency'),
+            'language' => $this->getLanguage($session),
+            'referrer_phone' => $this->sessionManager->getTempData($session, 'referrer_phone'),
         ]);
     }
 
     /**
-     * Send completion message.
+     * Send completion message with immediate action options.
      */
-    protected function sendCompletionMessage(ConversationSession $session, $user, string $userType): void
+    protected function sendCompletionMessage(ConversationSession $session, User $user, string $userType): void
     {
+        $lang = $this->getLanguage($session);
+
         if ($userType === 'shop') {
-            $message = RegistrationMessages::format(RegistrationMessages::COMPLETE_SHOP, [
+            $message = RegistrationMessages::getFormatted('complete_shop', [
                 'name' => $user->name,
                 'shop_name' => $user->shop->shop_name,
-            ]);
+            ], $lang);
             $buttons = RegistrationMessages::getShopNextButtons();
         } else {
-            $message = RegistrationMessages::format(RegistrationMessages::COMPLETE_CUSTOMER, [
+            $message = RegistrationMessages::getFormatted('complete_customer', [
                 'name' => $user->name,
-            ]);
+            ], $lang);
             $buttons = RegistrationMessages::getCustomerNextButtons();
         }
 
@@ -677,9 +780,10 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     {
         $this->whatsApp->sendText(
             $session->phone,
-            "🔄 Let's start over. Your previous answers have been cleared."
+            RegistrationMessages::get('restart_message', $this->getLanguage($session))
         );
 
+        $this->sessionManager->clearTempData($session);
         $this->start($session);
     }
 
@@ -688,46 +792,143 @@ class RegistrationFlowHandler implements FlowHandlerInterface
      */
     protected function cancelRegistration(ConversationSession $session): void
     {
+        // Track abandonment for analytics
+        $this->registrationService->trackIncompleteRegistration(
+            $session->phone,
+            $session->current_step,
+            $session->temp_data ?? []
+        );
+
         $this->sessionManager->clearTempData($session);
         $this->sessionManager->resetToMainMenu($session);
 
         $this->whatsApp->sendText(
             $session->phone,
-            "❌ Registration cancelled.\n\nYou can register anytime by typing 'register'."
+            RegistrationMessages::get('cancel_message', $this->getLanguage($session))
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Helper Methods
+    | Input Extraction Helpers
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Match text input to category.
+     * Extract user type from message.
+     */
+    protected function extractUserType(IncomingMessage $message): ?string
+    {
+        if ($message->isButtonReply()) {
+            $id = $message->getSelectionId();
+            if (in_array($id, ['customer', 'shop'])) {
+                return $id;
+            }
+        }
+
+        if ($message->isText()) {
+            $text = strtolower(trim($message->text ?? ''));
+
+            if (str_contains($text, 'customer') || $text === '1' || $text === 'c') {
+                return 'customer';
+            }
+
+            if (str_contains($text, 'shop') || str_contains($text, 'owner') ||
+                str_contains($text, 'business') || $text === '2' || $text === 's') {
+                return 'shop';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract category from message.
+     */
+    protected function extractCategory(IncomingMessage $message): ?string
+    {
+        if ($message->isListReply()) {
+            return $message->getSelectionId();
+        }
+
+        if ($message->isText()) {
+            $text = strtolower(trim($message->text ?? ''));
+            return $this->matchCategory($text);
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract notification preference from message.
+     */
+    protected function extractNotificationPref(IncomingMessage $message): ?string
+    {
+        if ($message->isListReply()) {
+            return $message->getSelectionId();
+        }
+
+        if ($message->isText()) {
+            $text = strtolower(trim($message->text ?? ''));
+            return $this->matchNotificationPref($text);
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract confirmation action from message.
+     */
+    protected function extractConfirmationAction(IncomingMessage $message): ?string
+    {
+        if ($message->isButtonReply()) {
+            return $message->getSelectionId();
+        }
+
+        if ($message->isText()) {
+            $text = strtolower(trim($message->text ?? ''));
+
+            if (in_array($text, ['yes', 'confirm', 'ok', 'y', '1', 'correct', 'right'])) {
+                return 'confirm';
+            }
+
+            if (in_array($text, ['edit', 'change', 'modify', 'e', '2'])) {
+                return 'edit';
+            }
+
+            if (in_array($text, ['no', 'cancel', 'stop', 'n', '3'])) {
+                return 'cancel';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Match text to category.
      */
     protected function matchCategory(string $text): ?string
     {
-        $categories = [
-            'grocery' => ['grocery', 'grocer', 'kirana', 'supermarket'],
-            'electronics' => ['electronics', 'electronic', 'gadget'],
-            'clothes' => ['clothes', 'clothing', 'fashion', 'garment', 'textile'],
-            'medical' => ['medical', 'medicine', 'pharmacy', 'drug', 'chemist'],
-            'furniture' => ['furniture', 'wood', 'sofa'],
-            'mobile' => ['mobile', 'phone', 'cellphone'],
-            'appliances' => ['appliance', 'appliances', 'electrical'],
-            'hardware' => ['hardware', 'tools', 'building'],
-            'restaurant' => ['restaurant', 'food', 'hotel', 'cafe'],
-            'bakery' => ['bakery', 'bake', 'bread', 'cake', 'sweet'],
-            'stationery' => ['stationery', 'book', 'office'],
-            'beauty' => ['beauty', 'cosmetic', 'salon', 'parlor'],
-            'automotive' => ['automotive', 'auto', 'car', 'vehicle', 'bike'],
-            'jewelry' => ['jewelry', 'jewellery', 'gold', 'ornament'],
-            'sports' => ['sports', 'sport', 'fitness', 'gym'],
-            'other' => ['other', 'misc', 'general'],
+        $mappings = [
+            'grocery' => ['grocery', 'grocer', 'kirana', 'supermarket', 'provision', 'general'],
+            'electronics' => ['electronics', 'electronic', 'gadget', 'computer', 'laptop'],
+            'clothes' => ['clothes', 'clothing', 'fashion', 'garment', 'textile', 'dress'],
+            'medical' => ['medical', 'medicine', 'pharmacy', 'drug', 'chemist', 'health'],
+            'furniture' => ['furniture', 'wood', 'sofa', 'bed', 'table', 'chair'],
+            'mobile' => ['mobile', 'phone', 'cellphone', 'smartphone'],
+            'appliances' => ['appliance', 'appliances', 'electrical', 'ac', 'fridge'],
+            'hardware' => ['hardware', 'tools', 'building', 'plumbing', 'paint'],
+            'restaurant' => ['restaurant', 'food', 'hotel', 'cafe', 'eatery', 'mess'],
+            'bakery' => ['bakery', 'bake', 'bread', 'cake', 'sweet', 'confection'],
+            'stationery' => ['stationery', 'book', 'office', 'paper', 'pen'],
+            'beauty' => ['beauty', 'cosmetic', 'salon', 'parlor', 'makeup'],
+            'automotive' => ['automotive', 'auto', 'car', 'vehicle', 'bike', 'garage'],
+            'jewelry' => ['jewelry', 'jewellery', 'gold', 'ornament', 'silver'],
+            'sports' => ['sports', 'sport', 'fitness', 'gym', 'exercise'],
+            'other' => ['other', 'misc', 'different', 'else'],
         ];
 
-        foreach ($categories as $category => $keywords) {
+        foreach ($mappings as $category => $keywords) {
             foreach ($keywords as $keyword) {
                 if (str_contains($text, $keyword)) {
                     return $category;
@@ -739,18 +940,18 @@ class RegistrationFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Match text input to notification preference.
+     * Match text to notification preference.
      */
     protected function matchNotificationPref(string $text): ?string
     {
-        $prefs = [
-            'immediate' => ['immediate', 'instant', 'now', 'always', '1'],
-            '2hours' => ['2 hour', '2hour', 'two hour', 'every 2', '2'],
-            'twice_daily' => ['twice', 'twice daily', 'morning evening', '3'],
-            'daily' => ['daily', 'once', 'once daily', 'morning', '4'],
+        $mappings = [
+            'immediate' => ['immediate', 'instant', 'now', 'always', 'every', '1'],
+            '2hours' => ['2 hour', '2hour', 'two hour', 'every 2', 'batch', '2'],
+            'twice_daily' => ['twice', 'twice daily', 'morning evening', 'two times', '3'],
+            'daily' => ['daily', 'once', 'once daily', 'morning only', 'one time', '4'],
         ];
 
-        foreach ($prefs as $pref => $keywords) {
+        foreach ($mappings as $pref => $keywords) {
             foreach ($keywords as $keyword) {
                 if (str_contains($text, $keyword)) {
                     return $pref;
@@ -761,15 +962,29 @@ class RegistrationFlowHandler implements FlowHandlerInterface
         return null;
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Utility Methods
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get user's preferred language.
+     */
+    protected function getLanguage(ConversationSession $session): string
+    {
+        return $this->sessionManager->getTempData($session, 'language') ?? 'en';
+    }
+
     /**
      * Mask phone number for logging.
      */
     protected function maskPhone(string $phone): string
     {
-        if (strlen($phone) < 6) {
-            return $phone;
+        $length = strlen($phone);
+        if ($length < 6) {
+            return str_repeat('*', $length);
         }
-
-        return substr($phone, 0, 3) . '****' . substr($phone, -3);
+        return substr($phone, 0, 3) . str_repeat('*', $length - 6) . substr($phone, -3);
     }
 }

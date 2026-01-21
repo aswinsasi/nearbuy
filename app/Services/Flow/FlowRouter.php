@@ -10,35 +10,47 @@ use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\Messages\ErrorTemplate;
 use App\Services\WhatsApp\Messages\MessageTemplates;
+use App\Services\WhatsApp\Messages\MainMenuTemplate;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Routes incoming messages to appropriate flow handlers.
+ * ENHANCED FlowRouter - Routes incoming messages to appropriate flow handlers.
  *
- * This is the main entry point for processing WhatsApp messages.
- * It determines which flow handler should process the message
- * based on session state and message content.
- *
- * @example
- * $router = app(FlowRouter::class);
- * $router->route($incomingMessage, $session);
+ * Key improvements:
+ * 1. Better help message with buttons
+ * 2. Consistent error handling with options
+ * 3. Quick command support
+ * 4. Better session recovery
  */
 class FlowRouter
 {
     /**
      * Keywords that trigger return to main menu.
      */
-    protected const MENU_KEYWORDS = ['menu', 'home', 'start', '0', 'hi', 'hello', 'main'];
+    protected const MENU_KEYWORDS = ['menu', 'home', 'start', '0', 'hi', 'hello', 'main', 'reset'];
 
     /**
      * Keywords that trigger help message.
      */
-    protected const HELP_KEYWORDS = ['help', '?', 'support'];
+    protected const HELP_KEYWORDS = ['help', '?', 'support', 'how'];
 
     /**
      * Keywords that trigger cancel action.
      */
-    protected const CANCEL_KEYWORDS = ['cancel', 'exit', 'quit', 'stop'];
+    protected const CANCEL_KEYWORDS = ['cancel', 'exit', 'quit', 'stop', 'end'];
+
+    /**
+     * Quick action keywords mapped to flows.
+     */
+    protected const QUICK_ACTIONS = [
+        'browse' => 'browse_offers',
+        'offers' => 'browse_offers',
+        'search' => 'search_product',
+        'find' => 'search_product',
+        'agree' => 'create_agreement',
+        'agreement' => 'create_agreement',
+        'upload' => 'upload_offer',
+    ];
 
     public function __construct(
         protected SessionManager $sessionManager,
@@ -63,6 +75,11 @@ class FlowRouter
 
             // Check for global keywords first
             if ($this->handleGlobalKeywords($message, $session)) {
+                return;
+            }
+
+            // Check for quick action commands
+            if ($this->handleQuickActions($message, $session)) {
                 return;
             }
 
@@ -92,7 +109,7 @@ class FlowRouter
 
             if (!$handler) {
                 Log::error('No handler found for flow', ['flow' => $flowType->value]);
-                $this->sendError($message->from, ErrorTemplate::generic('Handler not found'));
+                $this->sendErrorWithMenu($message->from, 'Something went wrong. Please try again.');
                 return;
             }
 
@@ -105,9 +122,10 @@ class FlowRouter
                 'phone' => $this->maskPhone($message->from),
                 'flow' => $session->current_flow,
                 'step' => $session->current_step,
+                'trace' => $e->getTraceAsString(),
             ]);
 
-            $this->sendError($message->from, ErrorTemplate::generic());
+            $this->sendErrorWithMenu($message->from, MessageTemplates::ERROR_GENERIC);
         }
     }
 
@@ -130,13 +148,33 @@ class FlowRouter
 
         // Help keywords
         if (in_array($text, self::HELP_KEYWORDS)) {
-            $this->showHelp($message->from);
+            $this->showHelp($message->from, $session);
             return true;
         }
 
         // Cancel keywords (only if in a flow)
         if (in_array($text, self::CANCEL_KEYWORDS) && !$this->sessionManager->isIdle($session)) {
             $this->handleCancel($session);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Handle quick action keywords.
+     */
+    protected function handleQuickActions(IncomingMessage $message, ConversationSession $session): bool
+    {
+        if (!$message->isText()) {
+            return false;
+        }
+
+        $text = strtolower(trim($message->text ?? ''));
+
+        if (isset(self::QUICK_ACTIONS[$text])) {
+            $menuSelection = self::QUICK_ACTIONS[$text];
+            $this->handleMenuSelection($menuSelection, $session);
             return true;
         }
 
@@ -155,29 +193,45 @@ class FlowRouter
     }
 
     /**
-     * Show help message.
+     * Show help message with buttons.
+     * 
+     * ENHANCED: Now uses buttons instead of plain text.
      */
-    protected function showHelp(string $phone): void
+    protected function showHelp(string $phone, ConversationSession $session): void
     {
-        $helpText = "ℹ️ *NearBuy Help*\n\n" .
-            "Available commands:\n" .
-            "• *menu* - Return to main menu\n" .
-            "• *cancel* - Cancel current action\n" .
-            "• *help* - Show this message\n\n" .
-            "Need more help? Contact support at:\n" .
-            config('nearbuy.app.support_phone', 'support');
+        $helpMessage = MainMenuTemplate::getHelpMessage();
 
-        $this->whatsApp->sendText($phone, $helpText);
+        $this->whatsApp->sendButtons(
+            $phone,
+            $helpMessage,
+            [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'browse_offers', 'title' => '🛍️ Browse'],
+            ],
+            'ℹ️ Help',
+            MessageTemplates::GLOBAL_FOOTER
+        );
     }
 
     /**
      * Handle cancel action.
+     * 
+     * ENHANCED: Now uses buttons and clears temp data.
      */
     protected function handleCancel(ConversationSession $session): void
     {
-        $this->whatsApp->sendText(
+        // Clear any temp data
+        $this->sessionManager->clearTempData($session);
+
+        $this->whatsApp->sendButtons(
             $session->phone,
-            "❌ Action cancelled.\n\nReturning to main menu..."
+            "❌ *Action Cancelled*\n\nWhat would you like to do?",
+            [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'retry', 'title' => '🔄 Start Over'],
+            ],
+            null,
+            MessageTemplates::GLOBAL_FOOTER
         );
 
         $this->goToMainMenu($session);
@@ -185,6 +239,8 @@ class FlowRouter
 
     /**
      * Handle user not registered.
+     * 
+     * ENHANCED: Better messaging with clear CTA.
      */
     protected function handleNotRegistered(IncomingMessage $message, ConversationSession $session): void
     {
@@ -193,11 +249,10 @@ class FlowRouter
         $this->whatsApp->sendButtons(
             $message->from,
             $error['message'],
-            $error['buttons']
+            $error['buttons'],
+            '📝 Registration Required',
+            MessageTemplates::GLOBAL_FOOTER
         );
-
-        // If user selects register, route to registration
-        // This will be handled by the main menu handler
     }
 
     /**
@@ -210,7 +265,9 @@ class FlowRouter
         $this->whatsApp->sendButtons(
             $message->from,
             $error['message'],
-            $error['buttons']
+            $error['buttons'],
+            '🏪 Shop Feature',
+            MessageTemplates::GLOBAL_FOOTER
         );
     }
 
@@ -270,6 +327,9 @@ class FlowRouter
             return;
         }
 
+        // Clear any previous temp data before starting new flow
+        $this->sessionManager->clearTempData($session);
+
         // Update session
         $this->sessionManager->setFlowStep(
             $session,
@@ -311,11 +371,22 @@ class FlowRouter
     }
 
     /**
-     * Send an error message.
+     * Send an error message with menu button.
+     * 
+     * ENHANCED: All errors now have actionable buttons.
      */
-    protected function sendError(string $phone, string $message): void
+    protected function sendErrorWithMenu(string $phone, string $message): void
     {
-        $this->whatsApp->sendText($phone, $message);
+        $this->whatsApp->sendButtons(
+            $phone,
+            $message,
+            [
+                ['id' => 'retry', 'title' => '🔄 Try Again'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
+            null,
+            MessageTemplates::GLOBAL_FOOTER
+        );
     }
 
     /**
