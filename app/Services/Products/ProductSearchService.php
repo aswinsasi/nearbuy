@@ -62,7 +62,7 @@ class ProductSearchService
         // Parse category
         $category = null;
         if (!empty($data['category']) && $data['category'] !== 'all') {
-            $category = ShopCategory::tryFrom(strtoupper($data['category']));
+            $category = ShopCategory::tryFrom(strtolower($data['category']));
         }
 
         // Calculate expiration
@@ -167,7 +167,7 @@ class ProductSearchService
             ', [$longitude, $latitude, $radiusKm]);
 
         if ($category && $category !== 'all') {
-            $categoryEnum = ShopCategory::tryFrom(strtoupper($category));
+            $categoryEnum = ShopCategory::tryFrom(strtolower($category));
             if ($categoryEnum) {
                 $query->where('category', $categoryEnum);
             }

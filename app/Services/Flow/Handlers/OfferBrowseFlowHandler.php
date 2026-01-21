@@ -327,7 +327,7 @@ class OfferBrowseFlowHandler extends AbstractFlowHandler
         // Get offer counts by category for display
         $counts = [];
         if ($lat && $lng) {
-            $counts = $this->offerService->getOfferCountsByCategory($lat, $lng, $radius);
+            $counts = $this->offerService->getOfferCountsByCategory((float) $lat, (float) $lng, $radius);
         }
 
         $message = $isRetry
@@ -375,7 +375,7 @@ class OfferBrowseFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $offers = $this->offerService->getOffersNearLocation($lat, $lng, $radius, $category);
+        $offers = $this->offerService->getOffersNearLocation((float) $lat, (float) $lng, $radius, $category);
 
         if ($offers->isEmpty()) {
             $this->showNoOffersMessage($session, $category, $radius);
@@ -467,7 +467,7 @@ class OfferBrowseFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $offer = $this->offerService->getOfferWithDistance($offerId, $lat, $lng);
+        $offer = $this->offerService->getOfferWithDistance($offerId, (float) $lat, (float) $lng);
 
         if (!$offer) {
             $this->sendErrorWithOptions(

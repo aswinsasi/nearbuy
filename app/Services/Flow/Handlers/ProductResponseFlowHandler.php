@@ -51,6 +51,98 @@ class ProductResponseFlowHandler extends AbstractFlowHandler
         ];
     }
 
+/**
+     * Start the response flow for a specific request (from notification button).
+     * 
+     * This is called when shop clicks "Yes, I Have It" or "Don't Have" from a notification,
+     * potentially while in another flow.
+     * 
+     * @param ConversationSession $session
+     * @param int $requestId The product request ID
+     * @param string $action 'yes' or 'no' - the shop's initial response
+     */
+    public function startWithRequest(ConversationSession $session, int $requestId, string $action = 'yes'): void
+    {
+        $user = $this->getUser($session);
+
+        if (!$user || !$user->isShopOwner()) {
+            $this->sendButtonsWithMenu(
+                $session->phone,
+                "⚠️ *Shop Owner Required*\n\nOnly shop owners can respond to product requests.",
+                [['id' => 'register', 'title' => '📝 Register Shop']]
+            );
+            $this->goToMainMenu($session);
+            return;
+        }
+
+        $shop = $user->shop;
+
+        // Get the specific request
+        $request = $this->searchService->getRequestForShop($requestId, $shop);
+
+        if (!$request) {
+            $this->sendErrorWithOptions(
+                $session->phone,
+                "❌ Request not found or has expired.",
+                [
+                    ['id' => 'product_requests', 'title' => '📬 View Requests'],
+                    self::MENU_BUTTON,
+                ]
+            );
+            return;
+        }
+
+        // Check if already responded
+        if ($this->responseService->hasAlreadyResponded($request, $shop)) {
+            $existingResponse = $this->responseService->getShopResponse($request, $shop);
+            $message = ProductMessages::format(ProductMessages::ALREADY_RESPONDED, [
+                'price' => number_format($existingResponse->price ?? 0),
+            ]);
+            $this->sendButtonsWithMenu(
+                $session->phone,
+                $message,
+                [['id' => 'product_requests', 'title' => '📬 More Requests']]
+            );
+            return;
+        }
+
+        // Check if request is still active
+        if (!$this->searchService->acceptsResponses($request)) {
+            $this->sendButtonsWithMenu(
+                $session->phone,
+                ProductMessages::REQUEST_NO_LONGER_ACTIVE,
+                [['id' => 'product_requests', 'title' => '📬 More Requests']]
+            );
+            return;
+        }
+
+        // Store request context
+        $this->setTemp($session, 'respond_request_id', $request->id);
+        $this->setTemp($session, 'request_description', $request->description);
+
+        // Set the flow
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::PRODUCT_RESPOND,
+            ProductSearchStep::RESPOND_AVAILABILITY->value
+        );
+
+        // Handle based on action
+        if ($action === 'yes') {
+            // Shop has the product - start price input flow
+            $this->startResponseFlow($session);
+        } else {
+            // Shop doesn't have it - create unavailable response
+            $this->createUnavailableResponse($session);
+        }
+
+        $this->logInfo('Product response started from notification', [
+            'request_id' => $requestId,
+            'action' => $action,
+            'shop_id' => $shop->id,
+        ]);
+    }
+
     /**
      * Start the flow - show pending requests.
      */

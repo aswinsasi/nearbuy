@@ -715,11 +715,36 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         return false;
     }
 
+/**
+     * Cross-flow navigation button IDs.
+     * These buttons can appear in any flow and should route to the appropriate flow.
+     */
+    protected const CROSS_FLOW_BUTTONS = [
+        'register',
+        'browse_offers',
+        'upload_offer',
+        'my_offers',
+        'search_product',
+        'my_requests',
+        'product_requests',
+        'create_agreement',
+        'my_agreements',
+        'pending_agreements',
+        'settings',
+        'shop_profile',
+        'new_search',
+        'new_agreement',
+        'view_responses',
+        'more_requests',
+    ];
+
     /**
      * Handle common navigation inputs.
      * 
      * Returns true if navigation was handled (caller should return).
      * Returns false if input should be processed normally.
+     * 
+     * ENHANCED: Now handles cross-flow navigation buttons and product response buttons.
      */
     protected function handleCommonNavigation(IncomingMessage $message, ConversationSession $session): bool
     {
@@ -744,7 +769,82 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
             return true;
         }
 
+        // Product response buttons (respond_yes_X, respond_no_X) - for shops responding to requests
+        $productResponse = $this->parseProductResponseButton($message);
+        if ($productResponse) {
+            $this->handleProductResponseButton($session, $productResponse['action'], $productResponse['request_id']);
+            return true;
+        }
+
+        // Cross-flow navigation buttons (my_agreements, my_requests, browse_offers, etc.)
+        if ($this->isCrossFlowNavigation($message)) {
+            $selectionId = $this->getSelectionId($message);
+            $this->clearTemp($session);
+            app(\App\Services\Flow\FlowRouter::class)->handleMenuSelection($selectionId, $session);
+            return true;
+        }
+
         return false;
+    }
+
+    /**
+     * Check if message is a cross-flow navigation button.
+     */
+    protected function isCrossFlowNavigation(IncomingMessage $message): bool
+    {
+        if (!$message->isInteractive()) {
+            return false;
+        }
+
+        $selectionId = $this->getSelectionId($message);
+        
+        if (!$selectionId) {
+            return false;
+        }
+
+        return in_array($selectionId, self::CROSS_FLOW_BUTTONS);
+    }
+
+    /**
+     * Check if message is a product response button (respond_yes_X, respond_no_X).
+     * Returns ['action' => 'yes'|'no', 'request_id' => int] or null.
+     */
+    protected function parseProductResponseButton(IncomingMessage $message): ?array
+    {
+        if (!$message->isInteractive()) {
+            return null;
+        }
+
+        $selectionId = $this->getSelectionId($message);
+        
+        if (!$selectionId) {
+            return null;
+        }
+
+        // Match respond_yes_123 or respond_no_123
+        if (preg_match('/^respond_(yes|no)_(\d+)$/', $selectionId, $matches)) {
+            return [
+                'action' => $matches[1],
+                'request_id' => (int) $matches[2],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Handle product response button from notification.
+     */
+    protected function handleProductResponseButton(ConversationSession $session, string $action, int $requestId): void
+    {
+        $this->clearTemp($session);
+        
+        // Store the request ID for the response flow
+        $this->setTemp($session, 'respond_request_id', $requestId);
+        
+        // Get the handler and start with specific request
+        $handler = app(\App\Services\Flow\Handlers\ProductResponseFlowHandler::class);
+        $handler->startWithRequest($session, $requestId, $action);
     }
 
     /*

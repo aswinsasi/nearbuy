@@ -342,18 +342,23 @@ class FlowRouter
         $handler?->start($session);
     }
 
-    /**
+/**
      * Handle menu selection and route to appropriate flow.
      */
     public function handleMenuSelection(string $selectionId, ConversationSession $session): void
     {
+        // Special handling for my_requests - show existing requests, not start new search
+        if ($selectionId === 'my_requests') {
+            $this->startMyRequestsFlow($session);
+            return;
+        }
+
         $flowType = match ($selectionId) {
             'register' => FlowType::REGISTRATION,
             'browse_offers' => FlowType::OFFERS_BROWSE,
             'upload_offer' => FlowType::OFFERS_UPLOAD,
             'my_offers' => FlowType::OFFERS_MANAGE,
             'search_product' => FlowType::PRODUCT_SEARCH,
-            'my_requests' => FlowType::PRODUCT_SEARCH, // Different initial step
             'product_requests' => FlowType::PRODUCT_RESPOND,
             'create_agreement' => FlowType::AGREEMENT_CREATE,
             'my_agreements' => FlowType::AGREEMENT_LIST,
@@ -367,6 +372,41 @@ class FlowRouter
         } else {
             Log::warning('Unknown menu selection', ['id' => $selectionId]);
             $this->goToMainMenu($session);
+        }
+    }
+
+    /**
+     * Start the My Requests flow (view existing product requests).
+     */
+    protected function startMyRequestsFlow(ConversationSession $session): void
+    {
+        $flowType = FlowType::PRODUCT_SEARCH;
+
+        // Check access
+        if ($flowType->requiresAuth() && !$this->sessionManager->isRegistered($session)) {
+            $this->handleNotRegistered(
+                new IncomingMessage(
+                    messageId: '',
+                    from: $session->phone,
+                    type: 'text',
+                    timestamp: now()
+                ),
+                $session
+            );
+            return;
+        }
+
+        // Clear any previous temp data
+        $this->sessionManager->clearTempData($session);
+
+        // Get the handler and call startMyRequests instead of start
+        $handler = $this->resolveHandler($flowType);
+        
+        if ($handler instanceof \App\Services\Flow\Handlers\ProductSearchFlowHandler) {
+            $handler->startMyRequests($session);
+        } else {
+            // Fallback to regular start if handler doesn't have the method
+            $this->startFlow($session, $flowType);
         }
     }
 

@@ -64,6 +64,40 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
         ];
     }
 
+
+  /**
+     * Start the "My Requests" view - shows user's existing requests.
+     * 
+     * This is a separate entry point from start() which begins a new search.
+     */
+    public function startMyRequests(ConversationSession $session): void
+    {
+        $user = $this->getUser($session);
+
+        if (!$user) {
+            $this->sendButtonsWithMenu(
+                $session->phone,
+                "⚠️ *Registration Required*\n\nPlease register first to view your requests.",
+                [['id' => 'register', 'title' => '📝 Register']]
+            );
+            $this->goToMainMenu($session);
+            return;
+        }
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::PRODUCT_SEARCH,
+            ProductSearchStep::SHOW_MY_REQUESTS->value
+        );
+
+        $this->showMyRequests($session);
+
+        $this->logInfo('Viewing my requests', [
+            'phone' => $this->maskPhone($session->phone),
+            'user_id' => $user->id,
+        ]);
+    }
+
     /**
      * Start the product search flow.
      */
@@ -560,7 +594,7 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
         $lng = $this->getTemp($session, 'user_lng');
 
         // Identify eligible shops by category and proximity
-        $shopCount = $this->searchService->countEligibleShops($lat, $lng, $radius, $category);
+        $shopCount = $this->searchService->countEligibleShops((float) $lat, (float) $lng, $radius, $category);
 
         if ($shopCount === 0) {
             $this->showNoShopsMessage($session, $category, $radius);
@@ -602,8 +636,8 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
                 'description' => $this->getTemp($session, 'description'),
                 'category' => $this->getTemp($session, 'category'),
                 'image_url' => $this->getTemp($session, 'image_url'),
-                'latitude' => $this->getTemp($session, 'user_lat'),
-                'longitude' => $this->getTemp($session, 'user_lng'),
+                'latitude' => (float) $this->getTemp($session, 'user_lat'),
+                'longitude' => (float) $this->getTemp($session, 'user_lng'),
                 'radius_km' => $this->getTemp($session, 'radius', self::DEFAULT_RADIUS_KM),
             ]);
 
@@ -800,7 +834,7 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
         }
 
         $response = app(ProductResponseService::class)
-            ->getResponseWithDistance($responseId, $request->latitude, $request->longitude);
+            ->getResponseWithDistance($responseId, (float) $request->latitude, (float) $request->longitude);
 
         if (!$response) {
             $this->sendErrorWithOptions(

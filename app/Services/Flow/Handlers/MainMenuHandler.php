@@ -192,29 +192,8 @@ class MainMenuHandler extends AbstractFlowHandler
      */
     protected function handleMenuSelection(string $selectionId, ConversationSession $session): void
     {
-        $flowType = match ($selectionId) {
-            'register' => FlowType::REGISTRATION,
-            'browse_offers', 'browse' => FlowType::OFFERS_BROWSE,
-            'upload_offer', 'upload' => FlowType::OFFERS_UPLOAD,
-            'my_offers' => FlowType::OFFERS_MANAGE,
-            'search_product', 'search' => FlowType::PRODUCT_SEARCH,
-            'my_requests' => FlowType::PRODUCT_SEARCH, // Will show user's requests
-            'product_requests' => FlowType::PRODUCT_RESPOND,
-            'create_agreement', 'agreement' => FlowType::AGREEMENT_CREATE,
-            'my_agreements' => FlowType::AGREEMENT_LIST,
-            'pending_agreements' => FlowType::AGREEMENT_CONFIRM,
-            'settings' => FlowType::SETTINGS,
-            'shop_profile' => FlowType::SETTINGS,
-            default => null,
-        };
-
-        if ($flowType) {
-            // Use the FlowRouter to properly start the flow with access checks
-            app(FlowRouter::class)->startFlow($session, $flowType);
-        } else {
-            $this->logInfo('Unknown menu selection', ['id' => $selectionId]);
-            $this->showMainMenu($session);
-        }
+        // Delegate to FlowRouter which handles special cases like my_requests
+        app(FlowRouter::class)->handleMenuSelection($selectionId, $session);
     }
 
     /**
