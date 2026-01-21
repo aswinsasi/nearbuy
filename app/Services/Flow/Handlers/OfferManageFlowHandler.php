@@ -2,52 +2,45 @@
 
 namespace App\Services\Flow\Handlers;
 
-use App\Contracts\FlowHandlerInterface;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
 use App\Enums\OfferStep;
 use App\Models\ConversationSession;
 use App\Models\Offer;
 use App\Services\Offers\OfferService;
-use App\Services\Session\SessionManager;
-use App\Services\WhatsApp\WhatsAppService;
+use App\Services\WhatsApp\Messages\MessageTemplates;
 use App\Services\WhatsApp\Messages\OfferMessages;
-use Illuminate\Support\Facades\Log;
 
 /**
- * Handles the offer management flow for shop owners.
+ * ENHANCED Offer Manage Flow Handler.
  *
- * Flow Steps:
- * 1. show_my_offers - List all active offers
- * 2. manage_offer - Show offer details and actions
- * 3. delete_confirm - Confirm deletion
+ * Key improvements:
+ * 1. Extends AbstractFlowHandler for consistent menu buttons
+ * 2. Uses sendTextWithMenu/sendButtonsWithMenu patterns
+ * 3. Main Menu button on all messages
  */
-class OfferManageFlowHandler implements FlowHandlerInterface
+class OfferManageFlowHandler extends AbstractFlowHandler
 {
     public function __construct(
-        protected SessionManager $sessionManager,
-        protected WhatsAppService $whatsApp,
+        \App\Services\Session\SessionManager $sessionManager,
+        \App\Services\WhatsApp\WhatsAppService $whatsApp,
         protected OfferService $offerService,
-    ) {}
-
-    /**
-     * Get the flow name.
-     */
-    public function getName(): string
-    {
-        return FlowType::OFFERS_MANAGE->value;
+    ) {
+        parent::__construct($sessionManager, $whatsApp);
     }
 
-    /**
-     * Check if this handler can process the given step.
-     */
-    public function canHandleStep(string $step): bool
+    protected function getFlowType(): FlowType
     {
-        return in_array($step, [
+        return FlowType::OFFERS_MANAGE;
+    }
+
+    protected function getSteps(): array
+    {
+        return [
             OfferStep::SHOW_MY_OFFERS->value,
             OfferStep::MANAGE_OFFER->value,
             OfferStep::DELETE_CONFIRM->value,
-        ]);
+        ];
     }
 
     /**
@@ -56,14 +49,15 @@ class OfferManageFlowHandler implements FlowHandlerInterface
     public function start(ConversationSession $session): void
     {
         // Verify user is a shop owner
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
 
         if (!$user || !$user->isShopOwner()) {
-            $this->whatsApp->sendText(
+            $this->sendButtonsWithMenu(
                 $session->phone,
-                "⚠️ Only shop owners can manage offers."
+                "⚠️ *Shop Owner Required*\n\nOnly shop owners can manage offers.",
+                [['id' => 'register', 'title' => '📝 Register Shop']]
             );
-            $this->sessionManager->resetToMainMenu($session);
+            $this->goToMainMenu($session);
             return;
         }
 
@@ -81,10 +75,15 @@ class OfferManageFlowHandler implements FlowHandlerInterface
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
+        // Handle common navigation (menu, cancel, etc.)
+        if ($this->handleCommonNavigation($message, $session)) {
+            return;
+        }
+
         $step = OfferStep::tryFrom($session->current_step);
 
         if (!$step) {
-            Log::warning('Invalid offer manage step', ['step' => $session->current_step]);
+            $this->logError('Invalid offer manage step', ['step' => $session->current_step]);
             $this->start($session);
             return;
         }
@@ -112,33 +111,56 @@ class OfferManageFlowHandler implements FlowHandlerInterface
         };
     }
 
+    /**
+     * Get expected input type.
+     */
+    protected function getExpectedInputType(string $step): string
+    {
+        return match ($step) {
+            OfferStep::SHOW_MY_OFFERS->value => 'list',
+            default => 'button',
+        };
+    }
+
+    /**
+     * Re-prompt current step.
+     */
+    protected function promptCurrentStep(ConversationSession $session): void
+    {
+        $step = OfferStep::tryFrom($session->current_step);
+
+        match ($step) {
+            OfferStep::SHOW_MY_OFFERS => $this->showMyOffers($session),
+            OfferStep::MANAGE_OFFER => $this->showOfferManagement($session),
+            OfferStep::DELETE_CONFIRM => $this->showDeleteConfirmation($session),
+            default => $this->start($session),
+        };
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Step Handlers
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Handle offer selection from list.
-     */
     protected function handleOfferSelection(IncomingMessage $message, ConversationSession $session): void
     {
         $offerId = null;
 
         if ($message->isListReply()) {
-            $selectionId = $message->getSelectionId();
+            $selectionId = $this->getSelectionId($message);
             if (str_starts_with($selectionId, 'manage_')) {
                 $offerId = (int) str_replace('manage_', '', $selectionId);
             } elseif ($selectionId === 'upload_new') {
                 $this->goToUpload($session);
                 return;
             }
-        } elseif ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
+        } elseif ($message->isInteractive()) {
+            $action = $this->getSelectionId($message);
             if ($action === 'upload_new') {
                 $this->goToUpload($session);
                 return;
-            } elseif ($action === 'menu') {
+            } elseif (in_array($action, ['menu', 'main_menu'])) {
                 $this->goToMainMenu($session);
                 return;
             }
@@ -150,29 +172,33 @@ class OfferManageFlowHandler implements FlowHandlerInterface
         }
 
         // Verify offer belongs to this shop
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
         $offer = Offer::find($offerId);
 
         if (!$offer || $offer->shop_id !== $user->shop->id) {
-            $this->whatsApp->sendText($session->phone, "❌ Offer not found.");
+            $this->sendErrorWithOptions(
+                $session->phone,
+                "❌ Offer not found.",
+                [
+                    ['id' => 'back', 'title' => '⬅️ My Offers'],
+                    self::MENU_BUTTON,
+                ]
+            );
             $this->showMyOffers($session);
             return;
         }
 
-        $this->sessionManager->setTempData($session, 'manage_offer_id', $offerId);
-        $this->sessionManager->setStep($session, OfferStep::MANAGE_OFFER->value);
+        $this->setTemp($session, 'manage_offer_id', $offerId);
+        $this->nextStep($session, OfferStep::MANAGE_OFFER->value);
         $this->showOfferManagement($session);
     }
 
-    /**
-     * Handle management action.
-     */
     protected function handleManageAction(IncomingMessage $message, ConversationSession $session): void
     {
         $action = null;
 
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
+        if ($message->isInteractive()) {
+            $action = $this->getSelectionId($message);
         } elseif ($message->isText()) {
             $text = strtolower(trim($message->text ?? ''));
             if (str_contains($text, 'delete') || str_contains($text, 'remove')) {
@@ -188,20 +214,17 @@ class OfferManageFlowHandler implements FlowHandlerInterface
             'stats' => $this->showOfferStats($session),
             'delete' => $this->confirmDelete($session),
             'back' => $this->showMyOffers($session),
-            'menu' => $this->goToMainMenu($session),
+            'menu', 'main_menu' => $this->goToMainMenu($session),
             default => $this->handleInvalidInput($message, $session),
         };
     }
 
-    /**
-     * Handle delete confirmation.
-     */
     protected function handleDeleteConfirmation(IncomingMessage $message, ConversationSession $session): void
     {
         $action = null;
 
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
+        if ($message->isInteractive()) {
+            $action = $this->getSelectionId($message);
         } elseif ($message->isText()) {
             $text = strtolower(trim($message->text ?? ''));
             if (in_array($text, ['yes', 'confirm', 'delete', '1'])) {
@@ -224,24 +247,18 @@ class OfferManageFlowHandler implements FlowHandlerInterface
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Show list of user's offers.
-     */
     protected function showMyOffers(ConversationSession $session): void
     {
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
         $shop = $user->shop;
 
         $offers = $this->offerService->getShopOffers($shop);
 
         if ($offers->isEmpty()) {
-            $this->whatsApp->sendButtons(
+            $this->sendButtonsWithMenu(
                 $session->phone,
                 OfferMessages::MY_OFFERS_EMPTY,
-                [
-                    ['id' => 'upload_new', 'title' => '📤 Upload Offer'],
-                    ['id' => 'menu', 'title' => '🏠 Main Menu'],
-                ]
+                [['id' => 'upload_new', 'title' => '📤 Upload Offer']]
             );
             return;
         }
@@ -270,41 +287,46 @@ class OfferManageFlowHandler implements FlowHandlerInterface
             ],
         ];
 
-        $this->whatsApp->sendList(
+        $this->sendListWithFooter(
             $session->phone,
             $header,
             '🏷️ Manage Offers',
-            $sections
+            $sections,
+            '🏷️ My Offers'
         );
 
         // Clear any previous selection
         $this->sessionManager->removeTempData($session, 'manage_offer_id');
-        $this->sessionManager->setStep($session, OfferStep::SHOW_MY_OFFERS->value);
+        $this->nextStep($session, OfferStep::SHOW_MY_OFFERS->value);
     }
 
-    /**
-     * Show offer management options.
-     */
     protected function showOfferManagement(ConversationSession $session): void
     {
-        $offerId = $this->sessionManager->getTempData($session, 'manage_offer_id');
+        $offerId = $this->getTemp($session, 'manage_offer_id');
         $offer = Offer::find($offerId);
 
         if (!$offer) {
-            $this->whatsApp->sendText($session->phone, "❌ Offer not found.");
+            $this->sendErrorWithOptions(
+                $session->phone,
+                "❌ Offer not found.",
+                [
+                    ['id' => 'back', 'title' => '⬅️ My Offers'],
+                    self::MENU_BUTTON,
+                ]
+            );
             $this->showMyOffers($session);
             return;
         }
 
         // Show offer preview
         if ($offer->media_type === 'image') {
-            $this->whatsApp->sendImage(
+            $this->sendImage(
                 $session->phone,
                 $offer->media_url,
                 $offer->caption ?: 'Your offer'
             );
         } else {
-            $this->whatsApp->sendDocument(
+            $this->sendDocument(
                 $session->phone,
                 $offer->media_url,
                 'Offer.pdf',
@@ -312,26 +334,26 @@ class OfferManageFlowHandler implements FlowHandlerInterface
             );
         }
 
-        // Show stats summary
+        // Show stats summary with buttons
         $statsMessage = OfferMessages::format(OfferMessages::OFFER_STATS, [
             'views' => $offer->view_count,
             'location_taps' => $offer->location_tap_count,
             'expiry' => OfferMessages::formatExpiry($offer->expires_at),
         ]);
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtonsWithMenu(
             $session->phone,
             $statsMessage . "\n\nWhat would you like to do?",
-            OfferMessages::getManageButtons()
+            [
+                ['id' => 'stats', 'title' => '📊 View Stats'],
+                ['id' => 'delete', 'title' => '🗑️ Delete Offer'],
+            ]
         );
     }
 
-    /**
-     * Show offer statistics.
-     */
     protected function showOfferStats(ConversationSession $session): void
     {
-        $offerId = $this->sessionManager->getTempData($session, 'manage_offer_id');
+        $offerId = $this->getTemp($session, 'manage_offer_id');
         $offer = Offer::find($offerId);
 
         if (!$offer) {
@@ -346,7 +368,7 @@ class OfferManageFlowHandler implements FlowHandlerInterface
             "⏰ *Expires:* " . OfferMessages::formatExpiry($offer->expires_at) . "\n\n" .
             ($offer->isExpired() ? "⚠️ This offer has expired." : "✅ This offer is active.");
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtonsWithMenu(
             $session->phone,
             $stats,
             [
@@ -356,24 +378,24 @@ class OfferManageFlowHandler implements FlowHandlerInterface
         );
     }
 
-    /**
-     * Confirm deletion.
-     */
     protected function confirmDelete(ConversationSession $session): void
     {
-        $this->sessionManager->setStep($session, OfferStep::DELETE_CONFIRM->value);
+        $this->nextStep($session, OfferStep::DELETE_CONFIRM->value);
         $this->showDeleteConfirmation($session);
     }
 
-    /**
-     * Show delete confirmation.
-     */
     protected function showDeleteConfirmation(ConversationSession $session): void
     {
-        $this->whatsApp->sendButtons(
+        $this->sendButtons(
             $session->phone,
             OfferMessages::DELETE_CONFIRM,
-            OfferMessages::getDeleteConfirmButtons()
+            [
+                ['id' => 'confirm_delete', 'title' => '✅ Yes, Delete'],
+                ['id' => 'cancel_delete', 'title' => '❌ Cancel'],
+                self::MENU_BUTTON,
+            ],
+            null,
+            MessageTemplates::GLOBAL_FOOTER
         );
     }
 
@@ -383,16 +405,20 @@ class OfferManageFlowHandler implements FlowHandlerInterface
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Delete the offer.
-     */
     protected function deleteOffer(ConversationSession $session): void
     {
-        $offerId = $this->sessionManager->getTempData($session, 'manage_offer_id');
+        $offerId = $this->getTemp($session, 'manage_offer_id');
         $offer = Offer::find($offerId);
 
         if (!$offer) {
-            $this->whatsApp->sendText($session->phone, "❌ Offer not found.");
+            $this->sendErrorWithOptions(
+                $session->phone,
+                "❌ Offer not found.",
+                [
+                    ['id' => 'back', 'title' => '⬅️ My Offers'],
+                    self::MENU_BUTTON,
+                ]
+            );
             $this->showMyOffers($session);
             return;
         }
@@ -400,27 +426,35 @@ class OfferManageFlowHandler implements FlowHandlerInterface
         $deleted = $this->offerService->deleteOffer($offer);
 
         if ($deleted) {
-            $this->whatsApp->sendText($session->phone, OfferMessages::OFFER_DELETED);
+            $this->sendButtonsWithMenu(
+                $session->phone,
+                OfferMessages::OFFER_DELETED,
+                [['id' => 'upload_new', 'title' => '📤 Upload New']]
+            );
 
-            Log::info('Offer deleted by owner', [
+            $this->logInfo('Offer deleted by owner', [
                 'offer_id' => $offerId,
                 'phone' => $this->maskPhone($session->phone),
             ]);
         } else {
-            $this->whatsApp->sendText($session->phone, "❌ Failed to delete offer. Please try again.");
+            $this->sendErrorWithOptions(
+                $session->phone,
+                "❌ Failed to delete offer. Please try again.",
+                [
+                    ['id' => 'retry', 'title' => '🔄 Try Again'],
+                    self::MENU_BUTTON,
+                ]
+            );
         }
 
         $this->sessionManager->removeTempData($session, 'manage_offer_id');
         $this->showMyOffers($session);
     }
 
-    /**
-     * Cancel deletion.
-     */
     protected function cancelDelete(ConversationSession $session): void
     {
-        $this->whatsApp->sendText($session->phone, "✅ Deletion cancelled.");
-        $this->sessionManager->setStep($session, OfferStep::MANAGE_OFFER->value);
+        $this->sendTextWithMenu($session->phone, "✅ Deletion cancelled.");
+        $this->nextStep($session, OfferStep::MANAGE_OFFER->value);
         $this->showOfferManagement($session);
     }
 
@@ -430,41 +464,9 @@ class OfferManageFlowHandler implements FlowHandlerInterface
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Go to upload flow.
-     */
     protected function goToUpload(ConversationSession $session): void
     {
-        $this->sessionManager->setFlowStep(
-            $session,
-            FlowType::OFFERS_UPLOAD,
-            OfferStep::UPLOAD_IMAGE->value
-        );
-
-        $uploadHandler = app(OfferUploadFlowHandler::class);
-        $uploadHandler->start($session);
-    }
-
-    /**
-     * Go to main menu.
-     */
-    protected function goToMainMenu(ConversationSession $session): void
-    {
-        $this->sessionManager->resetToMainMenu($session);
-
-        $mainMenuHandler = app(MainMenuHandler::class);
-        $mainMenuHandler->start($session);
-    }
-
-    /**
-     * Mask phone for logging.
-     */
-    protected function maskPhone(string $phone): string
-    {
-        if (strlen($phone) < 6) {
-            return $phone;
-        }
-
-        return substr($phone, 0, 3) . '****' . substr($phone, -3);
+        $this->goToFlow($session, FlowType::OFFERS_UPLOAD, OfferStep::UPLOAD_IMAGE->value);
+        app(OfferUploadFlowHandler::class)->start($session);
     }
 }

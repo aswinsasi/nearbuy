@@ -2,7 +2,6 @@
 
 namespace App\Services\Flow\Handlers;
 
-use App\Contracts\FlowHandlerInterface;
 use App\DTOs\IncomingMessage;
 use App\Enums\AgreementStep;
 use App\Enums\AgreementStatus;
@@ -11,48 +10,41 @@ use App\Models\Agreement;
 use App\Models\ConversationSession;
 use App\Services\Agreements\AgreementService;
 use App\Services\PDF\AgreementPDFService;
-use App\Services\Session\SessionManager;
-use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\Messages\AgreementMessages;
-use Illuminate\Support\Facades\Log;
+use App\Services\WhatsApp\Messages\MessageTemplates;
 
 /**
- * Handles the agreement list/management flow.
+ * ENHANCED Agreement List Flow Handler.
  *
- * Flow Steps:
- * 1. show_list - Show all agreements
- * 2. view_agreement - View specific agreement details
- * 3. mark_complete - Mark agreement as completed
- * 4. dispute - Handle dispute
+ * Key improvements:
+ * 1. Extends AbstractFlowHandler for consistent menu buttons
+ * 2. Uses sendTextWithMenu/sendButtonsWithMenu patterns
+ * 3. Main Menu button on all messages
  */
-class AgreementListFlowHandler implements FlowHandlerInterface
+class AgreementListFlowHandler extends AbstractFlowHandler
 {
     public function __construct(
-        protected SessionManager $sessionManager,
-        protected WhatsAppService $whatsApp,
+        \App\Services\Session\SessionManager $sessionManager,
+        \App\Services\WhatsApp\WhatsAppService $whatsApp,
         protected AgreementService $agreementService,
         protected AgreementPDFService $pdfService,
-    ) {}
-
-    /**
-     * Get flow name.
-     */
-    public function getName(): string
-    {
-        return FlowType::AGREEMENT_LIST->value;
+    ) {
+        parent::__construct($sessionManager, $whatsApp);
     }
 
-    /**
-     * Check if can handle step.
-     */
-    public function canHandleStep(string $step): bool
+    protected function getFlowType(): FlowType
     {
-        return in_array($step, [
+        return FlowType::AGREEMENT_LIST;
+    }
+
+    protected function getSteps(): array
+    {
+        return [
             AgreementStep::SHOW_LIST->value,
             AgreementStep::VIEW_AGREEMENT->value,
             AgreementStep::MARK_COMPLETE->value,
             AgreementStep::DISPUTE->value,
-        ]);
+        ];
     }
 
     /**
@@ -60,21 +52,22 @@ class AgreementListFlowHandler implements FlowHandlerInterface
      */
     public function start(ConversationSession $session): void
     {
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
 
         if (!$user) {
-            $this->whatsApp->sendText(
+            $this->sendButtonsWithMenu(
                 $session->phone,
-                "⚠️ Please register first."
+                "⚠️ *Registration Required*\n\nPlease register first to view agreements.",
+                [['id' => 'register', 'title' => '📝 Register']]
             );
-            $this->sessionManager->resetToMainMenu($session);
+            $this->goToMainMenu($session);
             return;
         }
 
         $agreements = $this->agreementService->getAgreementsForUser($user);
 
         if ($agreements->isEmpty()) {
-            $this->whatsApp->sendButtons(
+            $this->sendButtonsWithMenu(
                 $session->phone,
                 AgreementMessages::MY_AGREEMENTS_EMPTY,
                 AgreementMessages::getEmptyAgreementsButtons()
@@ -90,6 +83,11 @@ class AgreementListFlowHandler implements FlowHandlerInterface
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
+        // Handle common navigation (menu, cancel, etc.)
+        if ($this->handleCommonNavigation($message, $session)) {
+            return;
+        }
+
         $step = AgreementStep::tryFrom($session->current_step);
 
         if (!$step) {
@@ -113,6 +111,25 @@ class AgreementListFlowHandler implements FlowHandlerInterface
         $this->start($session);
     }
 
+    /**
+     * Get expected input type.
+     */
+    protected function getExpectedInputType(string $step): string
+    {
+        return match ($step) {
+            AgreementStep::SHOW_LIST->value => 'list',
+            default => 'button',
+        };
+    }
+
+    /**
+     * Re-prompt current step.
+     */
+    protected function promptCurrentStep(ConversationSession $session): void
+    {
+        $this->start($session);
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Step Handlers
@@ -122,31 +139,35 @@ class AgreementListFlowHandler implements FlowHandlerInterface
     protected function handleListSelection(IncomingMessage $message, ConversationSession $session): void
     {
         if ($message->isListReply()) {
-            $selectionId = $message->getSelectionId();
+            $selectionId = $this->getSelectionId($message);
 
             if (str_starts_with($selectionId, 'agreement_')) {
                 $agreementId = (int) str_replace('agreement_', '', $selectionId);
-                $this->sessionManager->setTempData($session, 'view_agreement_id', $agreementId);
-                $this->sessionManager->setStep($session, AgreementStep::VIEW_AGREEMENT->value);
+                $this->setTemp($session, 'view_agreement_id', $agreementId);
+                $this->nextStep($session, AgreementStep::VIEW_AGREEMENT->value);
                 $this->showAgreementDetail($session);
                 return;
             }
         }
 
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
+        if ($message->isInteractive()) {
+            $action = $this->getSelectionId($message);
 
             match ($action) {
                 'create' => $this->goToCreate($session),
                 'pending' => $this->goToPending($session),
                 default => $this->goToMainMenu($session),
             };
+            return;
         }
+
+        // Default: re-show list
+        $this->start($session);
     }
 
     protected function handleAgreementAction(IncomingMessage $message, ConversationSession $session): void
     {
-        $action = $message->isButtonReply() ? $message->getSelectionId() : null;
+        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
 
         match ($action) {
             'download_pdf' => $this->downloadPDF($session),
@@ -160,7 +181,7 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
     protected function handleMarkCompleteConfirm(IncomingMessage $message, ConversationSession $session): void
     {
-        $action = $message->isButtonReply() ? $message->getSelectionId() : null;
+        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
 
         if ($action === 'confirm_complete') {
             $this->markComplete($session);
@@ -177,7 +198,7 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
     protected function showAgreementsList(ConversationSession $session, $agreements): void
     {
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
 
         $header = AgreementMessages::format(AgreementMessages::MY_AGREEMENTS_HEADER, [
             'count' => $agreements->count(),
@@ -207,11 +228,12 @@ class AgreementListFlowHandler implements FlowHandlerInterface
             ],
         ];
 
-        $this->whatsApp->sendList(
+        $this->sendListWithFooter(
             $session->phone,
             $header,
             '📋 View Details',
-            $sections
+            $sections,
+            '📋 My Agreements'
         );
 
         $this->sessionManager->setFlowStep(
@@ -223,16 +245,23 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
     protected function showAgreementDetail(ConversationSession $session): void
     {
-        $agreementId = $this->sessionManager->getTempData($session, 'view_agreement_id');
+        $agreementId = $this->getTemp($session, 'view_agreement_id');
         $agreement = Agreement::with(['creator', 'counterpartyUser'])->find($agreementId);
 
         if (!$agreement) {
-            $this->whatsApp->sendText($session->phone, AgreementMessages::ERROR_AGREEMENT_NOT_FOUND);
+            $this->sendErrorWithOptions(
+                $session->phone,
+                AgreementMessages::ERROR_AGREEMENT_NOT_FOUND,
+                [
+                    ['id' => 'back', 'title' => '⬅️ Back'],
+                    self::MENU_BUTTON,
+                ]
+            );
             $this->start($session);
             return;
         }
 
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
         $isCreator = $agreement->creator_id === $user->id;
 
         // Determine direction from user's perspective
@@ -261,18 +290,20 @@ class AgreementListFlowHandler implements FlowHandlerInterface
             'description' => $agreement->description ?? 'None',
         ]);
 
-        $this->whatsApp->sendText($session->phone, $message);
+        $this->sendTextWithMenu($session->phone, $message);
 
         // Determine available actions based on status and role
         $buttons = $this->getActionButtons($agreement, $user);
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtons(
             $session->phone,
             "What would you like to do?",
-            $buttons
+            $buttons,
+            null,
+            MessageTemplates::GLOBAL_FOOTER
         );
 
-        $this->sessionManager->setStep($session, AgreementStep::VIEW_AGREEMENT->value);
+        $this->nextStep($session, AgreementStep::VIEW_AGREEMENT->value);
     }
 
     protected function getActionButtons(Agreement $agreement, $user): array
@@ -303,8 +334,13 @@ class AgreementListFlowHandler implements FlowHandlerInterface
             $buttons[] = ['id' => 'cancel', 'title' => '❌ Cancel'];
         }
 
-        // Always show back
-        $buttons[] = ['id' => 'back', 'title' => '⬅️ Back'];
+        // Always show back and menu
+        if (count($buttons) < 2) {
+            $buttons[] = ['id' => 'back', 'title' => '⬅️ Back'];
+        }
+        if (count($buttons) < 3) {
+            $buttons[] = self::MENU_BUTTON;
+        }
 
         return array_slice($buttons, 0, 3); // WhatsApp limit
     }
@@ -317,45 +353,54 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
     protected function downloadPDF(ConversationSession $session): void
     {
-        $agreementId = $this->sessionManager->getTempData($session, 'view_agreement_id');
+        $agreementId = $this->getTemp($session, 'view_agreement_id');
         $agreement = Agreement::find($agreementId);
 
         if (!$agreement || !$agreement->pdf_url) {
-            $this->whatsApp->sendText($session->phone, "❌ PDF not available for this agreement.");
+            $this->sendErrorWithOptions(
+                $session->phone,
+                "❌ PDF not available for this agreement.",
+                [
+                    ['id' => 'back', 'title' => '⬅️ Back'],
+                    self::MENU_BUTTON,
+                ]
+            );
             $this->showAgreementDetail($session);
             return;
         }
 
-        $this->whatsApp->sendDocument(
+        $this->sendDocumentWithFollowUp(
             $session->phone,
             $agreement->pdf_url,
             "Agreement_{$agreement->agreement_number}.pdf",
-            "📄 Your agreement document"
+            "📄 Your agreement document",
+            [['id' => 'back', 'title' => '⬅️ Back']]
         );
-
-        $this->showAgreementDetail($session);
     }
 
     protected function confirmMarkComplete(ConversationSession $session): void
     {
-        $this->whatsApp->sendButtons(
+        $this->sendButtons(
             $session->phone,
             "✅ *Mark as Complete?*\n\nThis will mark the agreement as settled. Are you sure?",
             [
                 ['id' => 'confirm_complete', 'title' => '✅ Yes, Complete'],
                 ['id' => 'cancel_complete', 'title' => '❌ Cancel'],
-            ]
+                self::MENU_BUTTON,
+            ],
+            null,
+            MessageTemplates::GLOBAL_FOOTER
         );
 
-        $this->sessionManager->setStep($session, AgreementStep::MARK_COMPLETE->value);
+        $this->nextStep($session, AgreementStep::MARK_COMPLETE->value);
     }
 
     protected function markComplete(ConversationSession $session): void
     {
         try {
-            $agreementId = $this->sessionManager->getTempData($session, 'view_agreement_id');
+            $agreementId = $this->getTemp($session, 'view_agreement_id');
             $agreement = Agreement::find($agreementId);
-            $user = $this->sessionManager->getUser($session);
+            $user = $this->getUser($session);
 
             if (!$agreement) {
                 throw new \Exception('Agreement not found');
@@ -363,9 +408,10 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
             $agreement = $this->agreementService->markCompleted($agreement, $user);
 
-            $this->whatsApp->sendText(
+            $this->sendButtonsWithMenu(
                 $session->phone,
-                "✅ *Agreement Completed*\n\nAgreement #{$agreement->agreement_number} has been marked as complete."
+                "✅ *Agreement Completed*\n\nAgreement #{$agreement->agreement_number} has been marked as complete.",
+                [['id' => 'my_agreements', 'title' => '📋 My Agreements']]
             );
 
             // Notify other party
@@ -373,17 +419,22 @@ class AgreementListFlowHandler implements FlowHandlerInterface
                 ? $agreement->to_phone
                 : $agreement->creator->phone;
 
-            $this->whatsApp->sendText(
+            $this->sendButtonsWithMenu(
                 $otherPartyPhone,
-                "✅ *Agreement Completed*\n\nAgreement #{$agreement->agreement_number} has been marked as complete by {$user->name}."
+                "✅ *Agreement Completed*\n\nAgreement #{$agreement->agreement_number} has been marked as complete by {$user->name}.",
+                [['id' => 'my_agreements', 'title' => '📋 My Agreements']]
             );
 
             $this->start($session);
 
         } catch (\Exception $e) {
-            $this->whatsApp->sendText(
+            $this->sendErrorWithOptions(
                 $session->phone,
-                "❌ Failed: " . $e->getMessage()
+                "❌ Failed: " . $e->getMessage(),
+                [
+                    ['id' => 'retry', 'title' => '🔄 Try Again'],
+                    self::MENU_BUTTON,
+                ]
             );
             $this->showAgreementDetail($session);
         }
@@ -391,7 +442,7 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
     protected function sendReminder(ConversationSession $session): void
     {
-        $agreementId = $this->sessionManager->getTempData($session, 'view_agreement_id');
+        $agreementId = $this->getTemp($session, 'view_agreement_id');
         $agreement = Agreement::with('creator')->find($agreementId);
 
         if (!$agreement) {
@@ -416,15 +467,21 @@ class AgreementListFlowHandler implements FlowHandlerInterface
                 'agreement_number' => $agreement->agreement_number,
             ]);
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtons(
             $agreement->to_phone,
             $message,
-            AgreementMessages::getConfirmButtons()
+            AgreementMessages::getConfirmButtons(),
+            null,
+            MessageTemplates::GLOBAL_FOOTER
         );
 
         $this->agreementService->markReminderSent($agreement);
 
-        $this->whatsApp->sendText($session->phone, "✅ Reminder sent to {$agreement->to_name}.");
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "✅ Reminder sent to {$agreement->to_name}.",
+            [['id' => 'back', 'title' => '⬅️ Back']]
+        );
 
         $this->showAgreementDetail($session);
     }
@@ -432,9 +489,9 @@ class AgreementListFlowHandler implements FlowHandlerInterface
     protected function cancelAgreement(ConversationSession $session): void
     {
         try {
-            $agreementId = $this->sessionManager->getTempData($session, 'view_agreement_id');
+            $agreementId = $this->getTemp($session, 'view_agreement_id');
             $agreement = Agreement::find($agreementId);
-            $user = $this->sessionManager->getUser($session);
+            $user = $this->getUser($session);
 
             if (!$agreement) {
                 throw new \Exception('Agreement not found');
@@ -442,17 +499,22 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
             $agreement = $this->agreementService->cancelAgreement($agreement, $user);
 
-            $this->whatsApp->sendText(
+            $this->sendButtonsWithMenu(
                 $session->phone,
-                "❌ Agreement #{$agreement->agreement_number} has been cancelled."
+                "❌ Agreement #{$agreement->agreement_number} has been cancelled.",
+                [['id' => 'my_agreements', 'title' => '📋 My Agreements']]
             );
 
             $this->start($session);
 
         } catch (\Exception $e) {
-            $this->whatsApp->sendText(
+            $this->sendErrorWithOptions(
                 $session->phone,
-                "❌ Failed: " . $e->getMessage()
+                "❌ Failed: " . $e->getMessage(),
+                [
+                    ['id' => 'retry', 'title' => '🔄 Try Again'],
+                    self::MENU_BUTTON,
+                ]
             );
             $this->showAgreementDetail($session);
         }
@@ -466,24 +528,13 @@ class AgreementListFlowHandler implements FlowHandlerInterface
 
     protected function goToCreate(ConversationSession $session): void
     {
-        $this->sessionManager->setFlowStep(
-            $session,
-            FlowType::AGREEMENT_CREATE,
-            AgreementStep::ASK_DIRECTION->value
-        );
-
+        $this->goToFlow($session, FlowType::AGREEMENT_CREATE, AgreementStep::ASK_DIRECTION->value);
         app(AgreementCreateFlowHandler::class)->start($session);
     }
 
     protected function goToPending(ConversationSession $session): void
     {
         app(AgreementConfirmFlowHandler::class)->start($session);
-    }
-
-    protected function goToMainMenu(ConversationSession $session): void
-    {
-        $this->sessionManager->resetToMainMenu($session);
-        app(MainMenuHandler::class)->start($session);
     }
 
     /*

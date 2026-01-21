@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Services\Flow\Handlers;
 
-use App\Contracts\FlowHandlerInterface;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
 use App\Enums\ProductSearchStep;
@@ -13,76 +12,44 @@ use App\Models\ProductRequest;
 use App\Services\Media\MediaService;
 use App\Services\Products\ProductResponseService;
 use App\Services\Products\ProductSearchService;
-use App\Services\Session\SessionManager;
-use App\Services\WhatsApp\WhatsAppService;
+use App\Services\WhatsApp\Messages\MessageTemplates;
 use App\Services\WhatsApp\Messages\ProductMessages;
-use Illuminate\Support\Facades\Log;
 
 /**
- * Handles the product search flow for customers.
+ * ENHANCED Product Search Flow Handler.
  *
- * Flow Steps (FR-PRD-01 to FR-PRD-35):
- * 1. ask_category - Select category to search (FR-PRD-01)
- * 2. ask_description - Describe product needed (FR-PRD-02)
- * 3. ask_image - Optional reference image
- * 4. select_radius - How far to search
- * 5. confirm_request - Review and confirm (FR-PRD-04)
- * 6. request_sent - Success, waiting for responses
- * 7. view_responses - See shop responses (FR-PRD-30-32)
- * 8. response_detail - View specific response (FR-PRD-33-34)
- *
- * ENHANCEMENTS:
- * - Progress indicators (Step X of Y)
- * - Best price highlighting in responses
- * - Image upload support
- * - Better error recovery
- * - Analytics tracking
+ * Key improvements:
+ * 1. Extends AbstractFlowHandler for consistent menu buttons
+ * 2. Uses sendTextWithMenu/sendButtonsWithMenu patterns
+ * 3. Consistent footer on all messages
+ * 4. Menu button under every message
  *
  * @see SRS Section 3.3 - Product Search
  */
-class ProductSearchFlowHandler implements FlowHandlerInterface
+class ProductSearchFlowHandler extends AbstractFlowHandler
 {
-    /**
-     * Default search radius in kilometers.
-     */
     protected const DEFAULT_RADIUS_KM = 5;
-
-    /**
-     * Default request expiry in hours.
-     */
     protected const DEFAULT_EXPIRY_HOURS = 24;
-
-    /**
-     * Minimum description length.
-     */
     protected const MIN_DESCRIPTION_LENGTH = 10;
-
-    /**
-     * Maximum description length.
-     */
     protected const MAX_DESCRIPTION_LENGTH = 500;
 
     public function __construct(
-        protected SessionManager $sessionManager,
-        protected WhatsAppService $whatsApp,
+        \App\Services\Session\SessionManager $sessionManager,
+        \App\Services\WhatsApp\WhatsAppService $whatsApp,
         protected ProductSearchService $searchService,
         protected MediaService $mediaService,
-    ) {}
-
-    /**
-     * {@inheritdoc}
-     */
-    public function getName(): string
-    {
-        return FlowType::PRODUCT_SEARCH->value;
+    ) {
+        parent::__construct($sessionManager, $whatsApp);
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function canHandleStep(string $step): bool
+    protected function getFlowType(): FlowType
     {
-        return in_array($step, [
+        return FlowType::PRODUCT_SEARCH;
+    }
+
+    protected function getSteps(): array
+    {
+        return [
             ProductSearchStep::ASK_CATEGORY->value,
             ProductSearchStep::ASK_DESCRIPTION->value,
             ProductSearchStep::ASK_IMAGE->value,
@@ -94,7 +61,7 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             ProductSearchStep::RESPONSE_DETAIL->value,
             ProductSearchStep::SHOW_MY_REQUESTS->value,
             ProductSearchStep::SHOW_SHOP_LOCATION->value,
-        ], true);
+        ];
     }
 
     /**
@@ -102,14 +69,15 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
      */
     public function start(ConversationSession $session): void
     {
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
 
         if (!$user) {
-            $this->whatsApp->sendText(
+            $this->sendButtonsWithMenu(
                 $session->phone,
-                "⚠️ Please register first to search for products."
+                "⚠️ *Registration Required*\n\nPlease register first to search for products.",
+                [['id' => 'register', 'title' => '📝 Register']]
             );
-            $this->sessionManager->resetToMainMenu($session);
+            $this->goToMainMenu($session);
             return;
         }
 
@@ -125,10 +93,8 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         }
 
         // Initialize session with user location
-        $this->sessionManager->mergeTempData($session, [
-            'user_lat' => $user->latitude,
-            'user_lng' => $user->longitude,
-        ]);
+        $this->setTemp($session, 'user_lat', $user->latitude);
+        $this->setTemp($session, 'user_lng', $user->longitude);
 
         // Clear previous search data
         $this->clearSearchData($session);
@@ -141,7 +107,7 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
         $this->askCategory($session);
 
-        Log::info('Product search started', [
+        $this->logInfo('Product search started', [
             'phone' => $this->maskPhone($session->phone),
             'user_id' => $user->id,
         ]);
@@ -152,10 +118,15 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
+        // Handle common navigation (menu, cancel, etc.)
+        if ($this->handleCommonNavigation($message, $session)) {
+            return;
+        }
+
         $step = ProductSearchStep::tryFrom($session->current_step);
 
         if (!$step) {
-            Log::warning('Invalid product search step', [
+            $this->logError('Invalid product search step', [
                 'step' => $session->current_step,
             ]);
             $this->start($session);
@@ -194,15 +165,43 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         };
     }
 
+    /**
+     * Get expected input type.
+     */
+    protected function getExpectedInputType(string $step): string
+    {
+        return match ($step) {
+            ProductSearchStep::ASK_CATEGORY->value => 'list',
+            ProductSearchStep::ASK_DESCRIPTION->value => 'text',
+            ProductSearchStep::ASK_LOCATION->value => 'location',
+            ProductSearchStep::SELECT_RADIUS->value => 'button',
+            ProductSearchStep::CONFIRM_REQUEST->value => 'button',
+            default => 'text',
+        };
+    }
+
+    /**
+     * Re-prompt current step.
+     */
+    protected function promptCurrentStep(ConversationSession $session): void
+    {
+        $step = ProductSearchStep::tryFrom($session->current_step);
+
+        match ($step) {
+            ProductSearchStep::ASK_CATEGORY => $this->askCategory($session),
+            ProductSearchStep::ASK_DESCRIPTION => $this->askDescription($session),
+            ProductSearchStep::SELECT_RADIUS => $this->askRadius($session),
+            ProductSearchStep::CONFIRM_REQUEST => $this->askConfirmation($session),
+            default => $this->start($session),
+        };
+    }
+
     /*
     |--------------------------------------------------------------------------
-    | Step Handlers (FR-PRD-01 to FR-PRD-06)
+    | Step Handlers
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Handle category selection (FR-PRD-01).
-     */
     protected function handleCategorySelection(IncomingMessage $message, ConversationSession $session): void
     {
         $category = $this->extractCategory($message);
@@ -212,20 +211,17 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             return;
         }
 
-        $this->sessionManager->setTempData($session, 'category', $category);
+        $this->setTemp($session, 'category', $category);
 
-        Log::debug('Category selected', [
+        $this->logInfo('Category selected', [
             'category' => $category,
             'phone' => $this->maskPhone($session->phone),
         ]);
 
-        $this->sessionManager->setStep($session, ProductSearchStep::ASK_DESCRIPTION->value);
+        $this->nextStep($session, ProductSearchStep::ASK_DESCRIPTION->value);
         $this->askDescription($session);
     }
 
-    /**
-     * Handle description input (FR-PRD-02).
-     */
     protected function handleDescriptionInput(IncomingMessage $message, ConversationSession $session): void
     {
         if (!$message->isText()) {
@@ -237,82 +233,81 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
         // Validate length
         if (mb_strlen($description) < self::MIN_DESCRIPTION_LENGTH) {
-            $this->whatsApp->sendText(
+            $this->sendErrorWithOptions(
                 $session->phone,
-                ProductMessages::ERROR_INVALID_DESCRIPTION
+                ProductMessages::ERROR_INVALID_DESCRIPTION,
+                [
+                    ['id' => 'retry', 'title' => '🔄 Try Again'],
+                    self::MENU_BUTTON,
+                ]
             );
             return;
         }
 
         if (mb_strlen($description) > self::MAX_DESCRIPTION_LENGTH) {
-            $this->whatsApp->sendText(
+            $this->sendErrorWithOptions(
                 $session->phone,
-                "⚠️ Description too long. Please keep it under " . self::MAX_DESCRIPTION_LENGTH . " characters."
+                "⚠️ Description too long. Please keep it under " . self::MAX_DESCRIPTION_LENGTH . " characters.",
+                [
+                    ['id' => 'retry', 'title' => '🔄 Try Again'],
+                    self::MENU_BUTTON,
+                ]
             );
             return;
         }
 
-        $this->sessionManager->setTempData($session, 'description', $description);
+        $this->setTemp($session, 'description', $description);
 
-        Log::debug('Description entered', [
+        $this->logInfo('Description entered', [
             'length' => mb_strlen($description),
             'phone' => $this->maskPhone($session->phone),
         ]);
 
         // Skip image step, go directly to radius selection
-        // (Can be enabled later by changing this to ASK_IMAGE)
-        $this->sessionManager->setStep($session, ProductSearchStep::SELECT_RADIUS->value);
+        $this->nextStep($session, ProductSearchStep::SELECT_RADIUS->value);
         $this->askRadius($session);
     }
 
-    /**
-     * Handle image input (optional).
-     */
     protected function handleImageInput(IncomingMessage $message, ConversationSession $session): void
     {
         // Check for skip
-        if ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (in_array($text, ['skip', 'no', 'none', 'next'])) {
-                $this->sessionManager->setStep($session, ProductSearchStep::SELECT_RADIUS->value);
-                $this->askRadius($session);
-                return;
-            }
+        if ($this->isSkip($message)) {
+            $this->nextStep($session, ProductSearchStep::SELECT_RADIUS->value);
+            $this->askRadius($session);
+            return;
         }
 
         if ($message->isImage()) {
             $mediaId = $message->getMediaId();
 
             if ($mediaId) {
-                $this->whatsApp->sendText($session->phone, "⏳ Uploading image...");
+                $this->sendTextWithMenu($session->phone, "⏳ Uploading image...");
 
                 try {
                     $result = $this->mediaService->downloadAndStore($mediaId, 'requests');
 
                     if ($result['success']) {
-                        $this->sessionManager->setTempData($session, 'image_url', $result['url']);
-                        $this->whatsApp->sendText($session->phone, "✅ Image uploaded!");
+                        $this->setTemp($session, 'image_url', $result['url']);
+                        $this->sendTextWithMenu($session->phone, "✅ Image uploaded!");
                     }
                 } catch (\Exception $e) {
-                    Log::error('Image upload failed', ['error' => $e->getMessage()]);
-                    $this->whatsApp->sendText($session->phone, "⚠️ Image upload failed. Continuing without image.");
+                    $this->logError('Image upload failed', ['error' => $e->getMessage()]);
+                    $this->sendTextWithMenu($session->phone, "⚠️ Image upload failed. Continuing without image.");
                 }
             }
         }
 
-        $this->sessionManager->setStep($session, ProductSearchStep::SELECT_RADIUS->value);
+        $this->nextStep($session, ProductSearchStep::SELECT_RADIUS->value);
         $this->askRadius($session);
     }
 
-    /**
-     * Handle location input.
-     */
     protected function handleLocationInput(IncomingMessage $message, ConversationSession $session): void
     {
         if (!$message->isLocation()) {
-            $this->whatsApp->sendText(
+            $this->sendButtonsWithMenu(
                 $session->phone,
-                "📍 Please share your location using the button below."
+                "📍 Please share your location using the button below.",
+                []
             );
             return;
         }
@@ -325,13 +320,11 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         }
 
         // Store location
-        $this->sessionManager->mergeTempData($session, [
-            'user_lat' => $coords['latitude'],
-            'user_lng' => $coords['longitude'],
-        ]);
+        $this->setTemp($session, 'user_lat', $coords['latitude']);
+        $this->setTemp($session, 'user_lng', $coords['longitude']);
 
         // Update user profile
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
         if ($user) {
             $user->update([
                 'latitude' => $coords['latitude'],
@@ -340,13 +333,10 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         }
 
         // Continue to category selection
-        $this->sessionManager->setStep($session, ProductSearchStep::ASK_CATEGORY->value);
+        $this->nextStep($session, ProductSearchStep::ASK_CATEGORY->value);
         $this->askCategory($session);
     }
 
-    /**
-     * Handle radius selection.
-     */
     protected function handleRadiusSelection(IncomingMessage $message, ConversationSession $session): void
     {
         $radius = $this->extractRadius($message);
@@ -356,16 +346,13 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             return;
         }
 
-        $this->sessionManager->setTempData($session, 'radius', $radius);
+        $this->setTemp($session, 'radius', $radius);
 
-        // Move to confirmation (FR-PRD-04)
-        $this->sessionManager->setStep($session, ProductSearchStep::CONFIRM_REQUEST->value);
+        // Move to confirmation
+        $this->nextStep($session, ProductSearchStep::CONFIRM_REQUEST->value);
         $this->askConfirmation($session);
     }
 
-    /**
-     * Handle confirmation (FR-PRD-04).
-     */
     protected function handleConfirmation(IncomingMessage $message, ConversationSession $session): void
     {
         $action = $this->extractConfirmationAction($message);
@@ -378,12 +365,9 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         };
     }
 
-    /**
-     * Handle post-request actions.
-     */
     protected function handlePostRequest(IncomingMessage $message, ConversationSession $session): void
     {
-        $action = $message->isButtonReply() ? $message->getSelectionId() : null;
+        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
 
         match ($action) {
             'view_responses' => $this->showResponses($session),
@@ -394,17 +378,14 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
     /*
     |--------------------------------------------------------------------------
-    | Response Handling (FR-PRD-30 to FR-PRD-35)
+    | Response Handling
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Handle response selection (FR-PRD-32).
-     */
     protected function handleResponseSelection(IncomingMessage $message, ConversationSession $session): void
     {
         if ($message->isListReply()) {
-            $selectionId = $message->getSelectionId();
+            $selectionId = $this->getSelectionId($message);
 
             if (str_starts_with($selectionId, 'response_')) {
                 $responseId = (int) str_replace('response_', '', $selectionId);
@@ -418,13 +399,12 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             }
         }
 
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
+        if ($message->isInteractive()) {
+            $action = $this->getSelectionId($message);
 
             match ($action) {
                 'refresh' => $this->showResponses($session),
                 'close' => $this->confirmCloseRequest($session),
-                'menu' => $this->goToMainMenu($session),
                 default => null,
             };
             return;
@@ -433,12 +413,9 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         $this->showResponses($session);
     }
 
-    /**
-     * Handle response actions (FR-PRD-34).
-     */
     protected function handleResponseAction(IncomingMessage $message, ConversationSession $session): void
     {
-        $action = $message->isButtonReply() ? $message->getSelectionId() : null;
+        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
 
         match ($action) {
             'location' => $this->showShopLocation($session),
@@ -448,25 +425,22 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         };
     }
 
-    /**
-     * Handle my request selection.
-     */
     protected function handleMyRequestSelection(IncomingMessage $message, ConversationSession $session): void
     {
         if ($message->isListReply()) {
-            $selectionId = $message->getSelectionId();
+            $selectionId = $this->getSelectionId($message);
 
             if (str_starts_with($selectionId, 'my_request_') || str_starts_with($selectionId, 'request_')) {
                 $requestId = (int) preg_replace('/^(my_request_|request_)/', '', $selectionId);
-                $this->sessionManager->setTempData($session, 'current_request_id', $requestId);
-                $this->sessionManager->setStep($session, ProductSearchStep::VIEW_RESPONSES->value);
+                $this->setTemp($session, 'current_request_id', $requestId);
+                $this->nextStep($session, ProductSearchStep::VIEW_RESPONSES->value);
                 $this->showResponses($session);
                 return;
             }
         }
 
-        if ($message->isButtonReply()) {
-            $action = $message->getSelectionId();
+        if ($message->isInteractive()) {
+            $action = $this->getSelectionId($message);
 
             match ($action) {
                 'new_search' => $this->start($session),
@@ -478,12 +452,9 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         $this->showMyRequests($session);
     }
 
-    /**
-     * Handle location action.
-     */
     protected function handleLocationAction(IncomingMessage $message, ConversationSession $session): void
     {
-        $action = $message->isButtonReply() ? $message->getSelectionId() : null;
+        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
 
         match ($action) {
             'contact' => $this->showShopContact($session),
@@ -498,83 +469,97 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Ask for category (FR-PRD-01).
-     */
     protected function askCategory(ConversationSession $session, bool $isRetry = false): void
     {
         $message = $isRetry
             ? "Please select a category from the list."
             : ProductMessages::ASK_CATEGORY;
 
-        $this->whatsApp->sendList(
+        $this->sendListWithFooter(
             $session->phone,
             $message,
             '📦 Select Category',
-            ProductMessages::getCategorySections()
+            ProductMessages::getCategorySections(),
+            '🔍 Product Search'
         );
     }
 
-    /**
-     * Ask for description (FR-PRD-02).
-     */
     protected function askDescription(ConversationSession $session, bool $isRetry = false): void
     {
         $message = $isRetry
             ? ProductMessages::ERROR_INVALID_DESCRIPTION
             : ProductMessages::ASK_DESCRIPTION;
 
-        $this->whatsApp->sendText($session->phone, $message);
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            $message,
+            [],
+            '📝 Describe Product'
+        );
     }
 
-    /**
-     * Ask for image.
-     */
     protected function askImage(ConversationSession $session): void
     {
-        $this->whatsApp->sendText($session->phone, ProductMessages::ASK_IMAGE);
+        $this->sendButtons(
+            $session->phone,
+            ProductMessages::ASK_IMAGE,
+            [
+                ['id' => 'skip', 'title' => '⏭️ Skip'],
+                self::MENU_BUTTON,
+            ],
+            '📷 Reference Image',
+            MessageTemplates::GLOBAL_FOOTER
+        );
     }
 
-    /**
-     * Ask for location.
-     */
     protected function askLocation(ConversationSession $session, bool $isRetry = false): void
     {
         $message = $isRetry
             ? "📍 Please share your location to continue."
             : ProductMessages::ERROR_NO_LOCATION;
 
-        $this->whatsApp->requestLocation($session->phone, $message);
+        $this->requestLocation($session->phone, $message);
+        
+        // Send follow-up with menu
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "📍 Share your location to find nearby shops.",
+            []
+        );
     }
 
-    /**
-     * Ask for radius.
-     */
     protected function askRadius(ConversationSession $session, bool $isRetry = false): void
     {
         $message = $isRetry
             ? "Please select a search radius."
             : ProductMessages::ASK_RADIUS;
 
-        $this->whatsApp->sendButtons(
+        $buttons = ProductMessages::getRadiusButtons();
+        
+        // Ensure room for menu button
+        if (count($buttons) >= 3) {
+            $buttons = array_slice($buttons, 0, 2);
+        }
+        $buttons[] = self::MENU_BUTTON;
+
+        $this->sendButtons(
             $session->phone,
             $message,
-            ProductMessages::getRadiusButtons()
+            $buttons,
+            '📏 Search Radius',
+            MessageTemplates::GLOBAL_FOOTER
         );
     }
 
-    /**
-     * Ask for confirmation (FR-PRD-04).
-     */
     protected function askConfirmation(ConversationSession $session): void
     {
-        $description = $this->sessionManager->getTempData($session, 'description');
-        $category = $this->sessionManager->getTempData($session, 'category');
-        $radius = $this->sessionManager->getTempData($session, 'radius', self::DEFAULT_RADIUS_KM);
-        $lat = $this->sessionManager->getTempData($session, 'user_lat');
-        $lng = $this->sessionManager->getTempData($session, 'user_lng');
+        $description = $this->getTemp($session, 'description');
+        $category = $this->getTemp($session, 'category');
+        $radius = $this->getTemp($session, 'radius', self::DEFAULT_RADIUS_KM);
+        $lat = $this->getTemp($session, 'user_lat');
+        $lng = $this->getTemp($session, 'user_lng');
 
-        // FR-PRD-05: Identify eligible shops by category and proximity
+        // Identify eligible shops by category and proximity
         $shopCount = $this->searchService->countEligibleShops($lat, $lng, $radius, $category);
 
         if ($shopCount === 0) {
@@ -589,10 +574,16 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             'shop_count' => $shopCount,
         ]);
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtons(
             $session->phone,
             $message,
-            ProductMessages::getConfirmRequestButtons()
+            [
+                ['id' => 'send', 'title' => '✅ Send Request'],
+                ['id' => 'edit', 'title' => '✏️ Edit'],
+                self::MENU_BUTTON,
+            ],
+            '📋 Confirm Request',
+            MessageTemplates::GLOBAL_FOOTER
         );
     }
 
@@ -602,37 +593,32 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Create and send request (FR-PRD-03 to FR-PRD-06).
-     */
     protected function createAndSendRequest(ConversationSession $session): void
     {
         try {
-            $user = $this->sessionManager->getUser($session);
+            $user = $this->getUser($session);
 
-            // FR-PRD-03: Generate unique request number (format: NB-XXXX)
             $request = $this->searchService->createRequest($user, [
-                'description' => $this->sessionManager->getTempData($session, 'description'),
-                'category' => $this->sessionManager->getTempData($session, 'category'),
-                'image_url' => $this->sessionManager->getTempData($session, 'image_url'),
-                'latitude' => $this->sessionManager->getTempData($session, 'user_lat'),
-                'longitude' => $this->sessionManager->getTempData($session, 'user_lng'),
-                'radius_km' => $this->sessionManager->getTempData($session, 'radius', self::DEFAULT_RADIUS_KM),
+                'description' => $this->getTemp($session, 'description'),
+                'category' => $this->getTemp($session, 'category'),
+                'image_url' => $this->getTemp($session, 'image_url'),
+                'latitude' => $this->getTemp($session, 'user_lat'),
+                'longitude' => $this->getTemp($session, 'user_lng'),
+                'radius_km' => $this->getTemp($session, 'radius', self::DEFAULT_RADIUS_KM),
             ]);
 
-            // FR-PRD-05: Identify eligible shops by category and proximity
+            // Identify eligible shops by category and proximity
             $shops = $this->searchService->findEligibleShops($request);
 
-            // FR-PRD-10 to FR-PRD-14: Notify shops
+            // Notify shops
             $this->notifyShops($request, $shops);
 
             // Update shops notified count
             $this->searchService->updateShopsNotified($request, $shops->count());
 
             // Store current request ID
-            $this->sessionManager->setTempData($session, 'current_request_id', $request->id);
+            $this->setTemp($session, 'current_request_id', $request->id);
 
-            // FR-PRD-06: Set request expiration time
             $expiryHours = config('nearbuy.products.request_expiry_hours', self::DEFAULT_EXPIRY_HOURS);
 
             $message = ProductMessages::format(ProductMessages::REQUEST_SENT, [
@@ -641,15 +627,19 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
                 'hours' => $expiryHours,
             ]);
 
-            $this->whatsApp->sendButtons(
+            $this->sendButtonsWithMenu(
                 $session->phone,
                 $message,
-                ProductMessages::getPostRequestButtons()
+                [
+                    ['id' => 'view_responses', 'title' => '📬 View Responses'],
+                    ['id' => 'new_search', 'title' => '🔍 New Search'],
+                ],
+                '✅ Request Sent!'
             );
 
-            $this->sessionManager->setStep($session, ProductSearchStep::REQUEST_SENT->value);
+            $this->nextStep($session, ProductSearchStep::REQUEST_SENT->value);
 
-            Log::info('Product request created', [
+            $this->logInfo('Product request created', [
                 'request_id' => $request->id,
                 'request_number' => $request->request_number,
                 'shops_notified' => $shops->count(),
@@ -657,23 +647,24 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Failed to create product request', [
+            $this->logError('Failed to create product request', [
                 'error' => $e->getMessage(),
                 'phone' => $this->maskPhone($session->phone),
             ]);
 
-            $this->whatsApp->sendText(
+            $this->sendErrorWithOptions(
                 $session->phone,
-                "❌ Failed to send request. Please try again."
+                "❌ Failed to send request. Please try again.",
+                [
+                    ['id' => 'retry', 'title' => '🔄 Try Again'],
+                    self::MENU_BUTTON,
+                ]
             );
 
             $this->start($session);
         }
     }
 
-    /**
-     * Notify shops about the request (FR-PRD-10 to FR-PRD-14).
-     */
     protected function notifyShops(ProductRequest $request, $shops): void
     {
         foreach ($shops as $shop) {
@@ -683,7 +674,6 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
                 continue;
             }
 
-            // FR-PRD-13: Include customer distance in shop notification
             $message = ProductMessages::format(ProductMessages::NEW_REQUEST_NOTIFICATION, [
                 'description' => $request->description,
                 'category' => ProductMessages::getCategoryLabel($request->category?->value ?? 'all'),
@@ -694,35 +684,38 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
             // Send with reference image if available
             if ($request->image_url) {
-                $this->whatsApp->sendImage($owner->phone, $request->image_url, $message);
+                $this->sendImage($owner->phone, $request->image_url, $message);
             } else {
-                $this->whatsApp->sendText($owner->phone, $message);
+                $this->sendTextWithMenu($owner->phone, $message);
             }
 
-            // FR-PRD-14: Provide Yes I have / Don't have / Skip response options
-            $this->whatsApp->sendButtons(
+            // Provide response options
+            $this->sendButtons(
                 $owner->phone,
                 ProductMessages::RESPOND_PROMPT,
-                ProductMessages::getRespondChoiceButtons()
+                [
+                    ['id' => 'yes', 'title' => '✅ Yes, I Have It'],
+                    ['id' => 'no', 'title' => "❌ Don't Have"],
+                    self::MENU_BUTTON,
+                ],
+                null,
+                MessageTemplates::GLOBAL_FOOTER
             );
         }
     }
 
-    /**
-     * Show responses (FR-PRD-30 to FR-PRD-32).
-     */
     protected function showResponses(ConversationSession $session): void
     {
-        $requestId = $this->sessionManager->getTempData($session, 'current_request_id');
+        $requestId = $this->getTemp($session, 'current_request_id');
         $request = ProductRequest::find($requestId);
 
         if (!$request) {
-            $this->whatsApp->sendText($session->phone, ProductMessages::ERROR_REQUEST_NOT_FOUND);
+            $this->sendTextWithMenu($session->phone, ProductMessages::ERROR_REQUEST_NOT_FOUND);
             $this->showMyRequests($session);
             return;
         }
 
-        // FR-PRD-30: Aggregate responses
+        // Aggregate responses
         $responses = $this->searchService->getResponses($request);
 
         if ($responses->isEmpty()) {
@@ -730,18 +723,16 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
                 'request_number' => $request->request_number,
             ]);
 
-            $this->whatsApp->sendButtons(
+            $this->sendButtonsWithMenu(
                 $session->phone,
                 $message,
-                [
-                    ['id' => 'refresh', 'title' => '🔄 Refresh'],
-                    ['id' => 'menu', 'title' => '🏠 Main Menu'],
-                ]
+                [['id' => 'refresh', 'title' => '🔄 Refresh']],
+                '📬 Responses'
             );
             return;
         }
 
-        // FR-PRD-31: Sort responses by price (lowest first)
+        // Sort responses by price (lowest first)
         $availableResponses = $responses->where('is_available', true)->sortBy('price');
 
         $header = ProductMessages::format(ProductMessages::RESPONSES_HEADER, [
@@ -750,7 +741,7 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             'response_count' => $availableResponses->count(),
         ]);
 
-        // FR-PRD-32: Present responses via list message with price and shop info
+        // Present responses via list message with price and shop info
         $rows = [];
         $lowestPrice = $availableResponses->first()?->price;
 
@@ -779,35 +770,28 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             ],
         ];
 
-        $this->whatsApp->sendList(
+        $this->sendListWithFooter(
             $session->phone,
             $header,
             '💰 View Offers',
             $sections,
-            null,
-            "⭐ = Best price"
+            '📬 Responses'
         );
 
-        $this->sessionManager->setStep($session, ProductSearchStep::VIEW_RESPONSES->value);
+        $this->nextStep($session, ProductSearchStep::VIEW_RESPONSES->value);
     }
 
-    /**
-     * View response detail (FR-PRD-33).
-     */
     protected function viewResponseDetail(ConversationSession $session, int $responseId): void
     {
-        $this->sessionManager->setTempData($session, 'current_response_id', $responseId);
-        $this->sessionManager->setStep($session, ProductSearchStep::RESPONSE_DETAIL->value);
+        $this->setTemp($session, 'current_response_id', $responseId);
+        $this->nextStep($session, ProductSearchStep::RESPONSE_DETAIL->value);
         $this->showResponseDetail($session);
     }
 
-    /**
-     * Show response detail (FR-PRD-33).
-     */
     protected function showResponseDetail(ConversationSession $session): void
     {
-        $responseId = $this->sessionManager->getTempData($session, 'current_response_id');
-        $requestId = $this->sessionManager->getTempData($session, 'current_request_id');
+        $responseId = $this->getTemp($session, 'current_response_id');
+        $requestId = $this->getTemp($session, 'current_request_id');
         $request = ProductRequest::find($requestId);
 
         if (!$request) {
@@ -819,14 +803,21 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             ->getResponseWithDistance($responseId, $request->latitude, $request->longitude);
 
         if (!$response) {
-            $this->whatsApp->sendText($session->phone, "❌ Response not found.");
+            $this->sendErrorWithOptions(
+                $session->phone,
+                "❌ Response not found.",
+                [
+                    ['id' => 'back', 'title' => '⬅️ Back'],
+                    self::MENU_BUTTON,
+                ]
+            );
             $this->showResponses($session);
             return;
         }
 
         $shop = $response->shop;
 
-        // FR-PRD-33: Send product photo and details upon selection
+        // Send product photo and details upon selection
         $card = ProductMessages::format(
             $response->description ? ProductMessages::RESPONSE_CARD : ProductMessages::RESPONSE_CARD_NO_DESC,
             [
@@ -839,25 +830,25 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
         // Send image if available
         if ($response->image_url) {
-            $this->whatsApp->sendImage($session->phone, $response->image_url, $card);
+            $this->sendImage($session->phone, $response->image_url, $card);
         } else {
-            $this->whatsApp->sendText($session->phone, $card);
+            $this->sendTextWithMenu($session->phone, $card);
         }
 
-        // FR-PRD-34: Provide Get Location and Call Shop options
-        $this->whatsApp->sendButtons(
+        // Provide Get Location and Call Shop options
+        $this->sendButtonsWithMenu(
             $session->phone,
             "What would you like to do?",
-            ProductMessages::getResponseActionButtons()
+            [
+                ['id' => 'location', 'title' => '📍 Get Location'],
+                ['id' => 'contact', 'title' => '📞 Call Shop'],
+            ]
         );
     }
 
-    /**
-     * Show shop location.
-     */
     protected function showShopLocation(ConversationSession $session): void
     {
-        $responseId = $this->sessionManager->getTempData($session, 'current_response_id');
+        $responseId = $this->getTemp($session, 'current_response_id');
         $response = app(ProductResponseService::class)->getResponseWithShop($responseId);
 
         if (!$response || !$response->shop) {
@@ -867,15 +858,15 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
         $shop = $response->shop;
 
-        $this->whatsApp->sendLocation(
+        $this->sendLocation(
             $session->phone,
-            $shop->latitude,
-            $shop->longitude,
+            (float) $shop->latitude,
+            (float) $shop->longitude,
             $shop->shop_name,
             $shop->address
         );
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtonsWithMenu(
             $session->phone,
             "📍 *{$shop->shop_name}*\n\nTap to open in maps.",
             [
@@ -884,15 +875,12 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             ]
         );
 
-        $this->sessionManager->setStep($session, ProductSearchStep::SHOW_SHOP_LOCATION->value);
+        $this->nextStep($session, ProductSearchStep::SHOW_SHOP_LOCATION->value);
     }
 
-    /**
-     * Show shop contact.
-     */
     protected function showShopContact(ConversationSession $session): void
     {
-        $responseId = $this->sessionManager->getTempData($session, 'current_response_id');
+        $responseId = $this->getTemp($session, 'current_response_id');
         $response = app(ProductResponseService::class)->getResponseWithShop($responseId);
 
         if (!$response || !$response->shop) {
@@ -906,29 +894,28 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
         $message = "📞 *Contact {$shop->shop_name}*\n\nPhone: {$phone}\n\n_Tap to call_";
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtonsWithMenu(
             $session->phone,
             $message,
             [
                 ['id' => 'location', 'title' => '📍 Get Location'],
                 ['id' => 'back', 'title' => '⬅️ Back'],
-            ]
+            ],
+            '📞 Contact'
         );
     }
 
-    /**
-     * Show my requests.
-     */
     protected function showMyRequests(ConversationSession $session): void
     {
-        $user = $this->sessionManager->getUser($session);
+        $user = $this->getUser($session);
         $requests = $this->searchService->getUserActiveRequests($user);
 
         if ($requests->isEmpty()) {
-            $this->whatsApp->sendButtons(
+            $this->sendButtonsWithMenu(
                 $session->phone,
                 ProductMessages::MY_REQUESTS_EMPTY,
-                ProductMessages::getEmptyRequestsButtons()
+                [['id' => 'new_search', 'title' => '🔍 New Search']],
+                '📋 My Requests'
             );
             return;
         }
@@ -959,31 +946,32 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
 
         $sections = [['title' => 'Your Requests', 'rows' => array_slice($rows, 0, 10)]];
 
-        $this->whatsApp->sendList(
+        $this->sendListWithFooter(
             $session->phone,
             $header,
             '📋 View Requests',
-            $sections
+            $sections,
+            '📋 My Requests'
         );
 
-        $this->sessionManager->setStep($session, ProductSearchStep::SHOW_MY_REQUESTS->value);
+        $this->nextStep($session, ProductSearchStep::SHOW_MY_REQUESTS->value);
     }
 
-    /**
-     * Confirm close request (FR-PRD-35).
-     */
     protected function confirmCloseRequest(ConversationSession $session): void
     {
-        $this->whatsApp->sendButtons(
+        $this->sendButtons(
             $session->phone,
             ProductMessages::CLOSE_REQUEST_CONFIRM,
-            ProductMessages::getCloseRequestButtons()
+            [
+                ['id' => 'confirm_close', 'title' => '✅ Yes, Close'],
+                ['id' => 'cancel_close', 'title' => '❌ No, Keep Open'],
+                self::MENU_BUTTON,
+            ],
+            '⚠️ Close Request',
+            MessageTemplates::GLOBAL_FOOTER
         );
     }
 
-    /**
-     * Show no shops message.
-     */
     protected function showNoShopsMessage(ConversationSession $session, ?string $category, int $radius): void
     {
         $message = ProductMessages::format(ProductMessages::NO_SHOPS_FOUND, [
@@ -991,43 +979,26 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
             'radius' => $radius,
         ]);
 
-        $this->whatsApp->sendButtons(
+        $this->sendButtonsWithMenu(
             $session->phone,
             $message,
-            [
-                ['id' => 'edit', 'title' => '🔄 Try Different'],
-                ['id' => 'menu', 'title' => '🏠 Main Menu'],
-            ]
+            [['id' => 'edit', 'title' => '🔄 Try Different']],
+            '😕 No Shops Found'
         );
     }
 
-    /**
-     * Restart search.
-     */
     protected function restartSearch(ConversationSession $session): void
     {
-        $this->whatsApp->sendText($session->phone, "🔄 Let's start over.");
+        $this->sendTextWithMenu($session->phone, "🔄 Let's start over.");
         $this->clearSearchData($session);
         $this->start($session);
     }
 
-    /**
-     * Cancel search.
-     */
     protected function cancelSearch(ConversationSession $session): void
     {
         $this->clearSearchData($session);
-        $this->whatsApp->sendText($session->phone, "❌ Search cancelled.");
+        $this->sendTextWithMenu($session->phone, "❌ Search cancelled.");
         $this->goToMainMenu($session);
-    }
-
-    /**
-     * Go to main menu.
-     */
-    protected function goToMainMenu(ConversationSession $session): void
-    {
-        $this->sessionManager->resetToMainMenu($session);
-        app(MainMenuHandler::class)->start($session);
     }
 
     /*
@@ -1036,9 +1007,6 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Clear search data from session.
-     */
     protected function clearSearchData(ConversationSession $session): void
     {
         $keysToRemove = ['category', 'description', 'image_url', 'radius', 'current_request_id', 'current_response_id'];
@@ -1048,24 +1016,18 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         }
     }
 
-    /**
-     * Check if user has valid location.
-     */
     protected function hasValidLocation($user): bool
     {
         return $user->latitude !== null
             && $user->longitude !== null
-            && abs($user->latitude) <= 90
-            && abs($user->longitude) <= 180;
+            && abs((float) $user->latitude) <= 90
+            && abs((float) $user->longitude) <= 180;
     }
 
-    /**
-     * Extract category from message.
-     */
     protected function extractCategory(IncomingMessage $message): ?string
     {
         if ($message->isListReply()) {
-            return $message->getSelectionId();
+            return $this->getSelectionId($message);
         }
 
         if ($message->isText()) {
@@ -1075,15 +1037,12 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         return null;
     }
 
-    /**
-     * Extract radius from message.
-     */
     protected function extractRadius(IncomingMessage $message): ?int
     {
         $value = null;
 
-        if ($message->isButtonReply()) {
-            $value = (int) $message->getSelectionId();
+        if ($message->isInteractive()) {
+            $value = (int) $this->getSelectionId($message);
         } elseif ($message->isText()) {
             $text = trim($message->text ?? '');
             if (is_numeric($text)) {
@@ -1098,13 +1057,10 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         return null;
     }
 
-    /**
-     * Extract confirmation action from message.
-     */
     protected function extractConfirmationAction(IncomingMessage $message): ?string
     {
-        if ($message->isButtonReply()) {
-            return $message->getSelectionId();
+        if ($message->isInteractive()) {
+            return $this->getSelectionId($message);
         }
 
         if ($message->isText()) {
@@ -1124,9 +1080,6 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         return null;
     }
 
-    /**
-     * Match text to category.
-     */
     protected function matchCategory(string $text): ?string
     {
         $mappings = [
@@ -1152,17 +1105,5 @@ class ProductSearchFlowHandler implements FlowHandlerInterface
         }
 
         return null;
-    }
-
-    /**
-     * Mask phone number for logging.
-     */
-    protected function maskPhone(string $phone): string
-    {
-        $length = strlen($phone);
-        if ($length < 6) {
-            return str_repeat('*', $length);
-        }
-        return substr($phone, 0, 3) . str_repeat('*', $length - 6) . substr($phone, -3);
     }
 }
