@@ -82,7 +82,7 @@ class GenerateAgreementPDF implements ShouldQueue
 
             // Refresh agreement with relationships
             $this->agreement->refresh();
-            $this->agreement->load(['creator', 'counterpartyUser']);
+            $this->agreement->load(['fromUser', 'toUser']);
 
             // Generate PDF
             $pdfUrl = $pdfService->generateAndUpload($this->agreement);

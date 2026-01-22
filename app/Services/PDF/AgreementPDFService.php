@@ -9,13 +9,13 @@ use Illuminate\Support\Facades\Storage;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 /**
- * ENHANCED Service for generating agreement PDF documents.
+ * Service for generating agreement PDF documents.
  *
- * Key fixes:
- * 1. Correct field names (from_confirmed_at, amount_in_words)
- * 2. Better error handling with detailed logging
- * 3. Fallback for QR code generation failures
- * 4. Local storage fallback if S3 fails
+ * Updated to match actual database schema:
+ * - Uses 'direction' field to determine creditor/debtor
+ * - Uses 'from_confirmed_at' and 'to_confirmed_at' for confirmation timestamps
+ * - Uses 'amount_in_words' for amount text
+ * - Uses 'purpose_type' for purpose enum
  */
 class AgreementPDFService
 {
@@ -35,7 +35,7 @@ class AgreementPDFService
             ]);
 
             // Load relationships
-            $agreement->load(['creator', 'counterpartyUser']);
+            $agreement->load(['fromUser', 'toUser']);
 
             // Generate PDF
             $pdf = $this->generatePDF($agreement);
@@ -83,8 +83,8 @@ class AgreementPDFService
     public function generatePDF(Agreement $agreement): \Barryvdh\DomPDF\PDF
     {
         // Load related models if not already loaded
-        if (!$agreement->relationLoaded('creator')) {
-            $agreement->load(['creator', 'counterpartyUser']);
+        if (!$agreement->relationLoaded('fromUser')) {
+            $agreement->load(['fromUser', 'toUser']);
         }
 
         // Generate QR code (with fallback)
@@ -136,13 +136,14 @@ class AgreementPDFService
                 return null;
             }
 
-            $qrCode = QrCode::format('png')
+            // Use SVG format (no imagick required) and convert to base64
+            $qrCode = QrCode::format('svg')
                 ->size(150)
                 ->margin(1)
                 ->errorCorrection('M')
                 ->generate($verificationUrl);
 
-            return 'data:image/png;base64,' . base64_encode($qrCode);
+            return 'data:image/svg+xml;base64,' . base64_encode($qrCode);
 
         } catch (\Exception $e) {
             Log::warning('QR code generation failed', [
@@ -150,7 +151,6 @@ class AgreementPDFService
                 'error' => $e->getMessage(),
             ]);
 
-            // Return null instead of failing - PDF can still be generated without QR
             return null;
         }
     }
@@ -171,8 +171,6 @@ class AgreementPDFService
 
     /**
      * Prepare data for PDF view.
-     * 
-     * FIXED: Correct field names for the Agreement model
      *
      * @param Agreement $agreement
      * @param string|null $qrCode
@@ -180,24 +178,19 @@ class AgreementPDFService
      */
     protected function prepareViewData(Agreement $agreement, ?string $qrCode): array
     {
-        $creator = $agreement->creator;
+        $creator = $agreement->fromUser;
 
-        // Determine creditor - check which field exists
-        $creditorId = $agreement->creditor_id ?? null;
-        
-        // If creditor_id doesn't exist, determine from direction
-        if (!$creditorId) {
-            $direction = $agreement->direction->value ?? $agreement->direction ?? 'giving';
-            $isCreatorCreditor = ($direction === 'giving');
-        } else {
-            $isCreatorCreditor = $creditorId === $creator->id;
-        }
+        // Determine creditor from direction field
+        // 'giving' means creator is lending (creditor)
+        // 'receiving' means creator is borrowing (debtor)
+        $direction = $agreement->direction->value ?? $agreement->direction ?? 'giving';
+        $isCreatorCreditor = ($direction === 'giving');
 
         if ($isCreatorCreditor) {
             $partyA = [
                 'label' => 'CREDITOR (Lender)',
-                'name' => $creator->name ?? 'Unknown',
-                'phone' => $this->formatPhoneForDisplay($creator->phone ?? ''),
+                'name' => $creator->name ?? $agreement->from_name ?? 'Unknown',
+                'phone' => $this->formatPhoneForDisplay($creator->phone ?? $agreement->from_phone ?? ''),
                 'role' => 'Giving Money',
             ];
             $partyB = [
@@ -209,8 +202,8 @@ class AgreementPDFService
         } else {
             $partyA = [
                 'label' => 'DEBTOR (Borrower)',
-                'name' => $creator->name ?? 'Unknown',
-                'phone' => $this->formatPhoneForDisplay($creator->phone ?? ''),
+                'name' => $creator->name ?? $agreement->from_name ?? 'Unknown',
+                'phone' => $this->formatPhoneForDisplay($creator->phone ?? $agreement->from_phone ?? ''),
                 'role' => 'Receiving Money',
             ];
             $partyB = [
@@ -221,29 +214,23 @@ class AgreementPDFService
             ];
         }
 
-        // Get amount in words - check which field exists
+        // Get amount in words
         $amountWords = $agreement->amount_in_words 
-            ?? $agreement->amount_words 
             ?? $this->convertAmountToWords($agreement->amount ?? 0);
 
         // Get purpose value - handle both enum and string
         $purposeValue = is_object($agreement->purpose_type) 
             ? $agreement->purpose_type->value 
-            : ($agreement->purpose_type ?? $agreement->purpose ?? 'other');
+            : ($agreement->purpose_type ?? 'other');
 
         // Get status value - handle both enum and string
         $statusValue = is_object($agreement->status) 
             ? $agreement->status->value 
             : ($agreement->status ?? 'pending');
 
-        // Get confirmation timestamps - FIXED field names
-        $creatorConfirmedAt = $agreement->from_confirmed_at 
-            ?? $agreement->creator_confirmed_at 
-            ?? $agreement->created_at;
-        
-        $toConfirmedAt = $agreement->to_confirmed_at 
-            ?? $agreement->counterparty_confirmed_at 
-            ?? null;
+        // Get confirmation timestamps - use correct field names from database
+        $creatorConfirmedAt = $agreement->from_confirmed_at;
+        $toConfirmedAt = $agreement->to_confirmed_at;
 
         return [
             'agreement' => $agreement,
@@ -378,15 +365,9 @@ class AgreementPDFService
             'business' => 'Business Transaction',
             'personal' => 'Personal Transaction',
             'other' => 'Other',
-            'LOAN' => 'Loan',
-            'ADVANCE' => 'Advance Payment',
-            'DEPOSIT' => 'Security Deposit',
-            'BUSINESS' => 'Business Transaction',
-            'PERSONAL' => 'Personal Transaction',
-            'OTHER' => 'Other',
         ];
 
-        return $map[$purpose] ?? ucfirst(strtolower($purpose));
+        return $map[strtolower($purpose)] ?? ucfirst(strtolower($purpose));
     }
 
     /**
@@ -399,7 +380,6 @@ class AgreementPDFService
     {
         $map = [
             'pending' => 'Pending Confirmation',
-            'pending_counterparty' => 'Pending Confirmation',
             'confirmed' => 'Confirmed by Both Parties',
             'active' => 'Active',
             'rejected' => 'Rejected',
@@ -407,21 +387,28 @@ class AgreementPDFService
             'completed' => 'Completed',
             'expired' => 'Expired',
             'cancelled' => 'Cancelled',
-            'PENDING' => 'Pending Confirmation',
-            'CONFIRMED' => 'Confirmed by Both Parties',
-            'ACTIVE' => 'Active',
-            'REJECTED' => 'Rejected',
-            'DISPUTED' => 'Disputed',
-            'COMPLETED' => 'Completed',
-            'EXPIRED' => 'Expired',
-            'CANCELLED' => 'Cancelled',
         ];
 
-        return $map[$status] ?? ucfirst(strtolower($status));
+        return $map[strtolower($status)] ?? ucfirst(strtolower($status));
     }
 
     /**
-     * Convert amount to words (fallback method).
+     * Format direction for display.
+     *
+     * @param string $direction
+     * @return string
+     */
+    protected function formatDirection(string $direction): string
+    {
+        return match (strtolower($direction)) {
+            'giving' => 'Giving Money',
+            'receiving' => 'Receiving Money',
+            default => ucfirst($direction),
+        };
+    }
+
+    /**
+     * Convert amount to words (Indian numbering system).
      *
      * @param float $amount
      * @return string
@@ -434,6 +421,7 @@ class AgreementPDFService
 
         $amount = round($amount, 2);
         $rupees = floor($amount);
+        $paise = round(($amount - $rupees) * 100);
 
         $ones = [
             '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
@@ -470,7 +458,12 @@ class AgreementPDFService
         }
 
         if ($rupees > 0) {
-            $words .= $this->numberToWordsSimple($rupees, $ones, $tens);
+            $words .= $this->numberToWordsSimple((int) $rupees, $ones, $tens);
+        }
+
+        // Add paise if present
+        if ($paise > 0) {
+            $words .= ' and ' . $this->numberToWordsSimple((int) $paise, $ones, $tens) . ' Paise';
         }
 
         return trim($words) . ' Only';

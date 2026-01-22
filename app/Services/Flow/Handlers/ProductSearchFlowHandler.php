@@ -723,14 +723,13 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
                 $this->sendTextWithMenu($owner->phone, $message);
             }
 
-            // Provide response options
+            // Provide response options with request ID embedded for proper routing
             $this->sendButtons(
                 $owner->phone,
                 ProductMessages::RESPOND_PROMPT,
                 [
-                    ['id' => 'yes', 'title' => '✅ Yes, I Have It'],
-                    ['id' => 'no', 'title' => "❌ Don't Have"],
-                    self::MENU_BUTTON,
+                    ['id' => 'respond_yes_' . $request->id, 'title' => '✅ Yes, I Have It'],
+                    ['id' => 'respond_no_' . $request->id, 'title' => "❌ Don't Have"],
                 ],
                 null,
                 MessageTemplates::GLOBAL_FOOTER
@@ -863,8 +862,8 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
         );
 
         // Send image if available
-        if ($response->image_url) {
-            $this->sendImage($session->phone, $response->image_url, $card);
+        if ($response->photo_url) {
+            $this->sendImage($session->phone, $response->photo_url, $card);
         } else {
             $this->sendTextWithMenu($session->phone, $card);
         }

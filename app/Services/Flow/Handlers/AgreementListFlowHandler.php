@@ -246,7 +246,7 @@ class AgreementListFlowHandler extends AbstractFlowHandler
     protected function showAgreementDetail(ConversationSession $session): void
     {
         $agreementId = $this->getTemp($session, 'view_agreement_id');
-        $agreement = Agreement::with(['creator', 'counterpartyUser'])->find($agreementId);
+        $agreement = Agreement::with(['fromUser', 'toUser'])->find($agreementId);
 
         if (!$agreement) {
             $this->sendErrorWithOptions(

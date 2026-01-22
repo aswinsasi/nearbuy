@@ -715,6 +715,15 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
             "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
             "⚠️ *Is this correct?*";
 
+        // *** FIX: Set up recipient's session for confirmation flow ***
+        $recipientSession = $this->sessionManager->getOrCreate($agreement->to_phone);
+        $this->sessionManager->setFlowStep(
+            $recipientSession,
+            FlowType::AGREEMENT_CONFIRM,
+            AgreementStep::CONFIRM_AGREEMENT->value
+        );
+        $this->setTemp($recipientSession, 'confirm_agreement_id', $agreement->id);
+
         $this->sendButtons(
             $agreement->to_phone,
             $message,

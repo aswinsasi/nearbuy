@@ -536,8 +536,8 @@ class FlowRouter
      */
     public function handleMenuSelection(string $selectionId, ConversationSession $session): void
     {
-        // Special handling for my_requests - show existing requests, not start new search
-        if ($selectionId === 'my_requests') {
+        // Special handling for my_requests and view_responses - show existing requests, not start new search
+        if (in_array($selectionId, ['my_requests', 'view_responses'])) {
             $this->startMyRequestsFlow($session);
             return;
         }

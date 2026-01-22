@@ -969,4 +969,21 @@ class Agreement extends Model
                 ->sum('amount'),
         ];
     }
+
+    /**
+     * Check if agreement confirmation has expired.
+     * Agreements expire after 7 days if not confirmed.
+     */
+    public function isExpired(): bool
+    {
+        // Only pending agreements can expire
+        if ($this->status !== AgreementStatus::PENDING) {
+            return false;
+        }
+
+        // Check if agreement is older than expiry period (default: 7 days)
+        $expiryDays = config('nearbuy.agreements.expiry_days', 7);
+        
+        return $this->created_at->addDays($expiryDays)->isPast();
+    }
 }
