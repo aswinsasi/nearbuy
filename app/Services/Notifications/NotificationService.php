@@ -110,6 +110,10 @@ class NotificationService
     /**
      * Send immediate notification for a product request.
      *
+     * UPDATED: Button IDs now include request ID for proper routing.
+     * Format: respond_yes_{requestId} and respond_no_{requestId}
+     * These are intercepted by FlowRouter::handleProductRequestResponse()
+     *
      * @param ProductRequest $request
      * @param Shop $shop
      * @return void
@@ -129,17 +133,28 @@ class NotificationService
             'request_number' => $request->request_number,
         ]);
 
+        // =====================================================
+        // FIX: Include request ID in button IDs
+        // This allows FlowRouter to intercept these buttons
+        // and route them correctly regardless of current flow
+        // =====================================================
+        $buttons = [
+            ['id' => 'respond_yes_' . $request->id, 'title' => '✅ Yes, I Have It'],
+            ['id' => 'respond_no_' . $request->id, 'title' => "❌ Don't Have"],
+        ];
+
         // Queue the WhatsApp message
         SendWhatsAppMessage::dispatch(
             $owner->phone,
             $message,
             'buttons',
-            NotificationMessages::getRespondButtons()
+            $buttons
         )->onQueue('notifications');
 
         Log::debug('Immediate notification sent', [
             'shop_id' => $shop->id,
             'request_id' => $request->id,
+            'button_ids' => ['respond_yes_' . $request->id, 'respond_no_' . $request->id],
         ]);
     }
 

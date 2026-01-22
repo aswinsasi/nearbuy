@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Log;
  * 2. Consistent error handling with options
  * 3. Quick command support
  * 4. Better session recovery
+ * 5. Global interception of product request response buttons
  */
 class FlowRouter
 {
@@ -78,6 +79,15 @@ class FlowRouter
                 return;
             }
 
+            // =====================================================
+            // NEW: Check for product request response buttons
+            // This intercepts yes/no buttons from notifications
+            // regardless of what flow the user is currently in
+            // =====================================================
+            if ($this->handleProductRequestResponse($message, $session)) {
+                return;
+            }
+
             // Check for quick action commands
             if ($this->handleQuickActions($message, $session)) {
                 return;
@@ -127,6 +137,185 @@ class FlowRouter
 
             $this->sendErrorWithMenu($message->from, MessageTemplates::ERROR_GENERIC);
         }
+    }
+
+    /**
+     * Handle product request response buttons from notifications.
+     * 
+     * This intercepts buttons like:
+     * - "respond_yes_17" or "respond_no_17" (new format with request ID)
+     * - "yes" or "no" (legacy format - uses temp data for request ID)
+     * 
+     * This allows shops to respond to product requests from ANY flow,
+     * not just when they're in the ProductRespond flow.
+     *
+     * @param IncomingMessage $message
+     * @param ConversationSession $session
+     * @return bool True if handled, false otherwise
+     */
+    protected function handleProductRequestResponse(IncomingMessage $message, ConversationSession $session): bool
+    {
+        if (!$message->isInteractive()) {
+            return false;
+        }
+
+        // Extract the button/list selection ID
+        $buttonId = $this->extractSelectionId($message);
+
+        if (!$buttonId) {
+            return false;
+        }
+
+        // Pattern 1: New format with request ID - "respond_yes_17" or "respond_no_17"
+        if (preg_match('/^respond_(yes|no)_(\d+)$/', $buttonId, $matches)) {
+            $action = $matches[1]; // 'yes' or 'no'
+            $requestId = (int) $matches[2];
+
+            Log::info('Product request response button intercepted (new format)', [
+                'button_id' => $buttonId,
+                'action' => $action,
+                'request_id' => $requestId,
+                'phone' => $this->maskPhone($message->from),
+                'current_flow' => $session->current_flow,
+            ]);
+
+            return $this->routeToProductResponseHandler($session, $requestId, $action);
+        }
+
+        // Pattern 2: Legacy format - plain "yes" or "no" button
+        // Only intercept if user is NOT already in the product_respond flow
+        // (to avoid double-handling when they're already in the correct flow)
+        if (in_array($buttonId, ['yes', 'no']) && $session->current_flow !== 'product_respond') {
+            
+            // Check if there's a pending request ID in temp data
+            $requestId = $this->sessionManager->getTempData($session, 'respond_request_id');
+            
+            if ($requestId) {
+                $action = $buttonId; // 'yes' or 'no'
+
+                Log::info('Product request response button intercepted (legacy format)', [
+                    'button_id' => $buttonId,
+                    'action' => $action,
+                    'request_id' => $requestId,
+                    'phone' => $this->maskPhone($message->from),
+                    'current_flow' => $session->current_flow,
+                ]);
+
+                return $this->routeToProductResponseHandler($session, (int) $requestId, $action);
+            }
+            
+            // No request ID in temp data - this might be a yes/no from another context
+            // Check if the user is a shop owner and there are pending requests
+            if ($this->isShopOwner($session)) {
+                // Try to get the most recent notification request for this shop
+                $requestId = $this->getRecentNotificationRequestId($session);
+                
+                if ($requestId) {
+                    $action = $buttonId;
+
+                    Log::info('Product request response button intercepted (legacy format, inferred request)', [
+                        'button_id' => $buttonId,
+                        'action' => $action,
+                        'request_id' => $requestId,
+                        'phone' => $this->maskPhone($message->from),
+                        'current_flow' => $session->current_flow,
+                    ]);
+
+                    return $this->routeToProductResponseHandler($session, $requestId, $action);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Route to ProductResponseFlowHandler.
+     *
+     * @param ConversationSession $session
+     * @param int $requestId
+     * @param string $action 'yes' or 'no'
+     * @return bool
+     */
+    protected function routeToProductResponseHandler(ConversationSession $session, int $requestId, string $action): bool
+    {
+        $handler = $this->resolveHandler(FlowType::PRODUCT_RESPOND);
+
+        if ($handler instanceof \App\Services\Flow\Handlers\ProductResponseFlowHandler) {
+            $handler->startWithRequest($session, $requestId, $action);
+            return true;
+        }
+
+        Log::error('Could not resolve ProductResponseFlowHandler', [
+            'request_id' => $requestId,
+            'action' => $action,
+        ]);
+        
+        return false;
+    }
+
+    /**
+     * Extract selection ID from interactive message (button or list reply).
+     *
+     * @param IncomingMessage $message
+     * @return string|null
+     */
+    protected function extractSelectionId(IncomingMessage $message): ?string
+    {
+        // Try button reply first
+        if ($message->isButtonReply()) {
+            return $message->buttonReplyId ?? null;
+        }
+
+        // Try list reply
+        if ($message->isListReply()) {
+            return $message->listReplyId ?? null;
+        }
+
+        // Fallback: check interactive data directly
+        $interactive = $message->interactive ?? [];
+        
+        // Button reply format
+        if (isset($interactive['button_reply']['id'])) {
+            return $interactive['button_reply']['id'];
+        }
+        
+        // List reply format
+        if (isset($interactive['list_reply']['id'])) {
+            return $interactive['list_reply']['id'];
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the most recent notification request ID for a shop.
+     * This is used as a fallback when legacy 'yes'/'no' buttons are clicked.
+     *
+     * @param ConversationSession $session
+     * @return int|null
+     */
+    protected function getRecentNotificationRequestId(ConversationSession $session): ?int
+    {
+        $user = $this->sessionManager->getUser($session);
+        
+        if (!$user || !$user->isShopOwner() || !$user->shop) {
+            return null;
+        }
+
+        // Get the most recent pending product request for this shop
+        // that was notified within the last hour
+        $recentRequest = \App\Models\ProductRequest::query()
+            ->where('status', 'open')
+            ->where('expires_at', '>', now())
+            ->where('created_at', '>', now()->subHour())
+            ->whereDoesntHave('responses', function ($query) use ($user) {
+                $query->where('shop_id', $user->shop->id);
+            })
+            ->orderBy('created_at', 'desc')
+            ->first();
+
+        return $recentRequest?->id;
     }
 
     /**
@@ -342,7 +531,7 @@ class FlowRouter
         $handler?->start($session);
     }
 
-/**
+    /**
      * Handle menu selection and route to appropriate flow.
      */
     public function handleMenuSelection(string $selectionId, ConversationSession $session): void

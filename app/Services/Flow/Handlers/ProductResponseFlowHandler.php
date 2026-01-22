@@ -28,7 +28,7 @@ class ProductResponseFlowHandler extends AbstractFlowHandler
         \App\Services\WhatsApp\WhatsAppService $whatsApp,
         protected ProductSearchService $searchService,
         protected ProductResponseService $responseService,
-        protected MediaService $mediaService,
+        protected MediaService $mediaService
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -369,7 +369,15 @@ class ProductResponseFlowHandler extends AbstractFlowHandler
         $choice = null;
 
         if ($message->isInteractive()) {
-            $choice = $this->getSelectionId($message);
+            $selectionId = $this->getSelectionId($message);
+            
+            // Handle new format: respond_yes_17, respond_no_17
+            if (preg_match('/^respond_(yes|no)_\d+$/', $selectionId, $matches)) {
+                $choice = $matches[1];
+            } else {
+                // Handle legacy format: yes, no, skip
+                $choice = $selectionId;
+            }
         } elseif ($message->isText()) {
             $text = strtolower(trim($message->text ?? ''));
             if (in_array($text, ['yes', 'have', 'available', '1'])) {
@@ -566,8 +574,8 @@ class ProductResponseFlowHandler extends AbstractFlowHandler
             $session->phone,
             ProductMessages::RESPOND_PROMPT,
             [
-                ['id' => 'yes', 'title' => '✅ Yes, I Have It'],
-                ['id' => 'no', 'title' => "❌ Don't Have"],
+                ['id' => 'respond_yes_' . $request->id, 'title' => '✅ Yes, I Have It'],
+                ['id' => 'respond_no_' . $request->id, 'title' => "❌ Don't Have"],
             ]
         );
 

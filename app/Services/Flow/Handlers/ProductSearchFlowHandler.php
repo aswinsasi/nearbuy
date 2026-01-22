@@ -37,7 +37,7 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
         \App\Services\Session\SessionManager $sessionManager,
         \App\Services\WhatsApp\WhatsAppService $whatsApp,
         protected ProductSearchService $searchService,
-        protected MediaService $mediaService,
+        protected MediaService $mediaService
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -781,7 +781,7 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
 
         foreach ($availableResponses as $response) {
             $shop = $response->shop;
-            $price = number_format($response->price);
+            $price = number_format((float) $response->price);
             $distance = ProductMessages::formatDistance($response->distance_km ?? 0);
 
             // Highlight best price
@@ -799,7 +799,7 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
 
         $sections = [
             [
-                'title' => 'Responses (lowest price first)',
+                'title' => 'Shop Responses',
                 'rows' => array_slice($rows, 0, 10),
             ],
         ];
@@ -857,7 +857,7 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
             [
                 'shop_name' => $shop->shop_name,
                 'distance' => ProductMessages::formatDistance($response->distance_km ?? 0),
-                'price' => number_format($response->price),
+                'price' => number_format((float) $response->price),
                 'description' => $response->description ?? '',
             ]
         );
