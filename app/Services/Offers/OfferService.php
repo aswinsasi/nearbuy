@@ -311,9 +311,15 @@ class OfferService
             ->get();
 
         $counts = [];
+        $totalCount = 0;
+        
         foreach ($results as $row) {
             $counts[strtolower($row->category)] = $row->count;
+            $totalCount += $row->count;
         }
+
+        // Add total count for "all" category option
+        $counts['all'] = $totalCount;
 
         return $counts;
     }

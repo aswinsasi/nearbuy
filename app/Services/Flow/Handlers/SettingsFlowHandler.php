@@ -32,6 +32,7 @@ class SettingsFlowHandler extends AbstractFlowHandler
     protected const STEP_EDIT_SHOP_NAME = 'edit_shop_name';
     protected const STEP_EDIT_SHOP_CATEGORY = 'edit_shop_category';
     protected const STEP_EDIT_SHOP_ADDRESS = 'edit_shop_address';
+    protected const STEP_EDIT_SHOP_CATEGORY_PAGE2 = 'edit_shop_category_page2';
 
     protected function getFlowType(): FlowType
     {
@@ -47,6 +48,7 @@ class SettingsFlowHandler extends AbstractFlowHandler
             self::STEP_SHOP_PROFILE,
             self::STEP_EDIT_SHOP_NAME,
             self::STEP_EDIT_SHOP_CATEGORY,
+            self::STEP_EDIT_SHOP_CATEGORY_PAGE2,
             self::STEP_EDIT_SHOP_ADDRESS,
         ];
     }
@@ -88,6 +90,7 @@ class SettingsFlowHandler extends AbstractFlowHandler
             self::STEP_SHOP_PROFILE => $this->handleShopProfileSelection($message, $session),
             self::STEP_EDIT_SHOP_NAME => $this->handleShopNameInput($message, $session),
             self::STEP_EDIT_SHOP_CATEGORY => $this->handleShopCategorySelection($message, $session),
+            self::STEP_EDIT_SHOP_CATEGORY_PAGE2 => $this->handleShopCategorySelection($message, $session),
             self::STEP_EDIT_SHOP_ADDRESS => $this->handleShopAddressInput($message, $session),
             default => $this->showSettingsMenu($session),
         };
@@ -173,6 +176,13 @@ class SettingsFlowHandler extends AbstractFlowHandler
             '⚙️ Select Option',
             $sections,
             'Settings'
+        );
+
+                // Send follow-up with main menu button
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "Select an option from the list above.",
+            []
         );
 
         $this->nextStep($session, self::STEP_SHOW_SETTINGS);
@@ -370,6 +380,13 @@ class SettingsFlowHandler extends AbstractFlowHandler
             '🏪 Shop Profile'
         );
 
+                // Send follow-up with main menu button
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "Select an option from the list above.",
+            []
+        );
+
         $this->nextStep($session, self::STEP_SHOP_PROFILE);
     }
 
@@ -437,25 +454,52 @@ class SettingsFlowHandler extends AbstractFlowHandler
         $this->nextStep($session, self::STEP_SHOP_PROFILE);
     }
 
-    protected function askShopCategory(ConversationSession $session): void
+    protected function askShopCategory(ConversationSession $session, int $page = 1): void
     {
-        $sections = ShopCategory::toListSections();
+        if ($page === 1) {
+            $sections = ShopCategory::toListSectionsPage1();
+            $message = "📂 *Change Shop Category*\n\nSelect your new shop category:";
+            $step = self::STEP_EDIT_SHOP_CATEGORY;
+        } else {
+            $sections = ShopCategory::toListSectionsPage2();
+            $message = "📂 *More Categories*\n\nSelect your shop category:";
+            $step = self::STEP_EDIT_SHOP_CATEGORY_PAGE2;
+        }
 
         $this->sendListWithFooter(
             $session->phone,
-            "📂 *Change Shop Category*\n\nSelect your new shop category:",
+            $message,
             '📂 Select Category',
             $sections,
             'Edit Category'
         );
 
-        $this->nextStep($session, self::STEP_EDIT_SHOP_CATEGORY);
+        // Send follow-up with menu button
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "Select a category from the list above.",
+            []
+        );
+
+        $this->nextStep($session, $step);
     }
 
     protected function handleShopCategorySelection(IncomingMessage $message, ConversationSession $session): void
     {
-        $categoryValue = $this->getSelectionId($message);
-        $category = ShopCategory::tryFrom(strtolower($categoryValue));
+        $selectionId = $this->getSelectionId($message);
+
+        // Handle pagination
+        if ($selectionId === 'more_categories') {
+            $this->askShopCategory($session, 2);
+            return;
+        }
+
+        if ($selectionId === 'back_categories') {
+            $this->askShopCategory($session, 1);
+            return;
+        }
+
+        $category = ShopCategory::tryFrom(strtolower($selectionId));
 
         if (!$category) {
             $this->sendTextWithMenu(
@@ -603,7 +647,32 @@ class SettingsFlowHandler extends AbstractFlowHandler
             'Notifications'
         );
 
+               // Send follow-up with main menu button
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "Select a frequency from the list above.",
+            [['id' => 'back_settings', 'title' => '⬅️ Back']]
+        );
+
         $this->nextStep($session, self::STEP_NOTIFICATION_PREFS);
+    }
+
+    /**
+     * Start directly at shop profile (when accessed from main menu).
+     */
+    public function startShopProfile(ConversationSession $session): void
+    {
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::SETTINGS,
+            self::STEP_SHOP_PROFILE
+        );
+
+        $this->showShopProfile($session);
+
+        $this->logInfo('Shop profile flow started', [
+            'phone' => $this->maskPhone($session->phone),
+        ]);
     }
 
     protected function handleNotificationSelection(IncomingMessage $message, ConversationSession $session): void

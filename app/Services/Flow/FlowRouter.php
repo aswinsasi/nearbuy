@@ -542,6 +542,12 @@ class FlowRouter
             return;
         }
 
+                // Special handling for shop_profile - go directly to shop profile in settings
+        if ($selectionId === 'shop_profile') {
+            $this->startShopProfileFlow($session);
+            return;
+        }
+
         $flowType = match ($selectionId) {
             'register' => FlowType::REGISTRATION,
             'browse_offers' => FlowType::OFFERS_BROWSE,
@@ -552,7 +558,7 @@ class FlowRouter
             'create_agreement' => FlowType::AGREEMENT_CREATE,
             'my_agreements' => FlowType::AGREEMENT_LIST,
             'pending_agreements' => FlowType::AGREEMENT_CONFIRM,
-            'settings', 'shop_profile' => FlowType::SETTINGS,
+            'settings' => FlowType::SETTINGS,
             default => null,
         };
 
@@ -561,6 +567,55 @@ class FlowRouter
         } else {
             Log::warning('Unknown menu selection', ['id' => $selectionId]);
             $this->goToMainMenu($session);
+        }
+    }
+
+    /**
+     * Start the Shop Profile flow (go directly to shop profile settings).
+     */
+    protected function startShopProfileFlow(ConversationSession $session): void
+    {
+        $flowType = FlowType::SETTINGS;
+
+        // Check access
+        if ($flowType->requiresAuth() && !$this->sessionManager->isRegistered($session)) {
+            $this->handleNotRegistered(
+                new IncomingMessage(
+                    messageId: '',
+                    from: $session->phone,
+                    type: 'text',
+                    timestamp: now()
+                ),
+                $session
+            );
+            return;
+        }
+
+        // Check if shop owner
+        if (!$this->isShopOwner($session)) {
+            $this->handleShopOnly(
+                new IncomingMessage(
+                    messageId: '',
+                    from: $session->phone,
+                    type: 'text',
+                    timestamp: now()
+                ),
+                $session
+            );
+            return;
+        }
+
+        // Clear any previous temp data
+        $this->sessionManager->clearTempData($session);
+
+        // Get the handler and call startShopProfile instead of start
+        $handler = $this->resolveHandler($flowType);
+        
+        if ($handler instanceof \App\Services\Flow\Handlers\SettingsFlowHandler) {
+            $handler->startShopProfile($session);
+        } else {
+            // Fallback to regular start
+            $this->startFlow($session, $flowType);
         }
     }
 

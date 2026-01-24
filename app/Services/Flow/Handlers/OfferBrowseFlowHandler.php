@@ -344,6 +344,13 @@ class OfferBrowseFlowHandler extends AbstractFlowHandler
             '📍 Offers Near You'
         );
 
+        // Send follow-up with main menu button
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "Select a category from the list above.",
+            []  // Empty array = only Menu button will be added
+        );
+
         $this->nextStep($session, OfferStep::SELECT_CATEGORY->value);
     }
 
@@ -421,6 +428,16 @@ class OfferBrowseFlowHandler extends AbstractFlowHandler
             '👀 View Offers',
             $sections,
             "Within {$radius}km"
+        );
+
+        // Send follow-up with navigation buttons
+        $this->sendButtonsWithMenu(
+            $session->phone,
+            "Select an offer above, or:",
+            [
+                ['id' => 'change_category', 'title' => '📦 Change Category'],
+                ['id' => 'change_radius', 'title' => '📏 Change Radius'],
+            ]
         );
 
         $this->logInfo('Offers list shown', [

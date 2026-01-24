@@ -280,7 +280,8 @@ class OfferMessages
         ];
 
         $rows = array_map(function ($cat) use ($categoryCounts) {
-            $count = $categoryCounts[$cat['id']] ?? ($categoryCounts['all'] ?? 0);
+            // Each category shows its own count (0 if no offers in that category)
+            $count = $categoryCounts[$cat['id']] ?? 0;
             $countText = $count > 0 ? "{$count} offer" . ($count > 1 ? 's' : '') : 'No offers';
 
             return [

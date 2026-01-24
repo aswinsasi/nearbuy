@@ -868,14 +868,17 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
             $this->sendTextWithMenu($session->phone, $card);
         }
 
-        // Provide Get Location and Call Shop options
-        $this->sendButtonsWithMenu(
+        // Provide Get Location and Call Shop options with Menu
+        $this->sendButtons(
             $session->phone,
             "What would you like to do?",
             [
                 ['id' => 'location', 'title' => '📍 Get Location'],
                 ['id' => 'contact', 'title' => '📞 Call Shop'],
-            ]
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ],
+            null,
+            MessageTemplates::GLOBAL_FOOTER
         );
     }
 
@@ -899,13 +902,25 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
             $shop->address
         );
 
-        $this->sendButtonsWithMenu(
+        // $this->sendButtonsWithMenu(
+        //     $session->phone,
+        //     "📍 *{$shop->shop_name}*\n\nTap to open in maps.",
+        //     [
+        //         ['id' => 'contact', 'title' => '📞 Call Shop'],
+        //         ['id' => 'back', 'title' => '⬅️ Back'],
+        //     ]
+        // );
+
+        $this->sendButtons(
             $session->phone,
             "📍 *{$shop->shop_name}*\n\nTap to open in maps.",
             [
                 ['id' => 'contact', 'title' => '📞 Call Shop'],
                 ['id' => 'back', 'title' => '⬅️ Back'],
-            ]
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ],
+            null,
+            MessageTemplates::GLOBAL_FOOTER
         );
 
         $this->nextStep($session, ProductSearchStep::SHOW_SHOP_LOCATION->value);
@@ -927,14 +942,16 @@ class ProductSearchFlowHandler extends AbstractFlowHandler
 
         $message = "📞 *Contact {$shop->shop_name}*\n\nPhone: {$phone}\n\n_Tap to call_";
 
-        $this->sendButtonsWithMenu(
+        $this->sendButtons(
             $session->phone,
             $message,
             [
                 ['id' => 'location', 'title' => '📍 Get Location'],
                 ['id' => 'back', 'title' => '⬅️ Back'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
-            '📞 Contact'
+            '📞 Contact',
+            MessageTemplates::GLOBAL_FOOTER
         );
     }
 

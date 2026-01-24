@@ -731,10 +731,7 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         'my_agreements',
         'pending_agreements',
         'settings',
-        'shop_profile',
-        'new_search',
         'new_agreement',
-        'view_responses',
         'more_requests',
     ];
 

@@ -114,33 +114,58 @@ enum ShopCategory: string
     {
         return array_column(self::cases(), 'value');
     }
+    /**
+     * Get first page of categories (9 items + "More" option = 10 total).
+     */
+    public static function toListSectionsPage1(): array
+    {
+        $firstNine = array_slice(self::cases(), 0, 9);
+
+        $rows = array_map(fn(self $cat) => [
+            'id' => $cat->value,
+            'title' => substr($cat->displayWithIcon(), 0, 24),
+            'description' => '',
+        ], $firstNine);
+
+        // Add "More" option
+        $rows[] = [
+            'id' => 'more_categories',
+            'title' => '➡️ More Categories',
+            'description' => 'See more options',
+        ];
+
+        return [['title' => 'Shop Categories', 'rows' => $rows]];
+    }
 
     /**
-     * Get options for WhatsApp list (max 10 items per section).
-     *
-     * @return array<string, array>
+     * Get second page of categories (remaining items + "Back" option).
+     */
+    public static function toListSectionsPage2(): array
+    {
+        $remaining = array_slice(self::cases(), 9);
+
+        $rows = array_map(fn(self $cat) => [
+            'id' => $cat->value,
+            'title' => substr($cat->displayWithIcon(), 0, 24),
+            'description' => '',
+        ], $remaining);
+
+        // Add "Back" option
+        $rows[] = [
+            'id' => 'back_categories',
+            'title' => '⬅️ Back',
+            'description' => 'Previous categories',
+        ];
+
+        return [['title' => 'More Categories', 'rows' => $rows]];
+    }
+
+    /**
+     * Get options for WhatsApp list - kept for backward compatibility.
+     * Returns first page only (max 10 items).
      */
     public static function toListSections(): array
     {
-        $all = self::cases();
-
-        return [
-            [
-                'title' => 'Popular Categories',
-                'rows' => array_map(fn(self $cat) => [
-                    'id' => $cat->value,
-                    'title' => substr($cat->displayWithIcon(), 0, 24),
-                    'description' => '',
-                ], array_slice($all, 0, 10)),
-            ],
-            [
-                'title' => 'More Categories',
-                'rows' => array_map(fn(self $cat) => [
-                    'id' => $cat->value,
-                    'title' => substr($cat->displayWithIcon(), 0, 24),
-                    'description' => '',
-                ], array_slice($all, 10)),
-            ],
-        ];
+        return self::toListSectionsPage1();
     }
 }
