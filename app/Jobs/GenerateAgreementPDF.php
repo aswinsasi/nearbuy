@@ -116,6 +116,7 @@ class GenerateAgreementPDF implements ShouldQueue
         }
     }
 
+
     /**
      * Send PDF to both parties.
      */
@@ -130,8 +131,8 @@ class GenerateAgreementPDF implements ShouldQueue
             "✅ Confirmed by both parties.\n" .
             "🔒 This is your official record.";
 
-        // Send to creator
-        $creatorPhone = $agreement->creator?->phone ?? $agreement->from_phone;
+        // Send to creator (fromUser)
+        $creatorPhone = $agreement->fromUser?->phone ?? $agreement->from_phone;
         if ($creatorPhone) {
             try {
                 $whatsApp->sendDocument(
@@ -156,7 +157,7 @@ class GenerateAgreementPDF implements ShouldQueue
                     );
                 }
 
-                Log::debug('PDF sent to creator', [
+                Log::info('PDF sent to creator', [
                     'agreement_id' => $agreement->id,
                     'phone' => substr($creatorPhone, 0, 5) . '***',
                 ]);
@@ -168,7 +169,7 @@ class GenerateAgreementPDF implements ShouldQueue
             }
         }
 
-        // Send to counterparty
+        // Send to counterparty (toUser)
         $counterpartyPhone = $agreement->to_phone;
         if ($counterpartyPhone && $counterpartyPhone !== $creatorPhone) {
             try {
@@ -193,7 +194,7 @@ class GenerateAgreementPDF implements ShouldQueue
                     );
                 }
 
-                Log::debug('PDF sent to counterparty', [
+                Log::info('PDF sent to counterparty', [
                     'agreement_id' => $agreement->id,
                     'phone' => substr($counterpartyPhone, 0, 5) . '***',
                 ]);
@@ -219,7 +220,7 @@ class GenerateAgreementPDF implements ShouldQueue
             "We're working on fixing this. You'll receive the PDF soon.";
 
         // Notify creator
-        $creatorPhone = $agreement->creator?->phone ?? $agreement->from_phone;
+        $creatorPhone = $agreement->fromUser?->phone ?? $agreement->from_phone;
         if ($creatorPhone) {
             try {
                 $whatsApp->sendButtons(

@@ -70,26 +70,6 @@
         }
         
         /* Party Details */
-        .parties {
-            display: table;
-            width: 100%;
-            margin-bottom: 20px;
-        }
-        
-        .party {
-            display: table-cell;
-            width: 48%;
-            vertical-align: top;
-            padding: 15px;
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-        }
-        
-        .party:first-child {
-            margin-right: 4%;
-        }
-        
         .party-label {
             font-size: 11px;
             color: #6b7280;
@@ -120,31 +100,29 @@
             display: inline-block;
         }
         
-        /* Amount Box */
+        /* Amount Box - DomPDF Compatible */
         .amount-box {
-            background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            margin-bottom: 20px;
+            background-color: #1e40af !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
         }
         
         .amount-label {
             font-size: 12px;
-            opacity: 0.9;
+            color: #ffffff !important;
             margin-bottom: 5px;
         }
-        
+
         .amount-value {
             font-size: 32px;
             font-weight: bold;
+            color: #ffffff !important;
             margin-bottom: 5px;
         }
-        
+
         .amount-words {
             font-size: 11px;
-            opacity: 0.85;
+            color: #ffffff !important;
             font-style: italic;
         }
         
@@ -328,12 +306,16 @@
             </table>
         </div>
         
-        <!-- Amount -->
-        <div class="amount-box">
-            <div class="amount-label">TRANSACTION AMOUNT</div>
-            <div class="amount-value">₹{{ $amount }}</div>
-            <div class="amount-words">{{ $amountWords }}</div>
-        </div>
+        <!-- Amount - Inverted Colors (Most Reliable) -->
+        <table style="width: 100%; margin-bottom: 20px; border: 3px solid #1e40af;" cellpadding="0" cellspacing="0">
+            <tr>
+                <td style="padding: 20px; text-align: center; background-color: #dbeafe;">
+                    <p style="font-size: 12px; color: #1e40af; margin: 0 0 5px 0; font-weight: bold;">TRANSACTION AMOUNT</p>
+                    <p style="font-size: 32px; font-weight: bold; color: #1e40af; margin: 0 0 5px 0;">₹{{ $amount }}</p>
+                    <p style="font-size: 11px; color: #374151; font-style: italic; margin: 0;">{{ $amountWords }}</p>
+                </td>
+            </tr>
+        </table>
         
         <!-- Agreement Details -->
         <div class="section">
