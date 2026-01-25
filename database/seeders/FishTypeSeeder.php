@@ -1,0 +1,436 @@
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\FishType;
+use Illuminate\Database\Seeder;
+
+/**
+ * Seeder for fish types master data.
+ *
+ * Contains popular Kerala fish varieties with Malayalam names.
+ *
+ * @srs-ref Section 2.4 - Fish Types Master Data
+ */
+class FishTypeSeeder extends Seeder
+{
+    /**
+     * Run the database seeds.
+     */
+    public function run(): void
+    {
+        $this->command->info('Seeding fish types...');
+
+        $fishTypes = $this->getFishTypes();
+
+        foreach ($fishTypes as $fish) {
+            FishType::updateOrCreate(
+                ['slug' => $fish['slug']],
+                $fish
+            );
+        }
+
+        $this->command->info('Created ' . count($fishTypes) . ' fish types');
+    }
+
+    /**
+     * Get fish types data.
+     */
+    protected function getFishTypes(): array
+    {
+        return [
+            /*
+            |------------------------------------------------------------------
+            | Popular Sea Fish (Kerala)
+            |------------------------------------------------------------------
+            */
+            [
+                'name_en' => 'Sardine',
+                'name_ml' => 'മത്തി (Mathi)',
+                'slug' => 'sardine',
+                'category' => 'sea_fish',
+                'aliases' => ['mathi', 'chaala', 'നെയ്‌ മത്തി'],
+                'peak_seasons' => [6, 7, 8, 9, 10], // June-October
+                'is_seasonal' => true,
+                'typical_price_min' => 80,
+                'typical_price_max' => 200,
+                'emoji' => '🐟',
+                'sort_order' => 1,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Mackerel',
+                'name_ml' => 'അയല (Ayala)',
+                'slug' => 'mackerel',
+                'category' => 'sea_fish',
+                'aliases' => ['ayala', 'bangada', 'ஆயிலா'],
+                'peak_seasons' => [6, 7, 8, 9, 10, 11],
+                'is_seasonal' => true,
+                'typical_price_min' => 150,
+                'typical_price_max' => 350,
+                'emoji' => '🐟',
+                'sort_order' => 2,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Seer Fish',
+                'name_ml' => 'നെയ്‌മീൻ (Neymeen)',
+                'slug' => 'seer-fish',
+                'category' => 'sea_fish',
+                'aliases' => ['neymeen', 'king fish', 'surmai', 'വഞ്ചിരം'],
+                'peak_seasons' => [10, 11, 12, 1, 2, 3],
+                'is_seasonal' => true,
+                'typical_price_min' => 600,
+                'typical_price_max' => 1200,
+                'emoji' => '🐟',
+                'sort_order' => 3,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Pomfret',
+                'name_ml' => 'അവോലി (Avoli)',
+                'slug' => 'pomfret',
+                'category' => 'sea_fish',
+                'aliases' => ['avoli', 'paplet', 'white pomfret', 'black pomfret'],
+                'peak_seasons' => [10, 11, 12, 1, 2],
+                'is_seasonal' => true,
+                'typical_price_min' => 500,
+                'typical_price_max' => 1000,
+                'emoji' => '🐟',
+                'sort_order' => 4,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Red Snapper',
+                'name_ml' => 'ചെമ്പല്ലി (Chempalli)',
+                'slug' => 'red-snapper',
+                'category' => 'sea_fish',
+                'aliases' => ['chempalli', 'red fish', 'sankara'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 400,
+                'typical_price_max' => 700,
+                'emoji' => '🐟',
+                'sort_order' => 5,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Pearl Spot',
+                'name_ml' => 'കരിമീൻ (Karimeen)',
+                'slug' => 'pearl-spot',
+                'category' => 'freshwater',
+                'aliases' => ['karimeen', 'green chromide', 'kerala state fish'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 600,
+                'typical_price_max' => 1000,
+                'emoji' => '🐟',
+                'sort_order' => 6,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Tuna',
+                'name_ml' => 'ചൂര (Choora)',
+                'slug' => 'tuna',
+                'category' => 'sea_fish',
+                'aliases' => ['choora', 'chura', 'yellowfin tuna'],
+                'peak_seasons' => [9, 10, 11, 12, 1, 2],
+                'is_seasonal' => true,
+                'typical_price_min' => 200,
+                'typical_price_max' => 450,
+                'emoji' => '🐟',
+                'sort_order' => 7,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Anchovy',
+                'name_ml' => 'നെത്തോലി (Netholi)',
+                'slug' => 'anchovy',
+                'category' => 'sea_fish',
+                'aliases' => ['netholi', 'kozhuva', 'small fish'],
+                'peak_seasons' => [5, 6, 7, 8, 9],
+                'is_seasonal' => true,
+                'typical_price_min' => 100,
+                'typical_price_max' => 250,
+                'emoji' => '🐟',
+                'sort_order' => 8,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Indian Salmon',
+                'name_ml' => 'കാള (Kaala)',
+                'slug' => 'indian-salmon',
+                'category' => 'sea_fish',
+                'aliases' => ['kaala', 'threadfin', 'rawas'],
+                'peak_seasons' => [10, 11, 12, 1, 2, 3],
+                'is_seasonal' => true,
+                'typical_price_min' => 350,
+                'typical_price_max' => 600,
+                'emoji' => '🐟',
+                'sort_order' => 9,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Sole Fish',
+                'name_ml' => 'മാന്തൾ (Manthal)',
+                'slug' => 'sole-fish',
+                'category' => 'sea_fish',
+                'aliases' => ['manthal', 'flat fish', 'tongue sole'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 250,
+                'typical_price_max' => 450,
+                'emoji' => '🐟',
+                'sort_order' => 10,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+
+            /*
+            |------------------------------------------------------------------
+            | Shellfish & Crustaceans
+            |------------------------------------------------------------------
+            */
+            [
+                'name_en' => 'Prawns',
+                'name_ml' => 'ചെമ്മീൻ (Chemmeen)',
+                'slug' => 'prawns',
+                'category' => 'crustacean',
+                'aliases' => ['chemmeen', 'shrimp', 'konju', 'tiger prawns'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 400,
+                'typical_price_max' => 900,
+                'emoji' => '🦐',
+                'sort_order' => 11,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Lobster',
+                'name_ml' => 'കൊഞ്ച് (Konchu)',
+                'slug' => 'lobster',
+                'category' => 'crustacean',
+                'aliases' => ['konchu', 'sea lobster'],
+                'peak_seasons' => [10, 11, 12, 1, 2],
+                'is_seasonal' => true,
+                'typical_price_min' => 1200,
+                'typical_price_max' => 2500,
+                'emoji' => '🦞',
+                'sort_order' => 12,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Crab',
+                'name_ml' => 'ഞണ്ട് (Njandu)',
+                'slug' => 'crab',
+                'category' => 'crustacean',
+                'aliases' => ['njandu', 'mud crab', 'sea crab'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 400,
+                'typical_price_max' => 800,
+                'emoji' => '🦀',
+                'sort_order' => 13,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Squid',
+                'name_ml' => 'കൂന്തൾ (Koonthal)',
+                'slug' => 'squid',
+                'category' => 'shellfish',
+                'aliases' => ['koonthal', 'kanava', 'calamari'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 300,
+                'typical_price_max' => 550,
+                'emoji' => '🦑',
+                'sort_order' => 14,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Mussel',
+                'name_ml' => 'കല്ലുമ്മക്കായ (Kallummakkaya)',
+                'slug' => 'mussel',
+                'category' => 'shellfish',
+                'aliases' => ['kallummakkaya', 'kadukka'],
+                'peak_seasons' => [6, 7, 8, 9, 10],
+                'is_seasonal' => true,
+                'typical_price_min' => 150,
+                'typical_price_max' => 300,
+                'emoji' => '🐚',
+                'sort_order' => 15,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Clam',
+                'name_ml' => 'കക്ക (Kakka)',
+                'slug' => 'clam',
+                'category' => 'shellfish',
+                'aliases' => ['kakka', 'arikakka'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 100,
+                'typical_price_max' => 200,
+                'emoji' => '🐚',
+                'sort_order' => 16,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+
+            /*
+            |------------------------------------------------------------------
+            | More Sea Fish Varieties
+            |------------------------------------------------------------------
+            */
+            [
+                'name_en' => 'Barracuda',
+                'name_ml' => 'ശീലാവ് (Sheelavu)',
+                'slug' => 'barracuda',
+                'category' => 'sea_fish',
+                'aliases' => ['sheelavu', 'cheelavu'],
+                'peak_seasons' => [10, 11, 12, 1, 2],
+                'is_seasonal' => true,
+                'typical_price_min' => 350,
+                'typical_price_max' => 600,
+                'emoji' => '🐟',
+                'sort_order' => 17,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Shark',
+                'name_ml' => 'സ്രാവ് (Sraavu)',
+                'slug' => 'shark',
+                'category' => 'sea_fish',
+                'aliases' => ['sraavu', 'sravu'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 200,
+                'typical_price_max' => 400,
+                'emoji' => '🦈',
+                'sort_order' => 18,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Catfish',
+                'name_ml' => 'മുഷി (Mushi)',
+                'slug' => 'catfish',
+                'category' => 'freshwater',
+                'aliases' => ['mushi', 'catla', 'etta'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 250,
+                'typical_price_max' => 450,
+                'emoji' => '🐟',
+                'sort_order' => 19,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Tilapia',
+                'name_ml' => 'തിലാപ്പിയ (Tilapia)',
+                'slug' => 'tilapia',
+                'category' => 'freshwater',
+                'aliases' => ['tilapia', 'jilabi'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 150,
+                'typical_price_max' => 300,
+                'emoji' => '🐟',
+                'sort_order' => 20,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Rohu',
+                'name_ml' => 'രോഹു (Rohu)',
+                'slug' => 'rohu',
+                'category' => 'freshwater',
+                'aliases' => ['rohu', 'rui'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 200,
+                'typical_price_max' => 350,
+                'emoji' => '🐟',
+                'sort_order' => 21,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Lady Fish',
+                'name_ml' => 'കിളിമീൻ (Kilimeen)',
+                'slug' => 'lady-fish',
+                'category' => 'sea_fish',
+                'aliases' => ['kilimeen', 'kane'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 200,
+                'typical_price_max' => 400,
+                'emoji' => '🐟',
+                'sort_order' => 22,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Ray Fish',
+                'name_ml' => 'തിരണ്ടി (Thirandi)',
+                'slug' => 'ray-fish',
+                'category' => 'sea_fish',
+                'aliases' => ['thirandi', 'stingray'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 150,
+                'typical_price_max' => 300,
+                'emoji' => '🐟',
+                'sort_order' => 23,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Mullet',
+                'name_ml' => 'തിരുത (Thirutha)',
+                'slug' => 'mullet',
+                'category' => 'sea_fish',
+                'aliases' => ['thirutha', 'grey mullet'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 200,
+                'typical_price_max' => 400,
+                'emoji' => '🐟',
+                'sort_order' => 24,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Silver Belly',
+                'name_ml' => 'മുള്ളൻ (Mullan)',
+                'slug' => 'silver-belly',
+                'category' => 'sea_fish',
+                'aliases' => ['mullan', 'kara', 'pony fish'],
+                'peak_seasons' => null,
+                'is_seasonal' => false,
+                'typical_price_min' => 120,
+                'typical_price_max' => 250,
+                'emoji' => '🐟',
+                'sort_order' => 25,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+        ];
+    }
+}

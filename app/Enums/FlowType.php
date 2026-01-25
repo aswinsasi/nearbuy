@@ -21,6 +21,21 @@ enum FlowType: string
     case AGREEMENT_LIST = 'agreement_list';
     case SETTINGS = 'settings';
 
+    /*
+    |--------------------------------------------------------------------------
+    | Pacha Meen (Fish Alert) Flows
+    |--------------------------------------------------------------------------
+    |
+    | @srs-ref Pacha Meen Module
+    */
+    case FISH_SELLER_REGISTER = 'fish_seller_register';
+    case FISH_POST_CATCH = 'fish_post_catch';
+    case FISH_STOCK_UPDATE = 'fish_stock_update';
+    case FISH_SUBSCRIBE = 'fish_subscribe';
+    case FISH_BROWSE = 'fish_browse';
+    case FISH_MANAGE_SUBSCRIPTION = 'fish_manage_subscription';
+    case FISH_SELLER_MENU = 'fish_seller_menu';
+
     /**
      * Get the display label.
      */
@@ -38,6 +53,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => 'Confirm Agreement',
             self::AGREEMENT_LIST => 'My Agreements',
             self::SETTINGS => 'Settings',
+            // Fish flows
+            self::FISH_SELLER_REGISTER => 'Fish Seller Registration',
+            self::FISH_POST_CATCH => 'Post Fish Catch',
+            self::FISH_STOCK_UPDATE => 'Update Fish Stock',
+            self::FISH_SUBSCRIBE => 'Fish Alert Subscription',
+            self::FISH_BROWSE => 'Browse Fresh Fish',
+            self::FISH_MANAGE_SUBSCRIPTION => 'Manage Fish Alerts',
+            self::FISH_SELLER_MENU => 'Fish Seller Menu',
         };
     }
 
@@ -58,6 +81,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => '✅',
             self::AGREEMENT_LIST => '📋',
             self::SETTINGS => '⚙️',
+            // Fish flows
+            self::FISH_SELLER_REGISTER => '🐟',
+            self::FISH_POST_CATCH => '🎣',
+            self::FISH_STOCK_UPDATE => '📦',
+            self::FISH_SUBSCRIBE => '🔔',
+            self::FISH_BROWSE => '🐟',
+            self::FISH_MANAGE_SUBSCRIPTION => '⚙️',
+            self::FISH_SELLER_MENU => '🐟',
         };
     }
 
@@ -86,6 +117,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => \App\Services\Flow\Handlers\AgreementConfirmFlowHandler::class,
             self::AGREEMENT_LIST => \App\Services\Flow\Handlers\AgreementListFlowHandler::class,
             self::SETTINGS => \App\Services\Flow\Handlers\SettingsFlowHandler::class,
+            // Fish flows - in Fish subdirectory
+            self::FISH_SELLER_REGISTER => \App\Services\Flow\Handlers\Fish\FishSellerRegistrationFlowHandler::class,
+            self::FISH_POST_CATCH => \App\Services\Flow\Handlers\Fish\FishCatchPostFlowHandler::class,
+            self::FISH_STOCK_UPDATE => \App\Services\Flow\Handlers\Fish\FishStockUpdateFlowHandler::class,
+            self::FISH_SUBSCRIBE => \App\Services\Flow\Handlers\Fish\FishSubscriptionFlowHandler::class,
+            self::FISH_BROWSE => \App\Services\Flow\Handlers\Fish\FishBrowseFlowHandler::class,
+            self::FISH_MANAGE_SUBSCRIPTION => \App\Services\Flow\Handlers\Fish\FishManageSubscriptionHandler::class,
+            self::FISH_SELLER_MENU => \App\Services\Flow\Handlers\Fish\FishSellerMenuHandler::class,
         };
     }
 
@@ -99,6 +138,7 @@ enum FlowType: string
         return match ($this) {
             self::REGISTRATION => false,
             self::MAIN_MENU => false,
+            self::FISH_BROWSE => false, // Allow browsing without auth
             default => true,
         };
     }
@@ -118,6 +158,20 @@ enum FlowType: string
     }
 
     /**
+     * Check if this flow is for fish sellers only.
+     *
+     * @srs-ref Pacha Meen Module
+     */
+    public function isFishSellerOnly(): bool
+    {
+        return in_array($this, [
+            self::FISH_POST_CATCH,
+            self::FISH_STOCK_UPDATE,
+            self::FISH_SELLER_MENU,
+        ]);
+    }
+
+    /**
      * Check if this flow is for customers only.
      *
      * @srs-ref Section 2.3.1 Customers
@@ -127,6 +181,24 @@ enum FlowType: string
         return in_array($this, [
             self::OFFERS_BROWSE,
             self::PRODUCT_SEARCH,
+        ]);
+    }
+
+    /**
+     * Check if this is a fish-related flow.
+     *
+     * @srs-ref Pacha Meen Module
+     */
+    public function isFishFlow(): bool
+    {
+        return in_array($this, [
+            self::FISH_SELLER_REGISTER,
+            self::FISH_POST_CATCH,
+            self::FISH_STOCK_UPDATE,
+            self::FISH_SUBSCRIBE,
+            self::FISH_BROWSE,
+            self::FISH_MANAGE_SUBSCRIPTION,
+            self::FISH_SELLER_MENU,
         ]);
     }
 
@@ -142,6 +214,9 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM,
             self::AGREEMENT_LIST,
             self::SETTINGS,
+            self::FISH_BROWSE,
+            self::FISH_SUBSCRIBE,
+            self::FISH_SELLER_REGISTER,
         ]);
     }
 
@@ -162,6 +237,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => AgreementStep::SHOW_PENDING->value,
             self::AGREEMENT_LIST => AgreementStep::SHOW_LIST->value,
             self::SETTINGS => 'show_settings',
+            // Fish flows
+            self::FISH_SELLER_REGISTER => 'select_type',
+            self::FISH_POST_CATCH => FishCatchStep::SELECT_FISH->value,
+            self::FISH_STOCK_UPDATE => 'select_catch',
+            self::FISH_SUBSCRIBE => FishSubscriptionStep::SELECT_LOCATION->value,
+            self::FISH_BROWSE => 'show_nearby',
+            self::FISH_MANAGE_SUBSCRIPTION => 'show_subscription',
+            self::FISH_SELLER_MENU => 'show_menu',
         };
     }
 
@@ -182,6 +265,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => FlowStep::AGREE_CONFIRM_RECEIVED,
             self::AGREEMENT_LIST => FlowStep::AGREE_VIEW_LIST,
             self::SETTINGS => FlowStep::SETTINGS_MENU,
+            // Fish flows - return null as they use their own step enums
+            self::FISH_SELLER_REGISTER,
+            self::FISH_POST_CATCH,
+            self::FISH_STOCK_UPDATE,
+            self::FISH_SUBSCRIBE,
+            self::FISH_BROWSE,
+            self::FISH_MANAGE_SUBSCRIPTION,
+            self::FISH_SELLER_MENU => null,
         };
     }
 
@@ -229,6 +320,43 @@ enum FlowType: string
                 'title' => '📊 My Offers',
                 'description' => 'Manage your offers',
             ],
+            // Fish menu items - for customers
+            self::FISH_BROWSE => [
+                'id' => 'menu_fish_browse',
+                'title' => '🐟 Fresh Fish',
+                'description' => 'Browse fresh fish nearby',
+            ],
+            self::FISH_SUBSCRIBE => [
+                'id' => 'menu_fish_subscribe',
+                'title' => '🔔 Fish Alerts',
+                'description' => 'Get notified when fish arrives',
+            ],
+            self::FISH_MANAGE_SUBSCRIPTION => [
+                'id' => 'menu_fish_manage',
+                'title' => '⚙️ Manage Alerts',
+                'description' => 'Manage your fish alerts',
+            ],
+            // Fish seller menu items
+            self::FISH_SELLER_REGISTER => [
+                'id' => 'menu_fish_seller_register',
+                'title' => '🐟 Become Fish Seller',
+                'description' => 'Register as a fish seller',
+            ],
+            self::FISH_POST_CATCH => [
+                'id' => 'menu_fish_post',
+                'title' => '🎣 Post Catch',
+                'description' => 'Post your fresh catch',
+            ],
+            self::FISH_STOCK_UPDATE => [
+                'id' => 'menu_fish_stock',
+                'title' => '📦 Update Stock',
+                'description' => 'Update catch availability',
+            ],
+            self::FISH_SELLER_MENU => [
+                'id' => 'menu_fish_dashboard',
+                'title' => '🐟 Seller Dashboard',
+                'description' => 'View your fish seller dashboard',
+            ],
             default => null,
         };
     }
@@ -267,6 +395,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => 30,
             self::OFFERS_UPLOAD => 30,
             self::SETTINGS => 15,
+            // Fish flows
+            self::FISH_SELLER_REGISTER => 30,
+            self::FISH_POST_CATCH => 15,
+            self::FISH_STOCK_UPDATE => 10,
+            self::FISH_SUBSCRIBE => 15,
+            self::FISH_BROWSE => 30,
+            self::FISH_MANAGE_SUBSCRIPTION => 15,
+            self::FISH_SELLER_MENU => 15,
             default => config('nearbuy.session.timeout_minutes', 30),
         };
     }
@@ -288,6 +424,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => 2,
             self::AGREEMENT_LIST => 2,
             self::SETTINGS => 2,
+            // Fish flows
+            self::FISH_SELLER_REGISTER => 5,
+            self::FISH_POST_CATCH => 6,
+            self::FISH_STOCK_UPDATE => 2,
+            self::FISH_SUBSCRIBE => 5,
+            self::FISH_BROWSE => 3,
+            self::FISH_MANAGE_SUBSCRIPTION => 3,
+            self::FISH_SELLER_MENU => 1,
             default => 1,
         };
     }
@@ -309,6 +453,14 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM => 'Confirm a pending agreement',
             self::AGREEMENT_LIST => 'View and manage your agreements',
             self::SETTINGS => 'Manage your preferences and profile',
+            // Fish flows
+            self::FISH_SELLER_REGISTER => 'Register as a fish seller',
+            self::FISH_POST_CATCH => 'Post your fresh fish catch',
+            self::FISH_STOCK_UPDATE => 'Update fish stock availability',
+            self::FISH_SUBSCRIBE => 'Subscribe to fresh fish alerts',
+            self::FISH_BROWSE => 'Browse fresh fish nearby',
+            self::FISH_MANAGE_SUBSCRIPTION => 'Manage your fish alert preferences',
+            self::FISH_SELLER_MENU => 'Fish seller dashboard and options',
         };
     }
 
@@ -347,7 +499,7 @@ enum FlowType: string
     /**
      * Get flows available for a user type.
      *
-     * @param string $userType 'customer' or 'shop'
+     * @param string $userType 'customer', 'shop', or 'fish_seller'
      * @return array<self>
      */
     public static function forUserType(string $userType): array
@@ -362,6 +514,9 @@ enum FlowType: string
             if ($userType === 'customer' && $flow->isCustomerOnly()) {
                 return true;
             }
+            if ($userType === 'fish_seller' && $flow->isFishSellerOnly()) {
+                return true;
+            }
             return false;
         });
     }
@@ -369,7 +524,7 @@ enum FlowType: string
     /**
      * Get menu items for a user type.
      *
-     * @param string $userType 'customer' or 'shop'
+     * @param string $userType 'customer', 'shop', or 'fish_seller'
      * @return array<array{id: string, title: string, description: string}>
      */
     public static function menuItemsForUserType(string $userType): array
@@ -391,6 +546,8 @@ enum FlowType: string
         return [
             self::OFFERS_BROWSE->menuItem(),
             self::PRODUCT_SEARCH->menuItem(),
+            self::FISH_BROWSE->menuItem(),
+            self::FISH_SUBSCRIBE->menuItem(),
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
             self::SETTINGS->menuItem(),
@@ -409,6 +566,25 @@ enum FlowType: string
             self::OFFERS_MANAGE->menuItem(),
             self::OFFERS_BROWSE->menuItem(),
             self::PRODUCT_SEARCH->menuItem(),
+            self::FISH_BROWSE->menuItem(),
+            self::AGREEMENT_CREATE->menuItem(),
+            self::AGREEMENT_LIST->menuItem(),
+            self::SETTINGS->menuItem(),
+        ];
+    }
+
+    /**
+     * Get fish seller menu items.
+     *
+     * @return array<array{id: string, title: string, description: string}>
+     */
+    public static function fishSellerMenuItems(): array
+    {
+        return [
+            self::FISH_POST_CATCH->menuItem(),
+            self::FISH_STOCK_UPDATE->menuItem(),
+            self::FISH_SELLER_MENU->menuItem(),
+            self::FISH_BROWSE->menuItem(),
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
             self::SETTINGS->menuItem(),
@@ -461,6 +637,24 @@ enum FlowType: string
         return [
             self::PRODUCT_SEARCH,
             self::PRODUCT_RESPOND,
+        ];
+    }
+
+    /**
+     * Get all fish-related flows.
+     *
+     * @srs-ref Pacha Meen Module
+     */
+    public static function fishFlows(): array
+    {
+        return [
+            self::FISH_SELLER_REGISTER,
+            self::FISH_POST_CATCH,
+            self::FISH_STOCK_UPDATE,
+            self::FISH_SUBSCRIBE,
+            self::FISH_BROWSE,
+            self::FISH_MANAGE_SUBSCRIPTION,
+            self::FISH_SELLER_MENU,
         ];
     }
 }

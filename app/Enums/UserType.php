@@ -9,6 +9,7 @@ enum UserType: string
 {
     case CUSTOMER = 'customer';
     case SHOP = 'shop';
+    case FISH_SELLER = 'fish_seller';
 
     /**
      * Get the display label.
@@ -18,6 +19,7 @@ enum UserType: string
         return match ($this) {
             self::CUSTOMER => 'Customer',
             self::SHOP => 'Shop Owner',
+            self::FISH_SELLER => 'Fish Seller',
         };
     }
 
@@ -29,6 +31,7 @@ enum UserType: string
         return match ($this) {
             self::CUSTOMER => 'ഉപഭോക്താവ്',
             self::SHOP => 'കട ഉടമ',
+            self::FISH_SELLER => 'മീൻ വിൽപ്പനക്കാരൻ',
         };
     }
 
@@ -40,6 +43,7 @@ enum UserType: string
         return match ($this) {
             self::CUSTOMER => '👤',
             self::SHOP => '🏪',
+            self::FISH_SELLER => '🐟',
         };
     }
 
@@ -60,6 +64,22 @@ enum UserType: string
     }
 
     /**
+     * Check if user type can post fish catches.
+     */
+    public function canPostCatches(): bool
+    {
+        return $this === self::FISH_SELLER;
+    }
+
+    /**
+     * Check if user type can subscribe to fish alerts.
+     */
+    public function canSubscribeToFishAlerts(): bool
+    {
+        return in_array($this, [self::CUSTOMER, self::SHOP]);
+    }
+
+    /**
      * Get all values as array.
      */
     public static function values(): array
@@ -76,5 +96,17 @@ enum UserType: string
             'id' => $type->value,
             'title' => substr("{$type->icon()} {$type->label()}", 0, 20),
         ], self::cases());
+    }
+
+    /**
+     * Get registration options (excludes admin types).
+     */
+    public static function registrationOptions(): array
+    {
+        return [
+            self::CUSTOMER,
+            self::SHOP,
+            self::FISH_SELLER,
+        ];
     }
 }

@@ -5,6 +5,7 @@ namespace App\Services\Flow;
 use App\Contracts\FlowHandlerInterface;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
+use App\Enums\UserType;
 use App\Models\ConversationSession;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
@@ -22,6 +23,7 @@ use Illuminate\Support\Facades\Log;
  * 3. Quick command support
  * 4. Better session recovery
  * 5. Global interception of product request response buttons
+ * 6. Fish (Pacha Meen) flow support
  */
 class FlowRouter
 {
@@ -51,6 +53,13 @@ class FlowRouter
         'agree' => 'create_agreement',
         'agreement' => 'create_agreement',
         'upload' => 'upload_offer',
+        // Fish-related quick actions
+        'fish' => 'fish_menu',
+        'meen' => 'fish_menu',
+        'pacha' => 'fish_menu',
+        'pachameen' => 'fish_menu',
+        'fresh fish' => 'fish_browse',
+        'catch' => 'fish_post_catch',
     ];
 
     public function __construct(
@@ -88,6 +97,13 @@ class FlowRouter
                 return;
             }
 
+            // =====================================================
+            // Check for fish alert response buttons
+            // =====================================================
+            if ($this->handleFishAlertResponse($message, $session)) {
+                return;
+            }
+
             // Check for quick action commands
             if ($this->handleQuickActions($message, $session)) {
                 return;
@@ -114,6 +130,12 @@ class FlowRouter
                 return;
             }
 
+            // Check if flow is fish-seller-only
+            if ($flowType->isFishSellerOnly() && !$this->isFishSeller($session)) {
+                $this->handleFishSellerOnly($message, $session);
+                return;
+            }
+
             // Get the handler for this flow
             $handler = $this->resolveHandler($flowType);
 
@@ -137,6 +159,88 @@ class FlowRouter
 
             $this->sendErrorWithMenu($message->from, MessageTemplates::ERROR_GENERIC);
         }
+    }
+
+    /**
+     * Handle fish alert response buttons from notifications.
+     * 
+     * This intercepts buttons like:
+     * - "fish_coming_123_456" (I'm Coming button with catch_id and alert_id)
+     * - "fish_location_123_456" (Get Location button)
+     *
+     * @param IncomingMessage $message
+     * @param ConversationSession $session
+     * @return bool True if handled, false otherwise
+     */
+    protected function handleFishAlertResponse(IncomingMessage $message, ConversationSession $session): bool
+    {
+        if (!$message->isInteractive()) {
+            return false;
+        }
+
+        $buttonId = $this->extractSelectionId($message);
+
+        if (!$buttonId) {
+            return false;
+        }
+
+        // Pattern: "fish_coming_123_456" - I'm Coming button
+        if (preg_match('/^fish_coming_(\d+)_(\d+)$/', $buttonId, $matches)) {
+            $catchId = (int) $matches[1];
+            $alertId = (int) $matches[2];
+
+            Log::info('Fish alert "Coming" button intercepted', [
+                'button_id' => $buttonId,
+                'catch_id' => $catchId,
+                'alert_id' => $alertId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToFishBrowseHandler($session, $catchId, 'coming', $alertId);
+        }
+
+        // Pattern: "fish_location_123_456" - Get Location button
+        if (preg_match('/^fish_location_(\d+)_(\d+)$/', $buttonId, $matches)) {
+            $catchId = (int) $matches[1];
+            $alertId = (int) $matches[2];
+
+            Log::info('Fish alert "Location" button intercepted', [
+                'button_id' => $buttonId,
+                'catch_id' => $catchId,
+                'alert_id' => $alertId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToFishBrowseHandler($session, $catchId, 'location', $alertId);
+        }
+
+        return false;
+    }
+
+    /**
+     * Route to FishBrowseFlowHandler for alert responses.
+     *
+     * @param ConversationSession $session
+     * @param int $catchId
+     * @param string $action 'coming' or 'location'
+     * @param int $alertId
+     * @return bool
+     */
+    protected function routeToFishBrowseHandler(ConversationSession $session, int $catchId, string $action, int $alertId): bool
+    {
+        $handler = $this->resolveHandler(FlowType::FISH_BROWSE);
+
+        if ($handler instanceof \App\Services\Flow\Handlers\Fish\FishBrowseFlowHandler) {
+            $handler->handleAlertResponse($session, $catchId, $action, $alertId);
+            return true;
+        }
+
+        Log::error('Could not resolve FishBrowseFlowHandler', [
+            'catch_id' => $catchId,
+            'action' => $action,
+        ]);
+        
+        return false;
     }
 
     /**
@@ -461,12 +565,58 @@ class FlowRouter
     }
 
     /**
+     * Handle fish-seller-only feature access by non-fish-seller user.
+     *
+     * @srs-ref Pacha Meen Module
+     */
+    protected function handleFishSellerOnly(IncomingMessage $message, ConversationSession $session): void
+    {
+        $this->whatsApp->sendButtons(
+            $message->from,
+            "🐟 *Fish Seller Feature*\n\nThis feature is only available for registered fish sellers.\n\nWould you like to register as a fish seller?",
+            [
+                ['id' => 'menu_fish_seller_register', 'title' => '🐟 Register as Seller'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
+            '🐟 Fish Seller Required',
+            MessageTemplates::GLOBAL_FOOTER
+        );
+    }
+
+    /**
      * Check if user is a shop owner.
      */
     protected function isShopOwner(ConversationSession $session): bool
     {
         $user = $this->sessionManager->getUser($session);
         return $user?->isShopOwner() ?? false;
+    }
+
+    /**
+     * Check if user is a fish seller.
+     *
+     * @srs-ref Pacha Meen Module
+     */
+    protected function isFishSeller(ConversationSession $session): bool
+    {
+        $user = $this->sessionManager->getUser($session);
+        return $user?->type === UserType::FISH_SELLER;
+    }
+
+    /**
+     * Route to appropriate fish menu based on user type.
+     *
+     * @srs-ref Pacha Meen Module
+     */
+    protected function routeToFishMenu(ConversationSession $session): FlowType
+    {
+        $user = $this->sessionManager->getUser($session);
+        
+        if ($user?->type === UserType::FISH_SELLER) {
+            return FlowType::FISH_SELLER_MENU;
+        }
+        
+        return FlowType::FISH_BROWSE;
     }
 
     /**
@@ -516,6 +666,19 @@ class FlowRouter
             return;
         }
 
+        if ($flowType->isFishSellerOnly() && !$this->isFishSeller($session)) {
+            $this->handleFishSellerOnly(
+                new IncomingMessage(
+                    messageId: '',
+                    from: $session->phone,
+                    type: 'text',
+                    timestamp: now()
+                ),
+                $session
+            );
+            return;
+        }
+
         // Clear any previous temp data before starting new flow
         $this->sessionManager->clearTempData($session);
 
@@ -542,9 +705,16 @@ class FlowRouter
             return;
         }
 
-                // Special handling for shop_profile - go directly to shop profile in settings
+        // Special handling for shop_profile - go directly to shop profile in settings
         if ($selectionId === 'shop_profile') {
             $this->startShopProfileFlow($session);
+            return;
+        }
+
+        // Special handling for fish_menu - route based on user type
+        if (in_array($selectionId, ['fish_menu', 'menu_fish_dashboard'])) {
+            $flowType = $this->routeToFishMenu($session);
+            $this->startFlow($session, $flowType);
             return;
         }
 
@@ -559,6 +729,14 @@ class FlowRouter
             'my_agreements' => FlowType::AGREEMENT_LIST,
             'pending_agreements' => FlowType::AGREEMENT_CONFIRM,
             'settings' => FlowType::SETTINGS,
+            // Fish-related menu selections
+            'fish_browse', 'menu_fish_browse' => FlowType::FISH_BROWSE,
+            'fish_subscribe', 'menu_fish_subscribe', 'fish_alerts' => FlowType::FISH_SUBSCRIBE,
+            'fish_manage_alerts', 'menu_fish_manage' => FlowType::FISH_MANAGE_SUBSCRIPTION,
+            'fish_seller_register', 'menu_fish_seller_register' => FlowType::FISH_SELLER_REGISTER,
+            'fish_post_catch', 'menu_fish_post' => FlowType::FISH_POST_CATCH,
+            'fish_update_stock', 'menu_fish_stock' => FlowType::FISH_STOCK_UPDATE,
+            'fish_seller_menu' => FlowType::FISH_SELLER_MENU,
             default => null,
         };
 

@@ -4,6 +4,7 @@ namespace App\Services\Flow\Handlers;
 
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
+use App\Enums\UserType;
 use App\Models\ConversationSession;
 use App\Services\Flow\FlowRouter;
 use App\Services\WhatsApp\Messages\MainMenuTemplate;
@@ -17,6 +18,7 @@ use App\Services\WhatsApp\Messages\MessageTemplates;
  * 2. Proper handling of all menu selections
  * 3. Quick action buttons for common tasks
  * 4. About and Help information
+ * 5. Fish seller support
  */
 class MainMenuHandler extends AbstractFlowHandler
 {
@@ -76,6 +78,12 @@ class MainMenuHandler extends AbstractFlowHandler
                 'upload' => 'upload_offer',
                 'about' => 'about',
                 'help', '?' => 'help',
+                // Fish-related quick commands
+                'fish', 'meen', 'pacha', 'pachameen', 'fresh fish' => 'fish_browse',
+                'catch', 'post catch' => 'fish_post_catch',
+                'stock', 'update stock' => 'fish_update_stock',
+                'alerts', 'fish alerts' => 'fish_subscribe',
+                'my catches', 'catches' => 'fish_my_catches',
                 default => null,
             };
 

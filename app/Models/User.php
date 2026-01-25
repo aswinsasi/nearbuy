@@ -64,6 +64,55 @@ class User extends Authenticatable
     }
 
     /**
+     * Get the fish seller profile for this user.
+     *
+     * @srs-ref Pacha Meen Module
+     */
+    public function fishSeller(): HasOne
+    {
+        return $this->hasOne(FishSeller::class);
+    }
+
+    /**
+     * Get fish subscriptions for this user.
+     *
+     * @srs-ref Pacha Meen Module - Customer Subscriptions
+     */
+    public function fishSubscriptions(): HasMany
+    {
+        return $this->hasMany(FishSubscription::class);
+    }
+
+    /**
+     * Get active fish subscriptions.
+     */
+    public function activeFishSubscriptions(): HasMany
+    {
+        return $this->fishSubscriptions()
+            ->where('is_active', true)
+            ->where(function ($q) {
+                $q->where('is_paused', false)
+                    ->orWhere('paused_until', '<', now());
+            });
+    }
+
+    /**
+     * Get fish alerts received by this user.
+     */
+    public function fishAlerts(): HasMany
+    {
+        return $this->hasMany(FishAlert::class);
+    }
+
+    /**
+     * Get fish catch responses by this user.
+     */
+    public function fishCatchResponses(): HasMany
+    {
+        return $this->hasMany(FishCatchResponse::class);
+    }
+
+    /**
      * Get product requests created by this user.
      */
     public function productRequests(): HasMany
@@ -126,6 +175,14 @@ class User extends Authenticatable
     }
 
     /**
+     * Scope to filter fish sellers only.
+     */
+    public function scopeFishSellers(Builder $query): Builder
+    {
+        return $query->where('type', UserType::FISH_SELLER);
+    }
+
+    /**
      * Scope to filter registered users.
      */
     public function scopeRegistered(Builder $query): Builder
@@ -147,8 +204,6 @@ class User extends Authenticatable
      */
     public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
     {
-        $earthRadiusKm = 6371;
-
         return $query
             ->whereNotNull('latitude')
             ->whereNotNull('longitude')
@@ -198,6 +253,14 @@ class User extends Authenticatable
     }
 
     /**
+     * Check if user is a fish seller.
+     */
+    public function isFishSeller(): bool
+    {
+        return $this->type === UserType::FISH_SELLER;
+    }
+
+    /**
      * Check if user is registered.
      */
     public function isRegistered(): bool
@@ -211,6 +274,22 @@ class User extends Authenticatable
     public function hasLocation(): bool
     {
         return $this->latitude !== null && $this->longitude !== null;
+    }
+
+    /**
+     * Check if user can post fish catches.
+     */
+    public function canPostFishCatches(): bool
+    {
+        return $this->isFishSeller() && $this->fishSeller !== null;
+    }
+
+    /**
+     * Check if user can subscribe to fish alerts.
+     */
+    public function canSubscribeToFishAlerts(): bool
+    {
+        return $this->type->canSubscribeToFishAlerts();
     }
 
     /**

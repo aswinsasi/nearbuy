@@ -21,7 +21,7 @@
 
     @stack('styles')
 </head>
-<body class="bg-gray-100" x-data="{ sidebarOpen: true, mobileMenuOpen: false }">
+<body class="bg-gray-100" x-data="{ sidebarOpen: true, mobileMenuOpen: false, fishMenuOpen: {{ request()->routeIs('admin.fish.*') ? 'true' : 'false' }} }">
     <div class="min-h-screen flex">
         <!-- Sidebar -->
         <aside
@@ -42,7 +42,7 @@
             </div>
 
             <!-- Navigation -->
-            <nav class="mt-4 px-2">
+            <nav class="mt-4 px-2 overflow-y-auto" style="max-height: calc(100vh - 4rem);">
                 <a href="{{ route('admin.dashboard') }}"
                    class="flex items-center px-4 py-3 text-gray-300 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.dashboard*') ? 'bg-gray-800 text-white' : '' }}">
                     <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -91,7 +91,66 @@
                     Agreements
                 </a>
 
-                <div class="mt-8 pt-4 border-t border-gray-700">
+                <!-- Fish Module Section -->
+                <div class="mt-6 pt-4 border-t border-gray-700">
+                    <button @click="fishMenuOpen = !fishMenuOpen"
+                            class="flex items-center justify-between w-full px-4 py-3 text-gray-300 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.fish.*') ? 'bg-gray-800 text-white' : '' }}">
+                        <div class="flex items-center">
+                            <span class="text-xl mr-3">🐟</span>
+                            <span>Pacha Meen</span>
+                        </div>
+                        <svg class="w-4 h-4 transition-transform" :class="{ 'rotate-180': fishMenuOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </button>
+
+                    <div x-show="fishMenuOpen" x-collapse class="mt-1 ml-4 space-y-1">
+                        <a href="{{ route('admin.fish.dashboard') }}"
+                           class="flex items-center px-4 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.fish.dashboard') ? 'bg-gray-700 text-white' : '' }}">
+                            <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+                            </svg>
+                            Dashboard
+                        </a>
+                        <a href="{{ route('admin.fish.types.index') }}"
+                           class="flex items-center px-4 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.fish.types.*') ? 'bg-gray-700 text-white' : '' }}">
+                            <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                            </svg>
+                            Fish Types
+                        </a>
+                        <a href="{{ route('admin.fish.sellers.index') }}"
+                           class="flex items-center px-4 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.fish.sellers.*') ? 'bg-gray-700 text-white' : '' }}">
+                            <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                            </svg>
+                            Sellers
+                        </a>
+                        <a href="{{ route('admin.fish.catches.index') }}"
+                           class="flex items-center px-4 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.fish.catches.*') ? 'bg-gray-700 text-white' : '' }}">
+                            <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                            </svg>
+                            Catches
+                        </a>
+                        <a href="{{ route('admin.fish.subscriptions.index') }}"
+                           class="flex items-center px-4 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.fish.subscriptions.*') ? 'bg-gray-700 text-white' : '' }}">
+                            <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                            </svg>
+                            Subscriptions
+                        </a>
+                        <a href="{{ route('admin.fish.alerts.index') }}"
+                           class="flex items-center px-4 py-2 text-sm text-gray-400 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.fish.alerts.*') ? 'bg-gray-700 text-white' : '' }}">
+                            <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                            </svg>
+                            Alerts
+                        </a>
+                    </div>
+                </div>
+
+                <div class="mt-6 pt-4 border-t border-gray-700">
                     <a href="{{ route('admin.settings.index') }}"
                        class="flex items-center px-4 py-3 text-gray-300 rounded-lg hover:bg-gray-800 hover:text-white {{ request()->routeIs('admin.settings*') ? 'bg-gray-800 text-white' : '' }}">
                         <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
