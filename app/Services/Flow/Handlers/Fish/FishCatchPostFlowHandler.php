@@ -344,11 +344,17 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         );
     }
 
+    /**
+     * Handle photo upload step.
+     * 
+     * FIX: Now downloads the image from WhatsApp and stores it to get a public URL.
+     */
     protected function handleUploadPhoto(IncomingMessage $message, ConversationSession $session): void
     {
         // Check for skip
         if ($this->isSkip($message)) {
             $this->setTemp($session, 'photo_url', null);
+            $this->setTemp($session, 'photo_media_id', null);
             $this->proceedToConfirm($session);
             return;
         }
@@ -357,6 +363,26 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         $mediaId = $this->getMediaId($message);
         if ($mediaId && $message->type === 'image') {
             $this->setTemp($session, 'photo_media_id', $mediaId);
+            
+            // FIX: Download and store the image to get a public URL
+            $filename = 'fish-catches/' . date('Y/m/d') . '/' . uniqid() . '.jpg';
+            $result = $this->whatsApp->downloadAndStoreMedia($mediaId, $filename);
+            
+            if ($result['success']) {
+                $this->setTemp($session, 'photo_url', $result['url']);
+                Log::info('Fish photo stored', [
+                    'media_id' => $mediaId,
+                    'url' => $result['url'],
+                ]);
+            } else {
+                // Log error but continue without photo URL
+                Log::warning('Failed to download fish photo', [
+                    'media_id' => $mediaId,
+                    'error' => $result['error'] ?? 'Unknown error',
+                ]);
+                $this->setTemp($session, 'photo_url', null);
+            }
+            
             $this->proceedToConfirm($session);
             return;
         }
@@ -374,17 +400,19 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
         $quantityRange = $this->getTemp($session, 'quantity_range');
         $price = $this->getTemp($session, 'price_per_kg');
+        $photoUrl = $this->getTemp($session, 'photo_url');
         $photoMediaId = $this->getTemp($session, 'photo_media_id');
-        $hasPhoto = (bool) $photoMediaId;
+        $hasPhoto = !empty($photoUrl) || !empty($photoMediaId);
 
-        // If there's a photo, send it first using media ID
-        if ($hasPhoto && $photoMediaId) {
-            $this->whatsApp->sendImage(
-                $session->phone,
-                $photoMediaId,
-                "📸 Your fish photo",
-                true // isMediaId = true
-            );
+        // If there's a photo, send it first
+        if ($hasPhoto) {
+            if ($photoUrl) {
+                // Use the stored URL (preferred - works reliably)
+                $this->whatsApp->sendImage($session->phone, $photoUrl, "📸 Your fish photo");
+            } elseif ($photoMediaId) {
+                // Fallback to media ID
+                $this->whatsApp->sendImage($session->phone, $photoMediaId, "📸 Your fish photo", true);
+            }
         }
 
         $catchData = [
@@ -431,7 +459,8 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
 
         // Handle edit photo - go back to photo upload step
         if ($selectionId === 'edit_photo') {
-            $this->setTemp($session, 'photo_media_id', null); // Clear existing photo
+            $this->setTemp($session, 'photo_media_id', null);
+            $this->setTemp($session, 'photo_url', null); // Also clear URL
             $this->nextStep($session, self::STEP_UPLOAD_PHOTO);
             $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
             $response = FishMessages::askPhoto($fishType);
@@ -472,6 +501,7 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
                 'quantity_range' => $this->getTemp($session, 'quantity_range'),
                 'price_per_kg' => $this->getTemp($session, 'price_per_kg'),
                 'photo_media_id' => $this->getTemp($session, 'photo_media_id'),
+                'photo_url' => $this->getTemp($session, 'photo_url'), // FIX: Now passing photo_url
                 'latitude' => $seller->latitude ?? $seller->user->latitude,
                 'longitude' => $seller->longitude ?? $seller->user->longitude,
             ]);

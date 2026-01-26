@@ -16,20 +16,35 @@ use Illuminate\Support\Collection;
 
 /**
  * WhatsApp message templates for Pacha Meen (Fish Alert) module.
+ * 
+ * BILINGUAL VERSION - English + Malayalam (മലയാളം)
+ * Optimized for Kerala market release.
+ * 
+ * IMPORTANT: WhatsApp List Item Title Limit = 24 characters
+ * Keep titles short, put details in description.
  *
- * Contains all message formats for:
- * - Fish seller registration
- * - Catch posting flow
- * - Customer subscription flow
- * - Alert messages
- * - Browse/search results
- *
- * ENHANCED: All response messages now include main menu button
  * @srs-ref NFR-U-04: Main menu shall be accessible from any flow state
- * @srs-ref Pacha Meen Module - Section 2.5 Message Formats
+ * @srs-ref NFR-U-05: System shall support English and regional languages (Malayalam)
  */
 class FishMessages
 {
+    /*
+    |--------------------------------------------------------------------------
+    | Helper: Truncate title to 24 chars (WhatsApp limit)
+    |--------------------------------------------------------------------------
+    */
+    
+    /**
+     * Ensure title doesn't exceed 24 characters.
+     */
+    protected static function safeTitle(string $title, int $maxLen = 24): string
+    {
+        if (mb_strlen($title) <= $maxLen) {
+            return $title;
+        }
+        return mb_substr($title, 0, $maxLen - 1) . '…';
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Fish Seller Registration Messages
@@ -43,16 +58,17 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🐟 Pacha Meen',
-            'body' => "🐟 *Welcome to Pacha Meen!*\n\n" .
-                "Register as a fish seller to:\n" .
-                "• Post your fresh catch\n" .
-                "• Reach customers instantly\n" .
-                "• Manage your sales\n\n" .
-                "Let's get you started! 🎣",
+            'header' => '🐟 പച്ച മീൻ',
+            'body' => "🐟 *പച്ച മീനിലേക്ക് സ്വാഗതം!*\n" .
+                "*Welcome to Pacha Meen!*\n\n" .
+                "മീൻ വിൽപ്പനക്കാരനായി രജിസ്റ്റർ ചെയ്യുക:\n\n" .
+                "• പച്ച മീൻ പോസ്റ്റ് ചെയ്യുക\n" .
+                "• ഉപഭോക്താക്കളെ നേരിട്ട് ബന്ധപ്പെടുക\n" .
+                "• വിൽപ്പന കൈകാര്യം ചെയ്യുക\n\n" .
+                "നമുക്ക് തുടങ്ങാം! 🎣",
             'buttons' => [
-                ['id' => 'continue_registration', 'title' => '✅ Continue'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'continue_registration', 'title' => '✅ തുടരുക'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -64,16 +80,21 @@ class FishMessages
     {
         return [
             'type' => 'list',
-            'header' => '🐟 Seller Type',
-            'body' => "What type of fish seller are you?\n\nSelect the option that best describes your business:",
-            'button' => 'Select Type',
+            'header' => '🐟 വിൽപ്പനക്കാരൻ',
+            'body' => "നിങ്ങൾ ഏത് തരം മീൻ വിൽപ്പനക്കാരനാണ്?\n" .
+                "What type of fish seller are you?\n\n" .
+                "നിങ്ങളുടെ ബിസിനസിനെ ഏറ്റവും നന്നായി വിവരിക്കുന്നത് തിരഞ്ഞെടുക്കുക:",
+            'button' => 'തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => 'Seller Types',
-                    'rows' => array_merge(
-                        FishSellerType::toListItems(),
-                        [['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu']]
-                    ),
+                    'title' => 'വിൽപ്പനക്കാർ',
+                    'rows' => [
+                        ['id' => 'seller_type_fisherman', 'title' => '🚣 മുക്കുവൻ', 'description' => 'Fisherman - കടലിൽ നിന്ന് നേരിട്ട്'],
+                        ['id' => 'seller_type_harbour_vendor', 'title' => '⚓ തുറമുഖ വിൽപ്പന', 'description' => 'Harbour Vendor - തുറമുഖത്ത്'],
+                        ['id' => 'seller_type_fish_shop', 'title' => '🏪 മീൻ കട', 'description' => 'Fish Shop - പട്ടണത്തിൽ കട'],
+                        ['id' => 'seller_type_wholesaler', 'title' => '🚛 മൊത്തവ്യാപാരി', 'description' => 'Wholesaler - മൊത്തമായി'],
+                        ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'],
+                    ],
                 ],
             ],
         ];
@@ -85,21 +106,21 @@ class FishMessages
     public static function askBusinessName(FishSellerType $sellerType): array
     {
         $example = match ($sellerType) {
-            FishSellerType::FISHERMAN => 'e.g., "Raghavan Fresh Catch"',
-            FishSellerType::HARBOUR_VENDOR => 'e.g., "Kochi Harbour Fish Stall"',
-            FishSellerType::FISH_SHOP => 'e.g., "Malabar Sea Foods"',
-            FishSellerType::WHOLESALER => 'e.g., "Kerala Fish Wholesale"',
+            FishSellerType::FISHERMAN => 'ഉദാ: "രാഘവൻ ഫ്രഷ് ക്യാച്ച്"',
+            FishSellerType::HARBOUR_VENDOR => 'ഉദാ: "കൊച്ചി ഹാർബർ സ്റ്റാൾ"',
+            FishSellerType::FISH_SHOP => 'ഉദാ: "മലബാർ സീ ഫുഡ്സ്"',
+            FishSellerType::WHOLESALER => 'ഉദാ: "കേരള ഫിഷ് ഹോൾസെയിൽ"',
         };
 
         return [
             'type' => 'buttons',
-            'header' => '📝 Business Name',
-            'body' => "📝 *Business Name*\n\n" .
-                "What's your business/stall name?\n\n" .
+            'header' => '📝 ബിസിനസ് പേര്',
+            'body' => "📝 *ബിസിനസ് / കട പേര്*\n\n" .
+                "നിങ്ങളുടെ ബിസിനസ്/സ്റ്റാൾ പേര് എന്താണ്?\n\n" .
                 "{$example}\n\n" .
-                "_Type your business name:_",
+                "_നിങ്ങളുടെ ബിസിനസ് പേര് ടൈപ്പ് ചെയ്യുക:_",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -111,12 +132,12 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📍 Your Location',
-            'body' => "📍 *Your Location*\n\n" .
-                "Share your selling location so customers can find you.\n\n" .
-                "Tap the 📎 attachment button and select *Location* to share.",
+            'header' => '📍 ലൊക്കേഷൻ',
+            'body' => "📍 *നിങ്ങളുടെ ലൊക്കേഷൻ*\n\n" .
+                "ഉപഭോക്താക്കൾക്ക് നിങ്ങളെ കണ്ടെത്താൻ വിൽപ്പന സ്ഥലം പങ്കിടുക.\n\n" .
+                "📎 ബട്ടൺ ടാപ്പ് ചെയ്ത് *Location* തിരഞ്ഞെടുക്കുക.",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -128,36 +149,34 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🏪 Market/Harbour',
-            'body' => "🏪 *Market/Harbour Name*\n\n" .
-                "Which market or harbour do you sell at?\n\n" .
-                "_e.g., Fort Kochi Harbour, Vypeen Fish Market_\n\n" .
-                "Type the name or tap 'Skip':",
+            'header' => '🏪 മാർക്കറ്റ്',
+            'body' => "🏪 *മാർക്കറ്റ്/തുറമുഖം പേര്*\n\n" .
+                "നിങ്ങൾ എവിടെയാണ് വിൽക്കുന്നത്?\n\n" .
+                "_ഉദാ: ഫോർട്ട് കൊച്ചി ഹാർബർ_\n\n" .
+                "പേര് ടൈപ്പ് ചെയ്യുക അല്ലെങ്കിൽ Skip:",
             'buttons' => [
-                ['id' => 'skip_market', 'title' => '⏭️ Skip'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'skip_market', 'title' => '⏭️ ഒഴിവാക്കുക'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Seller registration complete.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function sellerRegistrationComplete(FishSeller $seller): array
     {
         return [
             'type' => 'buttons',
-            'header' => '✅ Registration Complete',
-            'body' => "✅ *Registration Complete!*\n\n" .
-                "Welcome to Pacha Meen, *{$seller->business_name}*! 🎉\n\n" .
-                "📍 Location: {$seller->location_display}\n" .
-                "🏷️ Type: {$seller->seller_type->label()}\n\n" .
-                "You can now post your fresh catches and reach customers nearby!",
+            'header' => '✅ രജിസ്ട്രേഷൻ പൂർത്തി',
+            'body' => "✅ *രജിസ്ട്രേഷൻ പൂർത്തിയായി!*\n\n" .
+                "പച്ച മീനിലേക്ക് സ്വാഗതം, *{$seller->business_name}*! 🎉\n\n" .
+                "📍 സ്ഥലം: {$seller->location_display}\n" .
+                "🏷️ തരം: {$seller->seller_type->labelMl()}\n\n" .
+                "ഇപ്പോൾ നിങ്ങൾക്ക് പച്ച മീൻ പോസ്റ്റ് ചെയ്യാം!",
             'buttons' => [
-                ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'fish_post_catch', 'title' => '🎣 മീൻ പോസ്റ്റ്'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -175,46 +194,47 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🐟 Post Fresh Catch',
-            'body' => "🐟 *Post Fresh Catch*\n\n" .
-                "Let's add your fresh fish to notify nearby customers!\n\n" .
-                "First, select the type of fish you have:",
+            'header' => '🐟 മീൻ പോസ്റ്റ്',
+            'body' => "🐟 *പച്ച മീൻ പോസ്റ്റ് ചെയ്യുക*\n\n" .
+                "അടുത്തുള്ള ഉപഭോക്താക്കളെ അറിയിക്കാൻ നിങ്ങളുടെ പച്ച മീൻ ചേർക്കാം!\n\n" .
+                "ആദ്യം, മീൻ തരം തിരഞ്ഞെടുക്കുക:",
             'buttons' => [
-                ['id' => 'select_fish', 'title' => '🐟 Select Fish'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'select_fish', 'title' => '🐟 മീൻ തിരഞ്ഞെടുക്കുക'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Fish category selection.
-     *
-     * Step 1: User selects a category (shows categories with fish count)
-     * Only shows categories that have active fish types.
+     * FIXED: Titles within 24 char limit
      */
     public static function selectFishCategory(): array
     {
-        // Get counts for each category
         $categories = [
             FishType::CATEGORY_SEA_FISH => [
                 'icon' => '🌊',
-                'title' => 'Sea Fish',
-                'examples' => 'Sardine, Mackerel, Tuna',
+                'title_ml' => 'കടൽ മീൻ',        // Short ML title
+                'title_en' => 'Sea Fish',
+                'examples' => 'ചാള, അയല, ചൂര',
             ],
             FishType::CATEGORY_FRESHWATER => [
                 'icon' => '🏞️',
-                'title' => 'Freshwater',
-                'examples' => 'Tilapia, Rohu, Catfish',
+                'title_ml' => 'ശുദ്ധജല മീൻ',    // Short ML title
+                'title_en' => 'Freshwater',
+                'examples' => 'തിലാപ്പിയ, കരിമീൻ',
             ],
             FishType::CATEGORY_SHELLFISH => [
                 'icon' => '🐚',
-                'title' => 'Shellfish',
-                'examples' => 'Mussels, Clams, Oysters',
+                'title_ml' => 'കക്ക വർഗ്ഗം',
+                'title_en' => 'Shellfish',
+                'examples' => 'കല്ലുമ്മക്കായ, ക്ലാം',
             ],
             FishType::CATEGORY_CRUSTACEAN => [
                 'icon' => '🦐',
-                'title' => 'Crustacean',
-                'examples' => 'Prawns, Crabs, Lobster',
+                'title_ml' => 'ചെമ്മീൻ വർഗ്ഗം',
+                'title_en' => 'Prawns/Crabs',
+                'examples' => 'ചെമ്മീൻ, ഞണ്ട്',
             ],
         ];
 
@@ -225,29 +245,31 @@ class FishMessages
             $count = FishType::active()->where('category', $categoryKey)->count();
             if ($count > 0) {
                 $totalFish += $count;
+                // Title: icon + ML name only (keeps it short)
+                $title = "{$categoryInfo['icon']} {$categoryInfo['title_ml']}";
                 $rows[] = [
                     'id' => 'cat_' . $categoryKey,
-                    'title' => "{$categoryInfo['icon']} {$categoryInfo['title']}",
-                    'description' => "{$count} types - {$categoryInfo['examples']}",
+                    'title' => self::safeTitle($title),
+                    'description' => "{$categoryInfo['title_en']} - {$count} types - {$categoryInfo['examples']}",
                 ];
             }
         }
 
-        // Add main menu
         $rows[] = [
             'id' => 'main_menu',
-            'title' => '🏠 Main Menu',
-            'description' => 'Return to main menu',
+            'title' => '🏠 മെനു',
+            'description' => 'Main Menu - മെയിൻ മെനു',
         ];
 
         return [
             'type' => 'list',
-            'header' => '🐟 Select Category',
-            'body' => "What fish do you have today?\n\nSelect a category to browse fish types.\n\n📊 Total: {$totalFish} fish types available",
-            'button' => 'Choose Category',
+            'header' => '🐟 വിഭാഗം തിരഞ്ഞെടുക്കുക',
+            'body' => "ഇന്ന് എന്ത് മീനാണ്?\nWhat fish do you have today?\n\n" .
+                "📊 ആകെ: {$totalFish} മീൻ തരങ്ങൾ",
+            'button' => 'തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => '📂 Fish Categories',
+                    'title' => '📂 മീൻ വിഭാഗങ്ങൾ',
                     'rows' => $rows,
                 ],
             ],
@@ -256,18 +278,13 @@ class FishMessages
 
     /**
      * Fish selection from category with pagination.
-     *
-     * Step 2: Shows fish from selected category (max 8 fish + navigation)
-     *
-     * @param string $category Category constant (sea_fish, freshwater, etc.)
-     * @param int $page Page number (0-based)
+     * FIXED: Titles within 24 char limit
      */
     public static function selectFishFromCategory(string $category, int $page = 0): array
     {
-        $perPage = 8; // 8 fish + navigation options = max 10 items
+        $perPage = 8;
         $offset = $page * $perPage;
 
-        // Get fish from this category
         $query = FishType::active()
             ->where('category', $category)
             ->orderByDesc('is_popular')
@@ -280,59 +297,63 @@ class FishMessages
         $hasMore = ($offset + $perPage) < $totalInCategory;
         $hasPrevious = $page > 0;
 
-        // Build rows with fish items
-        $rows = $fishTypes->map(fn($fish) => $fish->toListItem())->toArray();
+        $rows = $fishTypes->map(function($fish) {
+            // Emoji + short name, truncated to 24 chars
+            $title = $fish->emoji . ' ' . $fish->name_en;
+            return [
+                'id' => 'fish_' . $fish->id,
+                'title' => self::safeTitle($title),
+                'description' => $fish->name_ml . ($fish->price_range ? ' • ' . $fish->price_range : ''),
+            ];
+        })->toArray();
 
-        // Add navigation options
         if ($hasMore) {
             $remaining = $totalInCategory - $offset - $perPage;
             $rows[] = [
                 'id' => "cat_{$category}_page_" . ($page + 1),
-                'title' => '➡️ More Fish',
-                'description' => "Show next " . min($perPage, $remaining) . " fish",
+                'title' => '➡️ കൂടുതൽ',
+                'description' => "More - അടുത്ത {$remaining} എണ്ണം",
             ];
         }
 
         if ($hasPrevious) {
             $rows[] = [
                 'id' => "cat_{$category}_page_" . ($page - 1),
-                'title' => '⬅️ Previous',
-                'description' => 'Show previous fish',
+                'title' => '⬅️ മുമ്പത്തേത്',
+                'description' => 'Previous page',
             ];
         }
 
-        // Always add back to categories
         $rows[] = [
             'id' => 'back_to_categories',
-            'title' => '🔙 Back to Categories',
-            'description' => 'Choose different category',
+            'title' => '🔙 തിരിച്ച്',
+            'description' => 'Back to categories',
         ];
 
-        // Ensure we don't exceed 10 items
         $rows = array_slice($rows, 0, 10);
 
         $categoryLabels = [
-            'sea_fish' => '🌊 Sea Fish',
-            'freshwater' => '🏞️ Freshwater',
-            'shellfish' => '🐚 Shellfish',
-            'crustacean' => '🦐 Crustacean',
+            'sea_fish' => '🌊 കടൽ മീൻ',
+            'freshwater' => '🏞️ ശുദ്ധജല മീൻ',
+            'shellfish' => '🐚 കക്ക വർഗ്ഗം',
+            'crustacean' => '🦐 ചെമ്മീൻ വർഗ്ഗം',
         ];
 
-        $categoryLabel = $categoryLabels[$category] ?? '🐟 Fish';
+        $categoryLabel = $categoryLabels[$category] ?? '🐟 മീൻ';
         $showingStart = $offset + 1;
         $showingEnd = min($offset + $perPage, $totalInCategory);
         $pageInfo = $totalInCategory > $perPage 
-            ? "\n\n📄 Showing {$showingStart}-{$showingEnd} of {$totalInCategory}" 
-            : "\n\n📄 {$totalInCategory} fish types";
+            ? "\n\n📄 {$showingStart}-{$showingEnd} / {$totalInCategory}" 
+            : "\n\n📄 {$totalInCategory} തരങ്ങൾ";
 
         return [
             'type' => 'list',
-            'header' => $categoryLabel,
-            'body' => "Select your fish:{$pageInfo}",
-            'button' => 'Choose Fish',
+            'header' => self::safeTitle($categoryLabel),
+            'body' => "മീൻ തിരഞ്ഞെടുക്കുക:{$pageInfo}",
+            'button' => 'മീൻ തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => $categoryLabel,
+                    'title' => self::safeTitle($categoryLabel),
                     'rows' => $rows,
                 ],
             ],
@@ -340,35 +361,29 @@ class FishMessages
     }
 
     /**
-     * Fish type selection list (legacy - for backward compatibility).
-     *
-     * CRITICAL: WhatsApp limits lists to 10 items total across all sections.
+     * Fish type selection list (legacy).
      */
     public static function selectFishType(array $sections = null): array
     {
-        // Default to category selection for better UX
         return self::selectFishCategory();
     }
 
     /**
      * Popular fish quick selection.
-     *
-     * CRITICAL: WhatsApp limits lists to 10 items total.
      */
     public static function selectPopularFish(): array
     {
-        // Use model's method - 9 fish + 1 main menu = 10
         $popular = FishType::getPopularListItems(9);
-        $popular[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+        $popular[] = ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'];
 
         return [
             'type' => 'list',
-            'header' => '🐟 Popular Fish',
-            'body' => "Quick selection of popular fish types:\n\n_Or type the fish name to search_",
-            'button' => 'Select Fish',
+            'header' => '🐟 ജനപ്രിയ മീൻ',
+            'body' => "ജനപ്രിയ മീൻ തരങ്ങൾ:\n\n_മീൻ പേര് ടൈപ്പ് ചെയ്തും തിരയാം_",
+            'button' => 'തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => '⭐ Popular',
+                    'title' => '⭐ ജനപ്രിയം',
                     'rows' => $popular,
                 ],
             ],
@@ -382,33 +397,37 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => "📦 Quantity",
-            'body' => "How much *{$fishType->name_en}* ({$fishType->name_ml}) do you have?\n\nSelect approximate quantity:",
-            'buttons' => array_slice(FishQuantityRange::toButtons(), 0, 3), // WhatsApp allows max 3 buttons
+            'header' => "📦 അളവ്",
+            'body' => "എത്ര *{$fishType->name_ml}* ({$fishType->name_en}) ഉണ്ട്?\n\n" .
+                "ഏകദേശ അളവ് തിരഞ്ഞെടുക്കുക:",
+            'buttons' => array_slice(FishQuantityRange::toButtons(), 0, 3),
         ];
     }
 
     /**
      * Ask for quantity (list for more options).
+     * FIXED: Titles within 24 char limit
      */
     public static function askQuantityList(FishType $fishType): array
     {
-        $rows = array_map(fn($range) => [
-            'id' => 'qty_' . $range->value,
-            'title' => $range->label(),
-            'description' => $range->approximateDisplay(),
-        ], FishQuantityRange::cases());
-
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+        $rows = [
+            ['id' => 'qty_under_2kg', 'title' => '🪣 2 kg-ൽ താഴെ', 'description' => 'Under 2 kg - ചെറിയ അളവ്'],
+            ['id' => 'qty_2_5kg', 'title' => '📦 2-5 kg', 'description' => 'ഇടത്തരം അളവ്'],
+            ['id' => 'qty_5_10kg', 'title' => '📦 5-10 kg', 'description' => 'നല്ല അളവ്'],
+            ['id' => 'qty_10_20kg', 'title' => '🚛 10-20 kg', 'description' => 'വലിയ അളവ്'],
+            ['id' => 'qty_20_50kg', 'title' => '🚛 20-50 kg', 'description' => 'വളരെ വലിയ അളവ്'],
+            ['id' => 'qty_above_50kg', 'title' => '🏭 50 kg+', 'description' => 'മൊത്ത വിൽപ്പന - Bulk'],
+            ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'],
+        ];
 
         return [
             'type' => 'list',
-            'header' => '📦 Quantity',
-            'body' => "How much *{$fishType->name_en}* do you have?",
-            'button' => 'Select Quantity',
+            'header' => '📦 അളവ്',
+            'body' => "എത്ര *{$fishType->name_ml}* ഉണ്ട്?\nHow much {$fishType->name_en}?",
+            'button' => 'അളവ് തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => 'Quantity Range',
+                    'title' => 'അളവ് ശ്രേണി',
                     'rows' => $rows,
                 ],
             ],
@@ -421,19 +440,19 @@ class FishMessages
     public static function askPrice(FishType $fishType): array
     {
         $priceHint = $fishType->price_range
-            ? "Typical price: {$fishType->price_range}"
-            : "Enter your price per kg";
+            ? "സാധാരണ വില: {$fishType->price_range}"
+            : "കിലോയ്ക്ക് വില നൽകുക";
 
         return [
             'type' => 'buttons',
-            'header' => '💰 Price',
-            'body' => "💰 *Price per kg*\n\n" .
-                "{$fishType->emoji} {$fishType->name_en}\n\n" .
+            'header' => '💰 വില',
+            'body' => "💰 *കിലോയ്ക്ക് വില*\n\n" .
+                "{$fishType->emoji} {$fishType->name_ml} ({$fishType->name_en})\n\n" .
                 "{$priceHint}\n\n" .
-                "_Type the price (just the number):_\n" .
-                "e.g., 180",
+                "_വില ടൈപ്പ് ചെയ്യുക (നമ്പർ മാത്രം):_\n" .
+                "ഉദാ: 180",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -445,13 +464,13 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📸 Photo',
-            'body' => "Add a photo of your *{$fishType->name_en}* to attract more customers!\n\n" .
-                "📎 Tap attachment → Camera/Gallery\n\n" .
-                "Or skip if you don't have a photo ready.",
+            'header' => '📸 ഫോട്ടോ',
+            'body' => "നിങ്ങളുടെ *{$fishType->name_ml}*-ന്റെ ഫോട്ടോ ചേർക്കുക!\n\n" .
+                "📎 → Camera/Gallery ടാപ്പ് ചെയ്യുക\n\n" .
+                "ഫോട്ടോ ഇല്ലെങ്കിൽ Skip ചെയ്യാം.",
             'buttons' => [
-                ['id' => 'skip_photo', 'title' => '⏭️ Skip Photo'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'skip_photo', 'title' => '⏭️ ഒഴിവാക്കുക'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -461,83 +480,76 @@ class FishMessages
      */
     public static function confirmCatchPosting(array $catchData, FishType $fishType): array
     {
-        // Format quantity range for display
         $qtyRange = $catchData['quantity_range'] ?? 'unknown';
-        $qty = self::formatQuantityRange($qtyRange);
-
+        $qty = self::formatQuantityRangeMl($qtyRange);
         $price = number_format($catchData['price_per_kg'] ?? 0);
         $hasPhoto = !empty($catchData['has_photo']);
-        $photoStatus = $hasPhoto ? '✅ Photo added' : '📷 No photo';
+        $photoStatus = $hasPhoto ? '✅ ഫോട്ടോ ചേർത്തു' : '📷 ഫോട്ടോ ഇല്ല';
 
-        // Build buttons - WhatsApp max 3 buttons
         $buttons = [
-            ['id' => 'confirm_post', 'title' => '✅ Post Now'],
+            ['id' => 'confirm_post', 'title' => '✅ പോസ്റ്റ് ചെയ്യുക'],
         ];
 
-        // Add photo edit option
         if ($hasPhoto) {
-            $buttons[] = ['id' => 'edit_photo', 'title' => '📷 Change Photo'];
+            $buttons[] = ['id' => 'edit_photo', 'title' => '📷 ഫോട്ടോ മാറ്റുക'];
         } else {
-            $buttons[] = ['id' => 'edit_photo', 'title' => '📷 Add Photo'];
+            $buttons[] = ['id' => 'edit_photo', 'title' => '📷 ഫോട്ടോ ചേർക്കുക'];
         }
 
-        $buttons[] = ['id' => 'edit_details', 'title' => '✏️ Edit All'];
+        $buttons[] = ['id' => 'edit_details', 'title' => '✏️ എഡിറ്റ്'];
 
         return [
             'type' => 'buttons',
-            'header' => '✅ Confirm Posting',
-            'body' => "Please confirm your catch details:\n\n" .
-                "{$fishType->emoji} *{$fishType->name_en}*\n" .
-                "({$fishType->name_ml})\n\n" .
-                "📦 Quantity: {$qty}\n" .
-                "💰 Price: ₹{$price}/kg\n" .
+            'header' => '✅ സ്ഥിരീകരിക്കുക',
+            'body' => "മീൻ വിവരങ്ങൾ സ്ഥിരീകരിക്കുക:\n\n" .
+                "{$fishType->emoji} *{$fishType->name_ml}*\n" .
+                "({$fishType->name_en})\n\n" .
+                "📦 അളവ്: {$qty}\n" .
+                "💰 വില: ₹{$price}/kg\n" .
                 "{$photoStatus}\n\n" .
-                "Post this catch?",
+                "പോസ്റ്റ് ചെയ്യണോ?",
             'buttons' => $buttons,
         ];
     }
 
     /**
-     * Format quantity range for display.
+     * Format quantity range in Malayalam.
      */
-    protected static function formatQuantityRange(string $range): string
+    protected static function formatQuantityRangeMl(string $range): string
     {
-        // Handle common FishQuantityRange enum formats
         return match ($range) {
-            'under_2kg', 'small' => 'Under 2 kg',
+            'under_2kg', 'small' => '2 kg-ൽ താഴെ',
             '2_5kg', '2_5' => '2-5 kg',
             '5_10kg', '5_10' => '5-10 kg',
             '10_20kg', '10_20' => '10-20 kg',
             '20_50kg', '20_50' => '20-50 kg',
-            'above_50kg', 'large' => 'Above 50 kg',
+            'above_50kg', 'large' => '50 kg+',
             default => str_replace('_', '-', $range) . ' kg',
         };
     }
 
     /**
-     * Catch posted successfully.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible from any flow state
+     * Catch posted successfully with social proof.
      */
     public static function catchPostedSuccess(FishCatch $catch, int $subscriberCount): array
     {
         $alertMsg = $subscriberCount > 0
-            ? "📢 *{$subscriberCount} customers* will be notified!"
-            : "📢 Waiting for subscribers nearby...";
+            ? "📢 *{$subscriberCount} ഉപഭോക്താക്കൾക്ക്* അറിയിപ്പ് അയയ്ക്കും!"
+            : "📢 അടുത്തുള്ള സബ്സ്ക്രൈബേഴ്സിനെ കാത്തിരിക്കുന്നു...";
 
         return [
             'type' => 'buttons',
-            'header' => '🎉 Posted!',
-            'body' => "Your catch has been posted!\n\n" .
-                "{$catch->fishType->emoji} *{$catch->fishType->name_en}*\n" .
+            'header' => '🎉 പോസ്റ്റ് ചെയ്തു!',
+            'body' => "നിങ്ങളുടെ മീൻ പോസ്റ്റ് ചെയ്തു!\n\n" .
+                "{$catch->fishType->emoji} *{$catch->fishType->name_ml}*\n" .
                 "📦 {$catch->quantity_display}\n" .
                 "💰 {$catch->price_display}\n" .
-                "⏰ Expires: {$catch->time_remaining}\n\n" .
+                "⏰ കാലാവധി: {$catch->time_remaining}\n\n" .
                 "{$alertMsg}",
             'buttons' => [
-                ['id' => 'add_another', 'title' => '➕ Add Another'],
-                ['id' => 'view_my_catches', 'title' => '📋 My Catches'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'add_another', 'title' => '➕ മറ്റൊന്ന് ചേർക്കുക'],
+                ['id' => 'view_my_catches', 'title' => '📋 എന്റെ മീൻ'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -549,11 +561,11 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'body' => "Would you like to add another type of fish?",
+            'body' => "മറ്റൊരു മീൻ കൂടി ചേർക്കണോ?",
             'buttons' => [
-                ['id' => 'add_another_yes', 'title' => '➕ Yes, Add More'],
-                ['id' => 'add_another_no', 'title' => '✅ Done'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'add_another_yes', 'title' => '➕ അതെ, ചേർക്കുക'],
+                ['id' => 'add_another_no', 'title' => '✅ പൂർത്തിയായി'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -572,28 +584,36 @@ class FishMessages
         if ($catches->isEmpty()) {
             return [
                 'type' => 'buttons',
-                'header' => '📋 No Active Catches',
-                'body' => "📋 *No Active Catches*\n\n" .
-                    "You don't have any active catches to update.\n\n" .
-                    "Post a new catch to get started!",
+                'header' => '📋 സജീവ മീൻ ഇല്ല',
+                'body' => "📋 *സജീവ മീൻ ഇല്ല*\n\n" .
+                    "അപ്ഡേറ്റ് ചെയ്യാൻ സജീവ മീൻ ഇല്ല.\n\n" .
+                    "പുതിയ മീൻ പോസ്റ്റ് ചെയ്യാൻ തുടങ്ങുക!",
                 'buttons' => [
-                    ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                    ['id' => 'fish_post_catch', 'title' => '🎣 മീൻ പോസ്റ്റ്'],
+                    ['id' => 'main_menu', 'title' => '🏠 മെനു'],
                 ],
             ];
         }
 
-        $rows = $catches->map(fn($catch) => $catch->toListItem())->toArray();
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+        $rows = $catches->map(function($catch) {
+            $title = $catch->fishType->emoji . ' ' . $catch->fishType->name_ml;
+            return [
+                'id' => 'catch_' . $catch->id,
+                'title' => self::safeTitle($title),
+                'description' => "{$catch->price_display} • {$catch->status->display()}",
+            ];
+        })->toArray();
+        
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'];
 
         return [
             'type' => 'list',
-            'header' => '📋 Update Stock',
-            'body' => "Select a catch to update its status:",
-            'button' => 'Select Catch',
+            'header' => '📋 സ്റ്റോക്ക് അപ്ഡേറ്റ്',
+            'body' => "അപ്ഡേറ്റ് ചെയ്യാൻ മീൻ തിരഞ്ഞെടുക്കുക:",
+            'button' => 'മീൻ തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => 'Active Catches',
+                    'title' => 'സജീവ മീൻ',
                     'rows' => array_slice($rows, 0, 10),
                 ],
             ],
@@ -607,35 +627,33 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📦 Update Stock',
-            'body' => "{$catch->fishType->emoji} *{$catch->fishType->name_en}*\n" .
-                "Current: {$catch->status->display()}\n\n" .
-                "Select new status:",
+            'header' => '📦 സ്റ്റോക്ക് അപ്ഡേറ്റ്',
+            'body' => "{$catch->fishType->emoji} *{$catch->fishType->name_ml}*\n" .
+                "ഇപ്പോൾ: {$catch->status->display()}\n\n" .
+                "പുതിയ നില തിരഞ്ഞെടുക്കുക:",
             'buttons' => [
-                ['id' => 'status_available', 'title' => '✅ Available'],
-                ['id' => 'status_low_stock', 'title' => '⚠️ Low Stock'],
-                ['id' => 'status_sold_out', 'title' => '❌ Sold Out'],
+                ['id' => 'status_available', 'title' => '✅ ലഭ്യമാണ്'],
+                ['id' => 'status_low_stock', 'title' => '⚠️ കുറവാണ്'],
+                ['id' => 'status_sold_out', 'title' => '❌ തീർന്നു'],
             ],
         ];
     }
 
     /**
      * Stock updated confirmation.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function stockUpdated(FishCatch $catch): array
     {
         return [
             'type' => 'buttons',
-            'header' => '✅ Stock Updated',
-            'body' => "✅ *Stock Updated*\n\n" .
-                "{$catch->fishType->emoji} {$catch->fishType->name_en}\n" .
-                "Status: {$catch->status->display()}\n\n" .
-                "Customers have been notified.",
+            'header' => '✅ അപ്ഡേറ്റ് ചെയ്തു',
+            'body' => "✅ *സ്റ്റോക്ക് അപ്ഡേറ്റ് ചെയ്തു*\n\n" .
+                "{$catch->fishType->emoji} {$catch->fishType->name_ml}\n" .
+                "നില: {$catch->status->display()}\n\n" .
+                "ഉപഭോക്താക്കളെ അറിയിച്ചു.",
             'buttons' => [
-                ['id' => 'fish_update_stock', 'title' => '📦 Update Another'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'fish_update_stock', 'title' => '📦 മറ്റൊന്ന് അപ്ഡേറ്റ്'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -653,16 +671,16 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🐟 Fish Alerts',
-            'body' => "🐟 *Fresh Fish Alerts*\n\n" .
-                "Get notified when fresh fish arrives near you!\n\n" .
-                "• Choose your preferred fish types\n" .
-                "• Set your location & radius\n" .
-                "• Receive instant alerts\n\n" .
-                "Let's set up your subscription! 📍",
+            'header' => '🐟 മീൻ അലേർട്ട്',
+            'body' => "🐟 *പച്ച മീൻ അലേർട്ട്*\n\n" .
+                "അടുത്ത് പച്ച മീൻ വരുമ്പോൾ അറിയിപ്പ് ലഭിക്കുക!\n\n" .
+                "• ഇഷ്ടമുള്ള മീൻ തരങ്ങൾ തിരഞ്ഞെടുക്കുക\n" .
+                "• ലൊക്കേഷനും ദൂരവും സെറ്റ് ചെയ്യുക\n" .
+                "• തൽക്ഷണ അലേർട്ടുകൾ ലഭിക്കുക\n\n" .
+                "നമുക്ക് സെറ്റ് ചെയ്യാം! 📍",
             'buttons' => [
-                ['id' => 'continue_subscribe', 'title' => '✅ Continue'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'continue_subscribe', 'title' => '✅ തുടരുക'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -674,35 +692,37 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📍 Your Location',
-            'body' => "📍 *Your Location*\n\n" .
-                "Share your location to receive alerts for fresh fish nearby.\n\n" .
-                "Tap 📎 → *Location* to share where you want alerts.",
+            'header' => '📍 ലൊക്കേഷൻ',
+            'body' => "📍 *നിങ്ങളുടെ ലൊക്കേഷൻ*\n\n" .
+                "അടുത്തുള്ള മീൻ അലേർട്ട് ലഭിക്കാൻ ലൊക്കേഷൻ പങ്കിടുക.\n\n" .
+                "📎 → *Location* ടാപ്പ് ചെയ്യുക.",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Ask for alert radius.
+     * FIXED: Titles within 24 char limit
      */
     public static function askAlertRadius(): array
     {
         return [
             'type' => 'list',
-            'header' => '📍 Alert Radius',
-            'body' => "How far should we look for fresh fish?\n\nSelect your preferred radius:",
-            'button' => 'Select Radius',
+            'header' => '📍 അലേർട്ട് ദൂരം',
+            'body' => "എത്ര ദൂരം വരെ മീൻ അന്വേഷിക്കണം?\n\n" .
+                "ദൂരം തിരഞ്ഞെടുക്കുക:",
+            'button' => 'ദൂരം തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => 'Distance',
+                    'title' => 'ദൂരം',
                     'rows' => [
-                        ['id' => 'radius_3', 'title' => '3 km', 'description' => 'Nearby only'],
-                        ['id' => 'radius_5', 'title' => '5 km', 'description' => 'Recommended'],
-                        ['id' => 'radius_10', 'title' => '10 km', 'description' => 'Wider area'],
-                        ['id' => 'radius_15', 'title' => '15 km', 'description' => 'Extended area'],
-                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
+                        ['id' => 'radius_3', 'title' => '📍 3 km', 'description' => 'Nearby only - അടുത്ത് മാത്രം'],
+                        ['id' => 'radius_5', 'title' => '📍 5 km ⭐', 'description' => 'Recommended - ശുപാർശ'],
+                        ['id' => 'radius_10', 'title' => '📍 10 km', 'description' => 'Wider area - വിശാല പ്രദേശം'],
+                        ['id' => 'radius_15', 'title' => '📍 15 km', 'description' => 'Extended - വിപുലം'],
+                        ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'],
                     ],
                 ],
             ],
@@ -716,177 +736,39 @@ class FishMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🐟 Fish Preferences',
-            'body' => "What fish do you want alerts for?\n\n" .
-                "You can select specific types or get alerts for all fresh fish.",
+            'header' => '🐟 മീൻ മുൻഗണന',
+            'body' => "ഏത് മീനിന് അലേർട്ട് വേണം?\n\n" .
+                "എല്ലാ മീനിനും അല്ലെങ്കിൽ പ്രത്യേക തരങ്ങൾ തിരഞ്ഞെടുക്കാം.",
             'buttons' => [
-                ['id' => 'fish_pref_all', 'title' => '🐟 All Fish Types'],
-                ['id' => 'fish_pref_select', 'title' => '✅ Select Types'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ],
-        ];
-    }
-
-    /**
-     * Select specific fish types for alerts.
-     *
-     * Uses category selection for better UX.
-     */
-    public static function selectFishPreferences(): array
-    {
-        return self::selectFishPreferencesCategory();
-    }
-
-    /**
-     * Fish category selection for alert preferences.
-     */
-    public static function selectFishPreferencesCategory(): array
-    {
-        $categories = [
-            FishType::CATEGORY_SEA_FISH => ['icon' => '🌊', 'title' => 'Sea Fish'],
-            FishType::CATEGORY_FRESHWATER => ['icon' => '🏞️', 'title' => 'Freshwater'],
-            FishType::CATEGORY_SHELLFISH => ['icon' => '🐚', 'title' => 'Shellfish'],
-            FishType::CATEGORY_CRUSTACEAN => ['icon' => '🦐', 'title' => 'Crustacean'],
-        ];
-
-        $rows = [];
-
-        foreach ($categories as $categoryKey => $categoryInfo) {
-            $count = FishType::active()->where('category', $categoryKey)->count();
-            if ($count > 0) {
-                $rows[] = [
-                    'id' => 'pref_cat_' . $categoryKey,
-                    'title' => "{$categoryInfo['icon']} {$categoryInfo['title']}",
-                    'description' => "{$count} types available",
-                ];
-            }
-        }
-
-        $rows[] = [
-            'id' => 'pref_done',
-            'title' => '✅ Done',
-            'description' => 'Finish selection',
-        ];
-
-        $rows[] = [
-            'id' => 'main_menu',
-            'title' => '🏠 Main Menu',
-            'description' => 'Return to main menu',
-        ];
-
-        return [
-            'type' => 'list',
-            'header' => '🐟 Fish Preferences',
-            'body' => "Select fish categories you want alerts for:\n\n_Select categories, then tap 'Done' when finished._",
-            'button' => 'Select Category',
-            'sections' => [
-                [
-                    'title' => '📂 Categories',
-                    'rows' => $rows,
-                ],
-            ],
-        ];
-    }
-
-    /**
-     * Fish selection from category for preferences.
-     *
-     * @param string $category
-     * @param int $page
-     * @param array $selectedIds Already selected fish IDs
-     */
-    public static function selectFishPreferencesFromCategory(string $category, int $page = 0, array $selectedIds = []): array
-    {
-        $perPage = 7; // 7 fish + navigation options
-        $offset = $page * $perPage;
-
-        $query = FishType::active()
-            ->where('category', $category)
-            ->orderByDesc('is_popular')
-            ->orderBy('name_en');
-
-        $totalInCategory = $query->count();
-        $fishTypes = (clone $query)->skip($offset)->take($perPage)->get();
-
-        $hasMore = ($offset + $perPage) < $totalInCategory;
-        $hasPrevious = $page > 0;
-
-        // Build rows with selection indicator
-        $rows = $fishTypes->map(function ($fish) use ($selectedIds) {
-            $isSelected = in_array($fish->id, $selectedIds);
-            return [
-                'id' => 'pref_fish_' . $fish->id,
-                'title' => ($isSelected ? '✅ ' : '') . substr($fish->display_name, 0, 22),
-                'description' => $fish->name_ml,
-            ];
-        })->toArray();
-
-        // Navigation
-        if ($hasMore) {
-            $rows[] = [
-                'id' => "pref_cat_{$category}_page_" . ($page + 1),
-                'title' => '➡️ More Fish',
-                'description' => 'Show more fish',
-            ];
-        }
-
-        if ($hasPrevious) {
-            $rows[] = [
-                'id' => "pref_cat_{$category}_page_" . ($page - 1),
-                'title' => '⬅️ Previous',
-                'description' => 'Show previous fish',
-            ];
-        }
-
-        $rows[] = [
-            'id' => 'pref_back_categories',
-            'title' => '🔙 Back to Categories',
-            'description' => 'Select from other categories',
-        ];
-
-        $rows = array_slice($rows, 0, 10);
-
-        $categoryLabels = [
-            'sea_fish' => '🌊 Sea Fish',
-            'freshwater' => '🏞️ Freshwater',
-            'shellfish' => '🐚 Shellfish',
-            'crustacean' => '🦐 Crustacean',
-        ];
-
-        $categoryLabel = $categoryLabels[$category] ?? '🐟 Fish';
-        $selectedCount = count($selectedIds);
-        $selectedInfo = $selectedCount > 0 ? "\n\n✅ {$selectedCount} fish selected" : "";
-
-        return [
-            'type' => 'list',
-            'header' => $categoryLabel,
-            'body' => "Select fish for alerts:{$selectedInfo}",
-            'button' => 'Choose Fish',
-            'sections' => [
-                [
-                    'title' => $categoryLabel,
-                    'rows' => $rows,
-                ],
+                ['id' => 'fish_pref_all', 'title' => '🐟 എല്ലാ മീനും'],
+                ['id' => 'fish_pref_select', 'title' => '✅ തിരഞ്ഞെടുക്കുക'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Ask for alert frequency.
+     * FIXED: Titles within 24 char limit
      */
     public static function askAlertFrequency(): array
     {
-        $rows = FishAlertFrequency::toListItems();
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+        $rows = [
+            ['id' => 'fish_freq_immediate', 'title' => '🔔 ഉടൻ', 'description' => 'Immediate - തൽക്ഷണം അറിയിപ്പ്'],
+            ['id' => 'fish_freq_morning_only', 'title' => '🌅 രാവിലെ മാത്രം', 'description' => 'Morning only - 6-8 AM'],
+            ['id' => 'fish_freq_twice_daily', 'title' => '☀️ ദിവസം 2 തവണ', 'description' => 'Twice daily - 6 AM & 4 PM'],
+            ['id' => 'fish_freq_weekly_digest', 'title' => '📅 ആഴ്ചതോറും', 'description' => 'Weekly summary'],
+            ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'],
+        ];
 
         return [
             'type' => 'list',
-            'header' => '🔔 Alert Frequency',
-            'body' => "How often would you like to receive alerts?",
-            'button' => 'Select Frequency',
+            'header' => '🔔 അലേർട്ട് ആവൃത്തി',
+            'body' => "എത്ര തവണ അലേർട്ട് ലഭിക്കണം?",
+            'button' => 'ആവൃത്തി തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => 'Frequency Options',
+                    'title' => 'ആവൃത്തി ഓപ്ഷനുകൾ',
                     'rows' => $rows,
                 ],
             ],
@@ -894,72 +776,35 @@ class FishMessages
     }
 
     /**
-     * Confirm subscription.
-     */
-    public static function confirmSubscription(array $subData): array
-    {
-        $radius = $subData['radius_km'] ?? 5;
-        $fishTypes = $subData['all_fish_types'] ?? true
-            ? 'All fish types'
-            : count($subData['fish_type_ids'] ?? []) . ' selected types';
-        $frequency = isset($subData['alert_frequency'])
-            ? ($subData['alert_frequency'] instanceof FishAlertFrequency
-                ? $subData['alert_frequency']->label()
-                : FishAlertFrequency::from($subData['alert_frequency'])->label())
-            : 'Immediate';
-
-        return [
-            'type' => 'buttons',
-            'header' => '✅ Confirm Subscription',
-            'body' => "Your alert preferences:\n\n" .
-                "📍 Radius: {$radius} km\n" .
-                "🐟 Fish: {$fishTypes}\n" .
-                "🔔 Frequency: {$frequency}\n\n" .
-                "Start receiving alerts?",
-            'buttons' => [
-                ['id' => 'confirm_subscription', 'title' => '✅ Subscribe'],
-                ['id' => 'edit_subscription', 'title' => '✏️ Edit'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ],
-        ];
-    }
-
-    /**
      * Subscription created successfully.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible from any flow state
-     * @srs-ref PM-015: Modify subscriptions (manage alerts option)
      */
     public static function subscriptionCreated(FishSubscription $subscription): array
     {
         return [
             'type' => 'buttons',
-            'header' => '🎉 Subscribed!',
-            'body' => "🎉 *Subscribed!*\n\n" .
-                "You'll receive fresh fish alerts:\n\n" .
-                "📍 Within {$subscription->radius_km} km\n" .
+            'header' => '🎉 സബ്സ്ക്രൈബ് ചെയ്തു!',
+            'body' => "🎉 *സബ്സ്ക്രൈബ് ചെയ്തു!*\n\n" .
+                "പച്ച മീൻ അലേർട്ട് ലഭിക്കും:\n\n" .
+                "📍 {$subscription->radius_km} km ഉള്ളിൽ\n" .
                 "🐟 {$subscription->fish_types_display}\n" .
                 "🔔 {$subscription->frequency_display}\n\n" .
-                "We'll notify you when fresh fish arrives nearby! 🐟",
+                "പച്ച മീൻ വരുമ്പോൾ അറിയിക്കും! 🐟",
             'buttons' => [
-                ['id' => 'fish_browse', 'title' => '🔍 Browse Fish'],
-                ['id' => 'fish_manage_alerts', 'title' => '⚙️ Manage Alerts'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'fish_browse', 'title' => '🔍 മീൻ കാണുക'],
+                ['id' => 'fish_manage_alerts', 'title' => '⚙️ സെറ്റിംഗ്സ്'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Alert Messages
+    | Alert Messages with Social Proof
     |--------------------------------------------------------------------------
     */
 
     /**
-     * New catch alert message.
-     *
-     * @srs-ref Section 2.5.2 - Customer Alert Message Format
-     * @srs-ref NFR-U-04: Main menu accessible
+     * New catch alert message with social proof.
      */
     public static function newCatchAlert(FishCatch $catch, FishAlert $alert): array
     {
@@ -971,16 +816,24 @@ class FishMessages
                 : round($alert->distance_km, 1) . ' km')
             : '';
 
-        $body = "{$fishType->emoji} *{$fishType->name_en}*\n" .
-            "({$fishType->name_ml})\n\n" .
+        // Social proof - coming count
+        $comingCount = $catch->coming_count ?? 0;
+        $socialProof = '';
+        if ($comingCount > 0) {
+            $socialProof = "\n\n🏃 *{$comingCount} പേർ ഇതിനകം പോകുന്നു!*";
+        }
+
+        $body = "{$fishType->emoji} *{$fishType->name_ml}*\n" .
+            "({$fishType->name_en})\n\n" .
             "💰 *{$catch->price_display}*\n" .
             "📦 {$catch->quantity_display}\n" .
-            "⏰ {$catch->freshness_display}\n\n" .
+            "⏰ {$catch->freshness_display}" .
+            $socialProof . "\n\n" .
             "📍 *{$seller->business_name}*\n" .
             "{$catch->location_display}";
 
         if ($distance) {
-            $body .= "\n🚗 {$distance} away";
+            $body .= "\n🚗 {$distance} അകലെ";
         }
 
         if ($seller->rating_count > 0) {
@@ -988,19 +841,18 @@ class FishMessages
         }
 
         $buttons = [
-            ['id' => "fish_coming_{$catch->id}_{$alert->id}", 'title' => "🏃 I'm Coming!"],
-            ['id' => "fish_location_{$catch->id}_{$alert->id}", 'title' => '📍 Get Location'],
-            ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ['id' => "fish_coming_{$catch->id}_{$alert->id}", 'title' => "🏃 ഞാൻ വരുന്നു!"],
+            ['id' => "fish_location_{$catch->id}_{$alert->id}", 'title' => '📍 ലൊക്കേഷൻ'],
+            ['id' => 'main_menu', 'title' => '🏠 മെനു'],
         ];
 
         $message = [
             'type' => 'buttons',
-            'header' => '🐟 Fresh Fish Alert!',
+            'header' => '🐟 പച്ച മീൻ അലേർട്ട്!',
             'body' => $body,
             'buttons' => $buttons,
         ];
 
-        // Add image if available
         if ($catch->photo_url) {
             $message['image'] = $catch->photo_url;
         }
@@ -1009,78 +861,133 @@ class FishMessages
     }
 
     /**
-     * Low stock alert message.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
+     * Low stock alert message with urgency.
      */
     public static function lowStockAlert(FishCatch $catch, FishAlert $alert): array
     {
+        $comingCount = $catch->coming_count ?? 0;
+        $urgency = $comingCount > 0 
+            ? "🏃 *{$comingCount} പേർ ഇതിനകം പോയി!*\n" 
+            : "";
+
         return [
             'type' => 'buttons',
-            'header' => '⚠️ Low Stock Alert!',
-            'body' => "{$catch->fishType->emoji} *{$catch->fishType->name_en}* is running low!\n\n" .
+            'header' => '⚠️ സ്റ്റോക്ക് കുറവ്!',
+            'body' => "⚠️ *സ്റ്റോക്ക് കുറയുന്നു!*\n\n" .
+                "{$catch->fishType->emoji} *{$catch->fishType->name_ml}*\n" .
                 "📍 {$catch->seller->business_name}\n" .
                 "💰 {$catch->price_display}\n\n" .
-                "Hurry if you want to get some! 🏃",
+                $urgency .
+                "വേഗം വരൂ! ⏰",
             'buttons' => [
-                ['id' => "fish_coming_{$catch->id}_{$alert->id}", 'title' => "🏃 On My Way!"],
-                ['id' => "fish_location_{$catch->id}_{$alert->id}", 'title' => '📍 Location'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ['id' => "fish_coming_{$catch->id}_{$alert->id}", 'title' => "🏃 ഞാൻ പോകുന്നു!"],
+                ['id' => "fish_location_{$catch->id}_{$alert->id}", 'title' => '📍 ലൊക്കേഷൻ'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Batch digest message.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function batchDigest(Collection $catches, FishSubscription $subscription): array
     {
-        $lines = ["Fresh catches near " . ($subscription->location_label ?? 'you') . ":\n"];
+        $locationLabel = $subscription->location_label ?? 'അടുത്ത്';
+        $lines = ["📍 {$locationLabel} പച്ച മീൻ:\n"];
 
         foreach ($catches->take(5) as $catch) {
-            $lines[] = "{$catch->fishType->emoji} *{$catch->fishType->name_en}* - {$catch->price_display}";
+            $lines[] = "{$catch->fishType->emoji} *{$catch->fishType->name_ml}* - {$catch->price_display}";
             $lines[] = "   📍 {$catch->seller->business_name} • {$catch->freshness_display}\n";
         }
 
         if ($catches->count() > 5) {
             $more = $catches->count() - 5;
-            $lines[] = "_+{$more} more catches available_";
+            $lines[] = "_+{$more} കൂടുതൽ മീൻ ലഭ്യമാണ്_";
         }
 
         return [
             'type' => 'buttons',
-            'header' => '🐟 Fish Alert Digest',
+            'header' => '🐟 മീൻ സംഗ്രഹം',
             'body' => implode("\n", $lines),
             'buttons' => [
-                ['id' => 'fish_browse_all', 'title' => '🔍 View All'],
-                ['id' => 'fish_manage_alerts', 'title' => '⚙️ Settings'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ['id' => 'fish_browse_all', 'title' => '🔍 എല്ലാം കാണുക'],
+                ['id' => 'fish_manage_alerts', 'title' => '⚙️ സെറ്റിംഗ്സ്'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
-     * Coming confirmation to customer.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible from any flow state
+     * Coming confirmation to customer with share option.
      */
     public static function comingConfirmation(FishCatch $catch): array
     {
         return [
             'type' => 'buttons',
-            'header' => "🏃 You're on your way!",
-            'body' => "🏃 *You're on your way!*\n\n" .
-                "The seller has been notified.\n\n" .
-                "{$catch->fishType->emoji} {$catch->fishType->name_en}\n" .
+            'header' => "🏃 നിങ്ങൾ പോകുന്നു!",
+            'body' => "🏃 *നിങ്ങൾ പോകുകയാണ്!*\n\n" .
+                "വിൽപ്പനക്കാരനെ അറിയിച്ചു.\n\n" .
+                "{$catch->fishType->emoji} {$catch->fishType->name_ml}\n" .
                 "📍 {$catch->seller->business_name}\n" .
                 "📞 {$catch->seller->user->formatted_phone}\n\n" .
-                "Safe travels! 🚗",
+                "👥 *സുഹൃത്തുക്കളുമായി പങ്കിടുക!*\n" .
+                "സുരക്ഷിതമായ യാത്ര! 🚗",
             'buttons' => [
-                ['id' => "fish_location_{$catch->id}_0", 'title' => '📍 Get Directions'],
-                ['id' => 'fish_browse', 'title' => '🔍 Browse More'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => "fish_share_{$catch->id}", 'title' => '📤 പങ്കിടുക'],
+                ['id' => "fish_location_{$catch->id}_0", 'title' => '📍 ദിശ'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+            ],
+        ];
+    }
+
+    /**
+     * Notification to seller when customer is coming.
+     * 
+     * @param FishCatch $catch The fish catch
+     * @param \App\Models\User $customer The customer who is coming
+     * @param int $totalComing Total customers coming so far
+     * @param float|null $distanceKm Distance from customer (if available)
+     */
+    public static function sellerComingNotification(
+        FishCatch $catch,
+        \App\Models\User $customer,
+        int $totalComing = 1,
+        ?float $distanceKm = null
+    ): array {
+        // Format customer phone (partially masked for privacy)
+        $customerPhone = $customer->phone ?? '';
+        $maskedPhone = strlen($customerPhone) > 6 
+            ? substr($customerPhone, 0, -4) . '****' 
+            : $customerPhone;
+
+        // Format distance
+        $distanceText = '';
+        if ($distanceKm !== null) {
+            $distanceText = $distanceKm < 1 
+                ? "\n📍 " . round($distanceKm * 1000) . " m അകലെ നിന്ന്"
+                : "\n📍 " . round($distanceKm, 1) . " km അകലെ നിന്ന്";
+        }
+
+        // Total coming message
+        $totalText = $totalComing > 1 
+            ? "\n\n👥 *ആകെ {$totalComing} പേർ വരുന്നു!*"
+            : "";
+
+        return [
+            'type' => 'buttons',
+            'header' => '🏃 ഉപഭോക്താവ് വരുന്നു!',
+            'body' => "🏃 *ഉപഭോക്താവ് വരുന്നു!*\n" .
+                "*Customer Coming!*\n\n" .
+                "{$catch->fishType->emoji} *{$catch->fishType->name_ml}*\n" .
+                "({$catch->fishType->name_en})\n\n" .
+                "👤 +{$maskedPhone}" .
+                $distanceText .
+                $totalText . "\n\n" .
+                "⏰ " . now()->format('h:i A'),
+            'buttons' => [
+                ['id' => 'fish_update_stock', 'title' => '📦 സ്റ്റോക്ക് അപ്ഡേറ്റ്'],
+                ['id' => 'fish_my_catches', 'title' => '📋 എന്റെ മീൻ'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
@@ -1107,42 +1014,42 @@ class FishMessages
 
     /**
      * Browse results.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
-    public static function browseResults(Collection $catches, string $location = 'your area'): array
+    public static function browseResults(Collection $catches, string $location = 'അടുത്ത്'): array
     {
         if ($catches->isEmpty()) {
             return [
                 'type' => 'buttons',
-                'header' => '🐟 No Fresh Fish Nearby',
-                'body' => "No active catches found in {$location}.\n\n" .
-                    "Subscribe to get alerts when fresh fish arrives!",
+                'header' => '🐟 മീൻ ഇല്ല',
+                'body' => "{$location}-ൽ സജീവ മീൻ കണ്ടില്ല.\n\n" .
+                    "പച്ച മീൻ വരുമ്പോൾ അറിയിപ്പ് ലഭിക്കാൻ സബ്സ്ക്രൈബ് ചെയ്യുക!",
                 'buttons' => [
-                    ['id' => 'fish_subscribe', 'title' => '🔔 Subscribe'],
-                    ['id' => 'fish_refresh', 'title' => '🔄 Refresh'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                    ['id' => 'fish_subscribe', 'title' => '🔔 സബ്സ്ക്രൈബ്'],
+                    ['id' => 'fish_refresh', 'title' => '🔄 പുതുക്കുക'],
+                    ['id' => 'main_menu', 'title' => '🏠 മെനു'],
                 ],
             ];
         }
 
-        $rows = $catches->take(9)->map(fn($catch) => [
-            'id' => 'catch_' . $catch->id,
-            'title' => substr($catch->fishType->display_name, 0, 24),
-            'description' => substr("{$catch->price_display} • {$catch->freshness_display}", 0, 72),
-        ])->toArray();
+        $rows = $catches->take(9)->map(function($catch) {
+            $title = $catch->fishType->emoji . ' ' . $catch->fishType->name_ml;
+            return [
+                'id' => 'catch_' . $catch->id,
+                'title' => self::safeTitle($title),
+                'description' => substr("{$catch->price_display} • {$catch->freshness_display}", 0, 72),
+            ];
+        })->toArray();
 
-        // Add main menu option
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'];
 
         return [
             'type' => 'list',
-            'header' => '🐟 Fresh Fish Nearby',
-            'body' => "{$catches->count()} catches available in {$location}:",
-            'button' => 'View Fish',
+            'header' => '🐟 അടുത്തുള്ള മീൻ',
+            'body' => "{$catches->count()} മീൻ {$location}-ൽ ലഭ്യമാണ്:",
+            'button' => 'മീൻ കാണുക',
             'sections' => [
                 [
-                    'title' => 'Available Now',
+                    'title' => 'ഇപ്പോൾ ലഭ്യം',
                     'rows' => $rows,
                 ],
             ],
@@ -1151,21 +1058,26 @@ class FishMessages
 
     /**
      * Catch detail view.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function catchDetail(FishCatch $catch, ?float $distanceKm = null): array
     {
         $distance = $distanceKm
-            ? ($distanceKm < 1 ? round($distanceKm * 1000) . 'm' : round($distanceKm, 1) . ' km') . ' away'
+            ? ($distanceKm < 1 ? round($distanceKm * 1000) . 'm' : round($distanceKm, 1) . ' km') . ' അകലെ'
             : '';
 
-        $body = "{$catch->fishType->emoji} *{$catch->fishType->name_en}*\n" .
-            "({$catch->fishType->name_ml})\n\n" .
+        // Social proof
+        $comingCount = $catch->coming_count ?? 0;
+        $socialProof = $comingCount > 0 
+            ? "\n🏃 *{$comingCount} പേർ പോകുന്നു*" 
+            : "";
+
+        $body = "{$catch->fishType->emoji} *{$catch->fishType->name_ml}*\n" .
+            "({$catch->fishType->name_en})\n\n" .
             "💰 *{$catch->price_display}*\n" .
             "📦 {$catch->quantity_display}\n" .
             "⏰ {$catch->freshness_display}\n" .
-            "📊 Status: {$catch->status->display()}\n\n" .
+            "📊 നില: {$catch->status->display()}" .
+            $socialProof . "\n\n" .
             "📍 *{$catch->seller->business_name}*\n" .
             "{$catch->location_display}";
 
@@ -1179,9 +1091,9 @@ class FishMessages
             'type' => 'buttons',
             'body' => $body,
             'buttons' => [
-                ['id' => "fish_coming_{$catch->id}_0", 'title' => "🏃 I'm Coming!"],
-                ['id' => "fish_location_{$catch->id}_0", 'title' => '📍 Get Location'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ['id' => "fish_coming_{$catch->id}_0", 'title' => "🏃 ഞാൻ വരുന്നു!"],
+                ['id' => "fish_location_{$catch->id}_0", 'title' => '📍 ലൊക്കേഷൻ'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
 
@@ -1200,8 +1112,6 @@ class FishMessages
 
     /**
      * Fish seller menu.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function fishSellerMenu(FishSeller $seller): array
     {
@@ -1209,21 +1119,21 @@ class FishMessages
 
         return [
             'type' => 'list',
-            'header' => '🐟 Fish Seller Menu',
-            'body' => "Welcome, {$seller->business_name}!\n\n" .
-                "📊 Active catches: {$activeCatches}\n" .
-                "⭐ Rating: {$seller->short_rating}",
-            'button' => 'Select Option',
+            'header' => '🐟 വിൽപ്പന മെനു',
+            'body' => "സ്വാഗതം, {$seller->business_name}!\n\n" .
+                "📊 സജീവ മീൻ: {$activeCatches}\n" .
+                "⭐ റേറ്റിംഗ്: {$seller->short_rating}",
+            'button' => 'തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => 'Actions',
+                    'title' => 'പ്രവർത്തനങ്ങൾ',
                     'rows' => [
-                        ['id' => 'fish_post_catch', 'title' => '🐟 Post New Catch', 'description' => 'Add fresh fish'],
-                        ['id' => 'fish_update_stock', 'title' => '📦 Update Stock', 'description' => 'Change availability'],
-                        ['id' => 'fish_my_catches', 'title' => '📋 My Catches', 'description' => 'View active posts'],
-                        ['id' => 'fish_my_stats', 'title' => '📊 My Stats', 'description' => 'Sales & ratings'],
-                        ['id' => 'fish_settings', 'title' => '⚙️ Settings', 'description' => 'Profile & alerts'],
-                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
+                        ['id' => 'fish_post_catch', 'title' => '🐟 പുതിയ മീൻ പോസ്റ്റ്', 'description' => 'Post new catch'],
+                        ['id' => 'fish_update_stock', 'title' => '📦 സ്റ്റോക്ക് അപ്ഡേറ്റ്', 'description' => 'Update stock status'],
+                        ['id' => 'fish_my_catches', 'title' => '📋 എന്റെ മീൻ', 'description' => 'View active posts'],
+                        ['id' => 'fish_my_stats', 'title' => '📊 സ്ഥിതിവിവരം', 'description' => 'Sales & ratings'],
+                        ['id' => 'fish_settings', 'title' => '⚙️ സെറ്റിംഗ്സ്', 'description' => 'Profile & alerts'],
+                        ['id' => 'main_menu', 'title' => '🏠 മെയിൻ മെനു', 'description' => 'Main Menu'],
                     ],
                 ],
             ],
@@ -1232,36 +1142,30 @@ class FishMessages
 
     /**
      * Customer fish menu.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
-     * @srs-ref PM-015: Manage subscription option
      */
     public static function customerFishMenu(bool $hasSubscription = false): array
     {
         $rows = [
-            ['id' => 'fish_browse', 'title' => '🔍 Browse Fresh Fish', 'description' => 'See what\'s available nearby'],
+            ['id' => 'fish_browse', 'title' => '🔍 മീൻ കാണുക', 'description' => 'Browse fresh fish nearby'],
         ];
 
         if ($hasSubscription) {
-            // User has subscription - show manage option (unsubscribe, edit, etc.)
-            // @srs-ref PM-015: Allow subscription modification
-            $rows[] = ['id' => 'fish_manage_alerts', 'title' => '⚙️ Manage Alerts', 'description' => 'Edit or unsubscribe'];
-            $rows[] = ['id' => 'fish_pause_alerts', 'title' => '⏸️ Pause Alerts', 'description' => 'Temporarily stop'];
+            $rows[] = ['id' => 'fish_manage_alerts', 'title' => '⚙️ അലേർട്ട് മാനേജ്', 'description' => 'Edit or stop alerts'];
+            $rows[] = ['id' => 'fish_pause_alerts', 'title' => '⏸️ അലേർട്ട് നിർത്തുക', 'description' => 'Pause temporarily'];
         } else {
-            $rows[] = ['id' => 'fish_subscribe', 'title' => '🔔 Get Fish Alerts', 'description' => 'Subscribe to notifications'];
+            $rows[] = ['id' => 'fish_subscribe', 'title' => '🔔 മീൻ അലേർട്ട്', 'description' => 'Subscribe for notifications'];
         }
 
-        // Always add main menu option
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 മെയിൻ മെനു', 'description' => 'Main Menu'];
 
         return [
             'type' => 'list',
-            'header' => '🐟 Fresh Fish',
-            'body' => "What would you like to do?",
-            'button' => 'Select',
+            'header' => '🐟 പച്ച മീൻ',
+            'body' => "എന്ത് ചെയ്യണം?",
+            'button' => 'തിരഞ്ഞെടുക്കുക',
             'sections' => [
                 [
-                    'title' => 'Options',
+                    'title' => 'ഓപ്ഷനുകൾ',
                     'rows' => $rows,
                 ],
             ],
@@ -1276,87 +1180,81 @@ class FishMessages
 
     /**
      * Invalid fish type error.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorInvalidFishType(): array
     {
         return [
             'type' => 'buttons',
-            'body' => "❌ Invalid fish type selected.\n\nPlease choose from the list or type a valid fish name.",
+            'body' => "❌ തെറ്റായ മീൻ തരം.\n\n" .
+                "ലിസ്റ്റിൽ നിന്ന് തിരഞ്ഞെടുക്കുക അല്ലെങ്കിൽ ശരിയായ മീൻ പേര് ടൈപ്പ് ചെയ്യുക.",
             'buttons' => [
-                ['id' => 'retry', 'title' => '🔄 Try Again'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'retry', 'title' => '🔄 വീണ്ടും'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Invalid price error.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorInvalidPrice(): array
     {
         return [
             'type' => 'buttons',
-            'body' => "❌ Invalid price.\n\nPlease enter a valid price in rupees.\n_e.g., 180_",
+            'body' => "❌ തെറ്റായ വില.\n\n" .
+                "ശരിയായ വില രൂപയിൽ നൽകുക.\n_ഉദാ: 180_",
             'buttons' => [
-                ['id' => 'retry', 'title' => '🔄 Try Again'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'retry', 'title' => '🔄 വീണ്ടും'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Location required error.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorLocationRequired(): array
     {
         return [
             'type' => 'buttons',
-            'body' => "📍 Please share your location.\n\nTap 📎 → *Location* to share.",
+            'body' => "📍 ദയവായി ലൊക്കേഷൻ പങ്കിടുക.\n\n" .
+                "📎 → *Location* ടാപ്പ് ചെയ്യുക.",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Not a fish seller error.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorNotFishSeller(): array
     {
         return [
             'type' => 'buttons',
-            'body' => "🐟 This feature is for registered fish sellers.\n\nWould you like to register as a fish seller?",
+            'body' => "🐟 ഈ ഫീച്ചർ രജിസ്റ്റർ ചെയ്ത മീൻ വിൽപ്പനക്കാർക്കുള്ളതാണ്.\n\n" .
+                "മീൻ വിൽപ്പനക്കാരനായി രജിസ്റ്റർ ചെയ്യണോ?",
             'buttons' => [
-                ['id' => 'fish_seller_register', 'title' => '✅ Register Now'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'fish_seller_register', 'title' => '✅ രജിസ്റ്റർ'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }
 
     /**
      * Daily limit reached error.
-     *
-     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorDailyLimitReached(): array
     {
         return [
             'type' => 'buttons',
-            'header' => '⚠️ Daily Limit',
-            'body' => "⚠️ *Daily Limit Reached*\n\n" .
-                "You've reached the maximum number of catch postings for today.\n\n" .
-                "Try again tomorrow!",
+            'header' => '⚠️ ദിവസ പരിധി',
+            'body' => "⚠️ *ദിവസ പരിധി എത്തി*\n\n" .
+                "ഇന്നത്തെ പോസ്റ്റിംഗ് പരിധി എത്തി.\n\n" .
+                "നാളെ വീണ്ടും ശ്രമിക്കുക!",
             'buttons' => [
-                ['id' => 'fish_my_catches', 'title' => '📋 My Catches'],
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ['id' => 'fish_my_catches', 'title' => '📋 എന്റെ മീൻ'],
+                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
             ],
         ];
     }

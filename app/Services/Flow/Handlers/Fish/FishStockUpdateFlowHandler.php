@@ -194,10 +194,32 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
     {
         $catchId = $this->getTemp($session, 'catch_id');
         $newStatusValue = $this->getTemp($session, 'new_status');
+
+        // FIX: Validate session data exists before processing
+        if (!$catchId || !$newStatusValue) {
+            Log::warning('Stock update session data missing', [
+                'catch_id' => $catchId,
+                'new_status' => $newStatusValue,
+                'phone' => $session->phone,
+            ]);
+            $this->sendTextWithMenu(
+                $session->phone,
+                "❌ Session expired. Please try again."
+            );
+            $this->start($session);
+            return;
+        }
+
         $newStatus = FishCatchStatus::from($newStatusValue);
 
         try {
             $catch = $this->catchService->findById($catchId);
+            
+            if (!$catch) {
+                $this->clearTemp($session);
+                $this->sendTextWithMenu($session->phone, "❌ Catch not found.");
+                return;
+            }
             
             // Check if status is already the same
             if ($catch->status === $newStatus) {
@@ -279,6 +301,13 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
     {
         $catchId = $this->getTemp($session, 'catch_id');
         $catch = $this->catchService->findById($catchId);
+        
+        if (!$catch) {
+            $this->sendTextWithMenu($session->phone, "❌ Catch not found. Please try again.");
+            $this->start($session);
+            return;
+        }
+        
         $response = FishMessages::stockUpdateOptions($catch);
         $this->sendFishMessage($session->phone, $response);
     }
@@ -287,8 +316,17 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
     {
         $fishName = $this->getTemp($session, 'fish_name');
         $newStatusValue = $this->getTemp($session, 'new_status');
-        $newStatus = FishCatchStatus::from($newStatusValue);
 
+        // FIX: Validate session data exists
+        if (!$newStatusValue) {
+            Log::warning('showConfirmation: new_status missing', ['phone' => $session->phone]);
+            $this->sendTextWithMenu($session->phone, "❌ Please select a status first.");
+            $this->nextStep($session, self::STEP_SELECT_STATUS);
+            $this->showStatusOptions($session);
+            return;
+        }
+
+        $newStatus = FishCatchStatus::from($newStatusValue);
         $statusLabel = $newStatus->label();
 
         $this->sendButtons(

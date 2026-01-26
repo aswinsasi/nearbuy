@@ -389,6 +389,18 @@ class FishSubscription extends Model
         return round(($this->alerts_clicked / $this->alerts_received) * 100, 1);
     }
 
+    /**
+     * Get frequency value (shorthand for alert_frequency->value).
+     * 
+     * Used by FishManageSubscriptionHandler for display.
+     * 
+     * @bugfix Added to fix property mismatch in FishManageSubscriptionHandler
+     */
+    public function getFrequencyAttribute(): string
+    {
+        return $this->alert_frequency?->value ?? 'immediate';
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Methods

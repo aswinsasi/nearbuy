@@ -328,23 +328,73 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
                 $latitude = $this->getTemp($session, 'latitude');
                 $longitude = $this->getTemp($session, 'longitude');
 
+                // FIX: Cast lat/lng to float (can be null if not set)
                 $this->catchService->recordComingResponse(
                     $catch,
                     $user->id,
                     $alertId ?: null,
                     null,
-                    $latitude,
-                    $longitude
+                    $latitude !== null ? (float) $latitude : null,
+                    $longitude !== null ? (float) $longitude : null
                 );
+
+                // NEW: Notify the seller that a customer is coming!
+                $this->notifySellerCustomerComing($catch, $user, $latitude, $longitude);
             }
 
-            // Send confirmation
+            // Send confirmation to customer
             $response = FishMessages::comingConfirmation($catch);
             $this->sendFishMessage($session->phone, $response);
 
         } catch (\InvalidArgumentException $e) {
             $this->sendTextWithMenu($session->phone, "ℹ️ {$e->getMessage()}");
         }
+    }
+
+    /**
+     * Notify seller that a customer is coming.
+     */
+    protected function notifySellerCustomerComing(
+        \App\Models\FishCatch $catch,
+        \App\Models\User $customer,
+        ?float $customerLat = null,
+        ?float $customerLng = null
+    ): void {
+        $seller = $catch->seller;
+        if (!$seller || !$seller->user) {
+            return;
+        }
+
+        $sellerPhone = $seller->user->phone;
+        if (!$sellerPhone) {
+            return;
+        }
+
+        // Calculate distance if we have customer location
+        $distance = null;
+        if ($customerLat && $customerLng && $catch->catch_latitude && $catch->catch_longitude) {
+            $distance = $this->calculateDistance(
+                (float) $customerLat,
+                (float) $customerLng,
+                (float) $catch->catch_latitude,
+                (float) $catch->catch_longitude
+            );
+        }
+
+        // Get updated coming count
+        $catch->refresh();
+        $comingCount = $catch->coming_count ?? 1;
+
+        // Build notification message
+        $response = FishMessages::sellerComingNotification($catch, $customer, $comingCount, $distance);
+        $this->sendFishMessage($sellerPhone, $response);
+
+        Log::info('Seller notified of customer coming', [
+            'catch_id' => $catch->id,
+            'seller_phone' => $this->maskPhone($sellerPhone),
+            'customer_id' => $customer->id,
+            'coming_count' => $comingCount,
+        ]);
     }
 
     /**
@@ -472,8 +522,8 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
             $distance = $this->calculateDistance(
                 $latitude,
                 $longitude,
-                $catch->catch_latitude,
-                $catch->catch_longitude
+                (float) $catch->catch_latitude,
+                (float) $catch->catch_longitude
             );
         }
 
@@ -496,6 +546,28 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
     protected function sendFishMessage(string $phone, array $response): void
     {
         $type = $response['type'] ?? 'text';
+
+        // Handle image + buttons combo (send image first, then buttons)
+        if (isset($response['image']) && !empty($response['image'])) {
+            $this->sendImage(
+                $phone,
+                $response['image'],
+                $response['body'] ?? null
+            );
+            
+            // If there are also buttons, send them separately after the image
+            if ($type === 'buttons' && !empty($response['buttons'])) {
+                $header = $response['header'] ?? 'Fresh Catch';
+                $this->sendButtons(
+                    $phone,
+                    "👆 *{$header}*\n\nഎന്ത് ചെയ്യണം? / What would you like to do?",
+                    $response['buttons'],
+                    null,
+                    $response['footer'] ?? null
+                );
+            }
+            return;
+        }
 
         switch ($type) {
             case 'text':
@@ -524,10 +596,11 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
                 break;
 
             case 'location':
+                // FIX: Cast lat/lng to float (they're strings from database)
                 $this->sendLocation(
                     $phone,
-                    $response['latitude'],
-                    $response['longitude'],
+                    (float) $response['latitude'],
+                    (float) $response['longitude'],
                     $response['name'] ?? null,
                     $response['address'] ?? null
                 );

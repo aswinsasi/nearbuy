@@ -532,6 +532,9 @@ class FishSellerService
     /**
      * Get seller statistics.
      *
+     * @bugfix Updated to include all keys expected by FishSellerMenuHandler
+     * Keys added: today_views, today_coming, week_views, week_coming, total_views, avg_rating
+     *
      * @param FishSeller $seller
      * @return array
      */
@@ -550,19 +553,53 @@ class FishSellerService
             ->whereBetween('created_at', [now()->startOfWeek(), now()->endOfWeek()])
             ->count();
 
+        // Today's stats (ADDED)
+        $todayViews = $seller->catches()
+            ->whereDate('created_at', today())
+            ->sum('view_count');
+
+        $todayComing = $seller->catches()
+            ->whereDate('created_at', today())
+            ->sum('coming_count');
+
+        // Week's stats (ADDED)
+        $weekViews = $seller->catches()
+            ->whereBetween('created_at', [now()->startOfWeek(), now()->endOfWeek()])
+            ->sum('view_count');
+
+        $weekComing = $seller->catches()
+            ->whereBetween('created_at', [now()->startOfWeek(), now()->endOfWeek()])
+            ->sum('coming_count');
+
+        // All-time stats (ADDED)
+        $totalViews = $seller->catches()->sum('view_count');
+
         $totalCustomers = $seller->catches()
             ->withCount('responses')
             ->get()
             ->sum('responses_count');
 
         return [
+            // Active & counts
             'active_catches' => $activeCatches,
             'today_catches' => $todayCatches,
             'week_catches' => $weekCatches,
             'total_catches' => $seller->total_catches,
             'total_sales' => $seller->total_sales,
             'total_customers' => $totalCustomers,
+            
+            // Views (ADDED - required by FishSellerMenuHandler)
+            'today_views' => $todayViews,
+            'week_views' => $weekViews,
+            'total_views' => $totalViews,
+            
+            // Coming responses (ADDED - required by FishSellerMenuHandler)
+            'today_coming' => $todayComing,
+            'week_coming' => $weekComing,
+            
+            // Ratings
             'average_rating' => $seller->average_rating,
+            'avg_rating' => $seller->average_rating, // Alias for handler compatibility
             'rating_count' => $seller->rating_count,
             'is_verified' => $seller->is_verified,
         ];
