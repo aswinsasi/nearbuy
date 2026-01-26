@@ -208,17 +208,20 @@ class FishCatch extends Model
      */
     public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
     {
-        return $query
-            ->join('fish_sellers', 'fish_catches.fish_seller_id', '=', 'fish_sellers.id')
-            ->whereRaw(
-                "ST_Distance_Sphere(
-                    POINT(COALESCE(fish_catches.longitude, fish_sellers.longitude), 
-                          COALESCE(fish_catches.latitude, fish_sellers.latitude)),
-                    POINT(?, ?)
-                ) <= ?",
-                [$longitude, $latitude, $radiusKm * 1000]
-            )
-            ->select('fish_catches.*');
+        // Only join if not already joined
+        if (!$this->hasJoin($query, 'fish_sellers')) {
+            $query->join('fish_sellers', 'fish_catches.fish_seller_id', '=', 'fish_sellers.id');
+        }
+
+        return $query->whereRaw(
+            "ST_Distance_Sphere(
+                POINT(COALESCE(fish_catches.longitude, fish_sellers.longitude), 
+                    COALESCE(fish_catches.latitude, fish_sellers.latitude)),
+                POINT(?, ?)
+            ) <= ?",
+            [$longitude, $latitude, $radiusKm * 1000]
+        );
+        // REMOVED: ->select('fish_catches.*')
     }
 
     /**
@@ -226,16 +229,40 @@ class FishCatch extends Model
      */
     public function scopeWithDistanceFrom(Builder $query, float $latitude, float $longitude): Builder
     {
+        // Only join if not already joined
+        if (!$this->hasJoin($query, 'fish_sellers')) {
+            $query->join('fish_sellers', 'fish_catches.fish_seller_id', '=', 'fish_sellers.id');
+        }
+
         return $query
-            ->join('fish_sellers', 'fish_catches.fish_seller_id', '=', 'fish_sellers.id')
             ->selectRaw(
                 "fish_catches.*, ST_Distance_Sphere(
                     POINT(COALESCE(fish_catches.longitude, fish_sellers.longitude), 
-                          COALESCE(fish_catches.latitude, fish_sellers.latitude)),
+                        COALESCE(fish_catches.latitude, fish_sellers.latitude)),
                     POINT(?, ?)
                 ) / 1000 as distance_km",
                 [$longitude, $latitude]
             );
+    }
+
+    /**
+     * Check if a table is already joined.
+     */
+    protected function hasJoin(Builder $query, string $table): bool
+    {
+        $joins = $query->getQuery()->joins;
+        
+        if ($joins === null) {
+            return false;
+        }
+
+        foreach ($joins as $join) {
+            if ($join->table === $table) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

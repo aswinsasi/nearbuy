@@ -209,8 +209,15 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        // Check for back to menu
-        if ($selectionId === 'back_to_menu') {
+        // Check for subscribe button - redirect to subscription flow
+        if ($selectionId === 'fish_subscribe') {
+            $this->sessionManager->setFlowStep($session, FlowType::FISH_SUBSCRIBE, 'start');
+            app(FishSubscriptionFlowHandler::class)->start($session);
+            return;
+        }
+
+        // Check for back to menu (handle both button IDs)
+        if ($selectionId === 'back_to_menu' || $selectionId === 'main_menu') {
             $this->goToMainMenu($session);
             return;
         }
@@ -398,8 +405,8 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
         $radiusKm = 10;
 
         $catches = $this->catchService->browseNearby(
-            $latitude,
-            $longitude,
+            (float) $latitude,
+            (float) $longitude,
             $radiusKm,
             $fishTypeId
         );
@@ -409,7 +416,8 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
             $this->catchService->recordView($catch);
         }
 
-        $response = FishMessages::browseResults($catches, 'your area');
+        $locationLabel = "within {$radiusKm} km";
+        $response = FishMessages::browseResults($catches, $locationLabel);
         $this->sendFishMessage($session->phone, $response);
     }
 
@@ -456,8 +464,8 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $latitude = $this->getTemp($session, 'latitude');
-        $longitude = $this->getTemp($session, 'longitude');
+        $latitude = (float) $this->getTemp($session, 'latitude');
+        $longitude = (float) $this->getTemp($session, 'longitude');
 
         $distance = null;
         if ($latitude && $longitude && $catch->catch_latitude && $catch->catch_longitude) {

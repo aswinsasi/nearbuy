@@ -708,10 +708,15 @@ class FishMessages
     {
         if ($catches->isEmpty()) {
             return [
-                'type' => 'text',
-                'text' => "🐟 *No Fresh Fish Nearby*\n\n" .
-                    "No active catches found in {$location}.\n\n" .
-                    "Subscribe to get alerts when fish arrives!",
+                'type' => 'buttons',
+                'header' => '🐟 No Fresh Fish Nearby',
+                'body' => "No active catches found in {$location}.\n\n" .
+                    "Subscribe to get alerts when fresh fish arrives!",
+                'buttons' => [
+                    ['id' => 'fish_subscribe', 'title' => '🔔 Subscribe'],
+                    ['id' => 'fish_refresh', 'title' => '🔄 Refresh'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ],
             ];
         }
 
