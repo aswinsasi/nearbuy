@@ -9,17 +9,20 @@ use App\Services\WhatsApp\Messages\MessageTemplates;
 /**
  * ENHANCED Template builder for main menu messages.
  *
- * Key improvements:
- * 1. Better organized menu sections
- * 2. Emoji-rich options
- * 3. Contextual descriptions
- * 4. Quick action buttons for common tasks
- * 5. Fish seller menu support
+ * CRITICAL: WhatsApp list messages have a hard limit of 10 items total across all sections.
+ *
+ * IMPORTANT: Fish seller options (Post Catch, Update Stock) should be shown to ANY user
+ * who has a fishSeller profile, not just users with type=FISH_SELLER.
+ * A SHOP or CUSTOMER user can also have a fishSeller profile.
+ *
+ * @srs-ref Section 6.2 - Unified Menu Structure
+ * @srs-ref Section 2.2 - Any user can become a fish seller
+ * @srs-ref PM-015 - Subscription modification
  */
 class MainMenuTemplate
 {
     /**
-     * Customer menu options - organized by frequency of use.
+     * Customer menu options - 8 items base.
      */
     public const CUSTOMER_MENU = [
         [
@@ -42,6 +45,7 @@ class MainMenuTemplate
             'title' => '📬 My Requests',
             'description' => 'Check responses from shops',
         ],
+        // Fish alerts - DYNAMIC: replaced with subscribe OR manage
         [
             'id' => 'fish_subscribe',
             'title' => '🔔 Fish Alerts',
@@ -58,11 +62,6 @@ class MainMenuTemplate
             'description' => 'View & manage agreements',
         ],
         [
-            'id' => 'pending_agreements',
-            'title' => '⏳ Pending Approvals',
-            'description' => 'Agreements awaiting confirmation',
-        ],
-        [
             'id' => 'settings',
             'title' => '⚙️ Settings',
             'description' => 'Update your profile',
@@ -70,7 +69,7 @@ class MainMenuTemplate
     ];
 
     /**
-     * Shop owner menu options - organized by priority.
+     * Shop owner menu options - 8 items base.
      */
     public const SHOP_MENU = [
         [
@@ -89,14 +88,15 @@ class MainMenuTemplate
             'description' => 'Manage your active offers',
         ],
         [
-            'id' => 'browse_offers',
-            'title' => '🛍️ Browse Offers',
-            'description' => 'See competitor offers',
-        ],
-        [
             'id' => 'fish_browse',
             'title' => '🐟 Fresh Fish',
             'description' => 'Browse nearby fresh fish',
+        ],
+        // Fish alerts - DYNAMIC: replaced with subscribe OR manage
+        [
+            'id' => 'fish_subscribe',
+            'title' => '🔔 Fish Alerts',
+            'description' => 'Get notified when fish arrives',
         ],
         [
             'id' => 'create_agreement',
@@ -109,24 +109,14 @@ class MainMenuTemplate
             'description' => 'View agreements',
         ],
         [
-            'id' => 'pending_agreements',
-            'title' => '⏳ Pending Approvals',
-            'description' => 'Confirm agreements',
-        ],
-        [
             'id' => 'shop_profile',
             'title' => '🏪 Shop Profile',
             'description' => 'Update shop details',
         ],
-        [
-            'id' => 'settings',
-            'title' => '⚙️ Settings',
-            'description' => 'Notification preferences',
-        ],
     ];
 
     /**
-     * Fish seller menu options.
+     * Fish seller menu options (for users with type=FISH_SELLER) - 8 items.
      */
     public const FISH_SELLER_MENU = [
         [
@@ -172,7 +162,7 @@ class MainMenuTemplate
     ];
 
     /**
-     * Unregistered user menu (limited options).
+     * Unregistered user menu - 4 items.
      */
     public const UNREGISTERED_MENU = [
         [
@@ -191,11 +181,6 @@ class MainMenuTemplate
             'description' => 'Browse nearby fresh fish',
         ],
         [
-            'id' => 'fish_seller_register',
-            'title' => '🎣 Become Fish Seller',
-            'description' => 'Register to sell fresh fish',
-        ],
-        [
             'id' => 'about',
             'title' => 'ℹ️ About NearBuy',
             'description' => 'Learn what we offer',
@@ -204,6 +189,13 @@ class MainMenuTemplate
 
     /**
      * Get menu options for a user.
+     *
+     * CRITICAL LOGIC:
+     * 1. If user has type=FISH_SELLER → show FISH_SELLER_MENU
+     * 2. If user has fishSeller profile (but type=SHOP or CUSTOMER) → show their menu WITH fish seller options
+     * 3. Otherwise → show normal menu based on type
+     *
+     * @srs-ref Section 2.2: Any user can become a fish seller
      */
     public static function getMenuForUser(?User $user): array
     {
@@ -211,15 +203,84 @@ class MainMenuTemplate
             return self::UNREGISTERED_MENU;
         }
 
+        // Users with PRIMARY type FISH_SELLER get dedicated fish seller menu
         if ($user->type === UserType::FISH_SELLER) {
             return self::FISH_SELLER_MENU;
         }
 
-        if ($user->type === UserType::SHOP) {
-            return self::SHOP_MENU;
+        // Check if user has fish seller profile (can sell fish)
+        $isFishSeller = $user->fishSeller !== null;
+        
+        // Check subscription status for alerts option
+        $hasSubscription = $user->activeFishSubscriptions()->exists();
+
+        // Get base menu based on user type
+        $baseMenu = $user->type === UserType::SHOP ? self::SHOP_MENU : self::CUSTOMER_MENU;
+
+        // Build adjusted menu
+        $adjustedMenu = [];
+        
+        // If user is a fish seller, add fish seller options at the top
+        if ($isFishSeller) {
+            $adjustedMenu[] = [
+                'id' => 'fish_post_catch',
+                'title' => '🎣 Post Catch',
+                'description' => 'Add fresh fish posting',
+            ];
+            $adjustedMenu[] = [
+                'id' => 'fish_update_stock',
+                'title' => '📦 Update Stock',
+                'description' => 'Change availability',
+            ];
+            $adjustedMenu[] = [
+                'id' => 'fish_my_catches',
+                'title' => '📋 My Catches',
+                'description' => 'View active fish postings',
+            ];
         }
 
-        return self::CUSTOMER_MENU;
+        // Add base menu items
+        foreach ($baseMenu as $item) {
+            // Skip fish_browse if user is fish seller (they have their own fish options)
+            if ($isFishSeller && $item['id'] === 'fish_browse') {
+                continue;
+            }
+
+            // Handle fish alerts option - show Subscribe or Manage based on status
+            if ($item['id'] === 'fish_subscribe') {
+                if ($hasSubscription) {
+                    $adjustedMenu[] = [
+                        'id' => 'fish_manage_alerts',
+                        'title' => '⚙️ Manage Alerts',
+                        'description' => 'Edit or pause fish alerts',
+                    ];
+                } else {
+                    $adjustedMenu[] = $item;
+                }
+                continue;
+            }
+
+            $adjustedMenu[] = $item;
+            
+            // Stop if we're at 9 items (leave room for 1 more if needed)
+            if (count($adjustedMenu) >= 9) {
+                break;
+            }
+        }
+
+        // Add "Sell Fish" option ONLY if user is NOT already a fish seller and we have room
+        if (!$isFishSeller && count($adjustedMenu) < 10) {
+            // Insert before last item (settings/shop_profile)
+            $lastIndex = count($adjustedMenu) - 1;
+            array_splice($adjustedMenu, $lastIndex, 0, [[
+                'id' => 'fish_seller_register',
+                'title' => '🎣 Sell Fish',
+                'description' => 'Register to sell fresh fish',
+            ]]);
+        }
+
+        // STRICT ENFORCEMENT: Never exceed 10 items
+        return array_slice($adjustedMenu, 0, 10);
     }
 
     /**
@@ -244,17 +305,28 @@ class MainMenuTemplate
             ['name' => $user->name ?? 'there']
         );
 
+        // Fish seller with type=FISH_SELLER
         if ($user->type === UserType::FISH_SELLER) {
             $businessName = $user->fishSeller?->business_name ?? 'Fish Seller';
             return $greeting . "\n\n🐟 *{$businessName}*\n\n" . self::getFishSellerMenuText();
         }
 
+        // Shop owner (may also be fish seller)
         if ($user->type === UserType::SHOP) {
             $shopName = $user->shop?->shop_name ?? 'Your Shop';
-            return $greeting . "\n\n🏪 *{$shopName}*\n\n" . MessageTemplates::MAIN_MENU_SHOP;
+            $extra = '';
+            if ($user->fishSeller) {
+                $extra = "\n🐟 Also selling as: *{$user->fishSeller->business_name}*";
+            }
+            return $greeting . "\n\n🏪 *{$shopName}*{$extra}\n\n" . MessageTemplates::MAIN_MENU_SHOP;
         }
 
-        return $greeting . "\n\n" . MessageTemplates::MAIN_MENU_CUSTOMER;
+        // Customer (may also be fish seller)
+        $extra = '';
+        if ($user->fishSeller) {
+            $extra = "\n\n🐟 Selling as: *{$user->fishSeller->business_name}*";
+        }
+        return $greeting . $extra . "\n\n" . MessageTemplates::MAIN_MENU_CUSTOMER;
     }
 
     /**
@@ -283,120 +355,42 @@ class MainMenuTemplate
 
     /**
      * Build list sections for WhatsApp list message.
-     * 
-     * ENHANCED: Better organized sections with fish support.
+     *
+     * CRITICAL: Total rows across all sections MUST NOT exceed 10.
      */
     public static function buildListSections(?User $user): array
     {
         $menu = self::getMenuForUser($user);
 
-        // For unregistered users, single section
-        if (!$user || !$user->registered_at) {
-            return [
-                [
-                    'title' => 'Get Started',
-                    'rows' => array_map(fn($item) => [
-                        'id' => $item['id'],
-                        'title' => self::truncate($item['title'], 24),
-                        'description' => self::truncate($item['description'] ?? '', 72),
-                    ], $menu),
-                ],
-            ];
+        // Determine section title
+        $sectionTitle = '📋 Menu';
+        
+        if ($user && $user->registered_at) {
+            if ($user->type === UserType::FISH_SELLER) {
+                $sectionTitle = '🐟 Fish Seller Menu';
+            } elseif ($user->type === UserType::SHOP) {
+                $sectionTitle = $user->fishSeller ? '🏪 Shop & Fish Menu' : '🏪 Shop Menu';
+            } else {
+                $sectionTitle = $user->fishSeller ? '🐟 Menu' : '📋 Menu';
+            }
+        } else {
+            $sectionTitle = '🚀 Get Started';
         }
 
-        // For fish sellers - organize into sections
-        if ($user->type === UserType::FISH_SELLER) {
-            return [
-                [
-                    'title' => '🐟 Fish Sales',
-                    'rows' => array_map(fn($item) => [
-                        'id' => $item['id'],
-                        'title' => self::truncate($item['title'], 24),
-                        'description' => self::truncate($item['description'] ?? '', 72),
-                    ], array_slice($menu, 0, 5)), // post, update, my catches, stats, browse
-                ],
-                [
-                    'title' => '📋 Agreements',
-                    'rows' => array_map(fn($item) => [
-                        'id' => $item['id'],
-                        'title' => self::truncate($item['title'], 24),
-                        'description' => self::truncate($item['description'] ?? '', 72),
-                    ], array_slice($menu, 5, 2)), // create, my agreements
-                ],
-                [
-                    'title' => '⚙️ Account',
-                    'rows' => array_map(fn($item) => [
-                        'id' => $item['id'],
-                        'title' => self::truncate($item['title'], 24),
-                        'description' => self::truncate($item['description'] ?? '', 72),
-                    ], array_slice($menu, 7)), // settings
-                ],
-            ];
-        }
-
-        // For customers - organize into sections
-        if ($user->type !== UserType::SHOP) {
-            return [
-                [
-                    'title' => '🛒 Shopping',
-                    'rows' => array_map(fn($item) => [
-                        'id' => $item['id'],
-                        'title' => self::truncate($item['title'], 24),
-                        'description' => self::truncate($item['description'] ?? '', 72),
-                    ], array_slice($menu, 0, 5)), // browse, fish, search, my requests, fish alerts
-                ],
-                [
-                    'title' => '📋 Agreements',
-                    'rows' => array_map(fn($item) => [
-                        'id' => $item['id'],
-                        'title' => self::truncate($item['title'], 24),
-                        'description' => self::truncate($item['description'] ?? '', 72),
-                    ], array_slice($menu, 5, 3)), // create, my, pending
-                ],
-                [
-                    'title' => '⚙️ Account',
-                    'rows' => array_map(fn($item) => [
-                        'id' => $item['id'],
-                        'title' => self::truncate($item['title'], 24),
-                        'description' => self::truncate($item['description'] ?? '', 72),
-                    ], array_slice($menu, 8)), // settings
-                ],
-            ];
-        }
-
-        // For shop owners - organize into sections
         return [
             [
-                'title' => '🏪 My Shop',
+                'title' => $sectionTitle,
                 'rows' => array_map(fn($item) => [
                     'id' => $item['id'],
                     'title' => self::truncate($item['title'], 24),
                     'description' => self::truncate($item['description'] ?? '', 72),
-                ], array_slice($menu, 0, 5)), // upload, requests, my offers, browse, fish
-            ],
-            [
-                'title' => '📋 Agreements',
-                'rows' => array_map(fn($item) => [
-                    'id' => $item['id'],
-                    'title' => self::truncate($item['title'], 24),
-                    'description' => self::truncate($item['description'] ?? '', 72),
-                ], array_slice($menu, 5, 3)), // create, my, pending
-            ],
-            [
-                'title' => '⚙️ Settings',
-                'rows' => array_map(fn($item) => [
-                    'id' => $item['id'],
-                    'title' => self::truncate($item['title'], 24),
-                    'description' => self::truncate($item['description'] ?? '', 72),
-                ], array_slice($menu, 8)), // shop profile, settings
+                ], $menu),
             ],
         ];
     }
 
     /**
      * Build quick action buttons (for simpler menu).
-     * 
-     * ENHANCED: Context-aware quick actions with fish support.
      */
     public static function buildQuickButtons(?User $user): array
     {
@@ -408,6 +402,7 @@ class MainMenuTemplate
             ];
         }
 
+        // Fish seller (by type)
         if ($user->type === UserType::FISH_SELLER) {
             return [
                 ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
@@ -416,6 +411,16 @@ class MainMenuTemplate
             ];
         }
 
+        // Shop owner who is also a fish seller
+        if ($user->type === UserType::SHOP && $user->fishSeller) {
+            return [
+                ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                ['id' => 'upload_offer', 'title' => '📤 Upload Offer'],
+                ['id' => 'more', 'title' => '📋 More Options'],
+            ];
+        }
+
+        // Regular shop owner
         if ($user->type === UserType::SHOP) {
             return [
                 ['id' => 'upload_offer', 'title' => '📤 Upload Offer'],
@@ -424,6 +429,16 @@ class MainMenuTemplate
             ];
         }
 
+        // Customer who is also a fish seller
+        if ($user->fishSeller) {
+            return [
+                ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                ['id' => 'browse_offers', 'title' => '🛍️ Browse'],
+                ['id' => 'more', 'title' => '📋 More Options'],
+            ];
+        }
+
+        // Regular customer
         return [
             ['id' => 'browse_offers', 'title' => '🛍️ Browse'],
             ['id' => 'fish_browse', 'title' => '🐟 Fresh Fish'],
@@ -463,10 +478,6 @@ class MainMenuTemplate
             "Tell us what you need, we'll find it locally\n\n" .
             "📝 *Digital Agreements*\n" .
             "Record loans, advances & deposits securely\n\n" .
-            "🏪 *For Shop Owners*\n" .
-            "Upload offers and reach nearby customers\n\n" .
-            "🎣 *For Fish Sellers*\n" .
-            "Post catches and notify subscribers instantly\n\n" .
             "_Free to use • No app download needed_";
     }
 
@@ -479,73 +490,12 @@ class MainMenuTemplate
             "*Navigation:*\n" .
             "• Type *menu* - Return to main menu\n" .
             "• Type *cancel* - Cancel current action\n" .
-            "• Type *back* - Go to previous step\n" .
             "• Type *help* - Show this message\n\n" .
             "*Quick Commands:*\n" .
             "• Type *browse* - Browse offers\n" .
             "• Type *fish* - Browse fresh fish\n" .
-            "• Type *search* - Search for products\n" .
-            "• Type *agree* - Create agreement\n\n" .
-            "_Need more help?_\n" .
-            "Contact: " . config('nearbuy.app.support_phone', '+91 XXXXX XXXXX');
-    }
-
-    /**
-     * Get statistics for shop dashboard (optional enhancement).
-     */
-    public static function getShopStats(User $user): ?string
-    {
-        if ($user->type !== UserType::SHOP || !$user->shop) {
-            return null;
-        }
-
-        $shop = $user->shop;
-
-        // Get stats (you'd need to implement these counts)
-        $activeOffers = $shop->offers()->where('expires_at', '>', now())->count();
-        $pendingRequests = 0; // Implement based on your logic
-        $totalViews = $shop->offers()->sum('views') ?? 0;
-
-        return "📊 *Shop Stats*\n\n" .
-            "🏷️ Active Offers: {$activeOffers}\n" .
-            "📬 Pending Requests: {$pendingRequests}\n" .
-            "👀 Total Views: {$totalViews}";
-    }
-
-    /**
-     * Get statistics for fish seller dashboard.
-     */
-    public static function getFishSellerStats(User $user): ?string
-    {
-        if ($user->type !== UserType::FISH_SELLER || !$user->fishSeller) {
-            return null;
-        }
-
-        $seller = $user->fishSeller;
-
-        $activeCatches = $seller->catches()->where('status', 'available')->count();
-        $todayViews = $seller->catches()->whereDate('created_at', today())->sum('views') ?? 0;
-
-        return "📊 *Today's Stats*\n\n" .
-            "🐟 Active Catches: {$activeCatches}\n" .
-            "👀 Views Today: {$todayViews}";
-    }
-
-    /**
-     * Build contextual greeting based on time of day.
-     */
-    public static function getTimeBasedGreeting(string $name): string
-    {
-        $hour = (int) now()->format('H');
-
-        $greeting = match (true) {
-            $hour >= 5 && $hour < 12 => '🌅 Good morning',
-            $hour >= 12 && $hour < 17 => '☀️ Good afternoon',
-            $hour >= 17 && $hour < 21 => '🌆 Good evening',
-            default => '🌙 Hello',
-        };
-
-        return "{$greeting}, *{$name}*!";
+            "• Type *search* - Search for products\n\n" .
+            "_Need help? Contact support_";
     }
 
     /**

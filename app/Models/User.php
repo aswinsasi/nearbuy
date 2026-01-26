@@ -10,6 +10,17 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Builder;
 
+/**
+ * User model.
+ *
+ * IMPORTANT: A user's "type" (CUSTOMER, SHOP, FISH_SELLER) is their PRIMARY role.
+ * However, any user can ALSO be a fish seller by having a fish_seller profile.
+ * 
+ * Example: A SHOP user can also sell fish by registering as a fish seller.
+ * They remain type=SHOP but also have a fishSeller relationship.
+ *
+ * @srs-ref Section 2.2: Fish sellers are separate registration from customers/shops
+ */
 class User extends Authenticatable
 {
     use HasFactory, Notifiable;
@@ -66,7 +77,11 @@ class User extends Authenticatable
     /**
      * Get the fish seller profile for this user.
      *
+     * NOTE: Any user type can have a fish seller profile!
+     * A CUSTOMER or SHOP user can also be a fish seller.
+     *
      * @srs-ref Pacha Meen Module
+     * @srs-ref Section 2.2: Fish sellers are separate from main user types
      */
     public function fishSeller(): HasOne
     {
@@ -85,6 +100,8 @@ class User extends Authenticatable
 
     /**
      * Get active fish subscriptions.
+     *
+     * @srs-ref PM-015: Used for manage alerts feature
      */
     public function activeFishSubscriptions(): HasMany
     {
@@ -175,11 +192,43 @@ class User extends Authenticatable
     }
 
     /**
-     * Scope to filter fish sellers only.
+     * Scope to filter users with type FISH_SELLER.
+     *
+     * NOTE: This only finds users whose PRIMARY type is FISH_SELLER.
+     * To find ALL users who can sell fish, use scopeWithFishSellerProfile().
      */
     public function scopeFishSellers(Builder $query): Builder
     {
         return $query->where('type', UserType::FISH_SELLER);
+    }
+
+    /**
+     * Scope to filter users who have a fish seller profile.
+     *
+     * This finds ANY user who can sell fish, regardless of their primary type.
+     * Use this instead of scopeFishSellers() when you need all fish sellers.
+     *
+     * @srs-ref Section 2.2: Any user can be a fish seller
+     */
+    public function scopeWithFishSellerProfile(Builder $query): Builder
+    {
+        return $query->whereHas('fishSeller');
+    }
+
+    /**
+     * Scope to filter users with active fish subscriptions.
+     *
+     * @srs-ref PM-015: For subscription management
+     */
+    public function scopeWithActiveFishSubscription(Builder $query): Builder
+    {
+        return $query->whereHas('fishSubscriptions', function ($q) {
+            $q->where('is_active', true)
+                ->where(function ($q2) {
+                    $q2->where('is_paused', false)
+                        ->orWhere('paused_until', '<', now());
+                });
+        });
     }
 
     /**
@@ -253,9 +302,28 @@ class User extends Authenticatable
     }
 
     /**
-     * Check if user is a fish seller.
+     * Check if user is a fish seller (has fish seller PROFILE).
+     *
+     * FIXED: This now checks for fish_seller PROFILE, not user type!
+     * Any user (CUSTOMER, SHOP) can also be a fish seller.
+     *
+     * @srs-ref Section 2.2: Fish sellers are separate from main user types
      */
     public function isFishSeller(): bool
+    {
+        // FIXED: Check for fish seller PROFILE, not user type
+        // OLD (WRONG): return $this->type === UserType::FISH_SELLER;
+        // NEW: Check if user has a fish seller profile
+        return $this->fishSeller !== null;
+    }
+
+    /**
+     * Check if user's PRIMARY type is FISH_SELLER.
+     *
+     * Use this only when you specifically need to check the user type,
+     * not whether they can sell fish. For most cases, use isFishSeller().
+     */
+    public function hasTypeFishSeller(): bool
     {
         return $this->type === UserType::FISH_SELLER;
     }
@@ -278,10 +346,25 @@ class User extends Authenticatable
 
     /**
      * Check if user can post fish catches.
+     *
+     * FIXED: Now uses the corrected isFishSeller() check.
      */
     public function canPostFishCatches(): bool
     {
-        return $this->isFishSeller() && $this->fishSeller !== null;
+        // User must have a fish seller profile to post catches
+        return $this->fishSeller !== null;
+    }
+
+    /**
+     * Check if user can register as a fish seller.
+     *
+     * Any registered user who doesn't already have a fish seller profile can register.
+     *
+     * @srs-ref Section 2.2: Any user can become a fish seller
+     */
+    public function canRegisterAsFishSeller(): bool
+    {
+        return $this->isRegistered() && $this->fishSeller === null;
     }
 
     /**
@@ -290,6 +373,18 @@ class User extends Authenticatable
     public function canSubscribeToFishAlerts(): bool
     {
         return $this->type->canSubscribeToFishAlerts();
+    }
+
+    /**
+     * Check if user has an active fish subscription.
+     *
+     * Used to determine whether to show "Subscribe" or "Manage Alerts" option.
+     *
+     * @srs-ref PM-015: Subscription modification
+     */
+    public function hasFishSubscription(): bool
+    {
+        return $this->activeFishSubscriptions()->exists();
     }
 
     /**

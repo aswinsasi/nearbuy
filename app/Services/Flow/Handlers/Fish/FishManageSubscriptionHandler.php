@@ -20,6 +20,8 @@ use Illuminate\Support\Facades\Log;
  * Handler for managing fish alert subscriptions.
  *
  * @srs-ref Pacha Meen Module - Subscription Management
+ * @srs-ref PM-015: Allow customers to modify or pause their subscriptions
+ * @srs-ref NFR-U-04: Main menu accessible from any flow state
  */
 class FishManageSubscriptionHandler extends AbstractFlowHandler
 {
@@ -58,13 +60,19 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
     public function start(ConversationSession $session): void
     {
         $user = $this->getUser($session);
-        $subscription = $user?->activeFishSubscription;
+        
+        // FIXED: Use activeFishSubscriptions() relationship (plural HasMany) and get first
+        // OLD: $subscription = $user?->activeFishSubscription;
+        $subscription = $user?->activeFishSubscriptions()->first();
 
         if (!$subscription) {
             $this->sendButtonsWithMenu(
                 $session->phone,
                 "🔔 *Fish Alerts*\n\nYou don't have an active subscription.\n\nSubscribe to get notified when fresh fish is available nearby!",
-                [['id' => 'menu_fish_subscribe', 'title' => '🔔 Subscribe Now']]
+                [
+                    ['id' => 'menu_fish_subscribe', 'title' => '🔔 Subscribe Now'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ]
             );
             return;
         }
@@ -104,6 +112,7 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             'change_frequency' => $this->startChangeFrequency($session),
             'toggle_pause' => $this->togglePause($session),
             'delete_subscription' => $this->startDelete($session),
+            'main_menu' => $this->goToMainMenu($session),
             default => $this->start($session),
         };
     }
@@ -125,9 +134,12 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             return;
         }
 
-        $this->requestLocation(
+        $this->sendButtons(
             $session->phone,
-            "📍 Share your new location for fish alerts.\n\nTap 📎 → *Location*"
+            "📍 Share your new location for fish alerts.\n\nTap 📎 → *Location*",
+            [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ]
         );
     }
 
@@ -175,6 +187,11 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             return;
         }
 
+        if ($selectionId === 'main_menu') {
+            $this->goToMainMenu($session);
+            return;
+        }
+
         if ($selectionId && str_starts_with($selectionId, 'fish_')) {
             $fishType = FishType::findByListId($selectionId);
             if ($fishType) {
@@ -192,6 +209,11 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
     protected function handleChangeFrequency(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
+
+        if ($selectionId === 'main_menu') {
+            $this->goToMainMenu($session);
+            return;
+        }
 
         $frequency = match ($selectionId) {
             'freq_instant' => 'instant',
@@ -222,20 +244,32 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             $this->subscriptionService->deleteSubscription($subscription);
 
             $this->clearTemp($session);
-            $this->sendTextWithMenu($session->phone, "✅ Subscription deleted. You will no longer receive fish alerts.");
-            $this->goToMainMenu($session);
+            
+            // @srs-ref NFR-U-04: Main menu accessible
+            $this->sendButtons(
+                $session->phone,
+                "✅ Subscription deleted. You will no longer receive fish alerts.\n\nYou can subscribe again anytime!",
+                [
+                    ['id' => 'menu_fish_subscribe', 'title' => '🔔 Subscribe Again'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ]
+            );
             return;
         }
 
+        // Cancelled - go back to subscription view
         $this->start($session);
     }
 
     protected function startChangeLocation(ConversationSession $session): void
     {
         $this->nextStep($session, self::STEP_CHANGE_LOCATION);
-        $this->requestLocation(
+        $this->sendButtons(
             $session->phone,
-            "📍 Share your new location for fish alerts.\n\nTap 📎 → *Location*"
+            "📍 Share your new location for fish alerts.\n\nTap 📎 → *Location*",
+            [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ]
         );
     }
 
@@ -304,13 +338,34 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
 
         $pauseLabel = $subscription->is_paused ? '▶️ Resume' : '⏸️ Pause';
 
-        $this->sendButtons(
+        // @srs-ref NFR-U-04: Main menu accessible from any flow state
+        $this->sendList(
             $session->phone,
             $text,
+            'Manage',
             [
-                ['id' => 'toggle_pause', 'title' => $pauseLabel],
-                ['id' => 'change_radius', 'title' => '📏 Change Radius'],
-                ['id' => 'delete_subscription', 'title' => '🗑️ Delete'],
+                [
+                    'title' => '⚙️ Settings',
+                    'rows' => [
+                        ['id' => 'toggle_pause', 'title' => $pauseLabel, 'description' => $subscription->is_paused ? 'Start receiving alerts' : 'Temporarily stop alerts'],
+                        ['id' => 'change_radius', 'title' => '📏 Change Radius', 'description' => "Current: {$subscription->radius_km} km"],
+                        ['id' => 'change_fish', 'title' => '🐟 Change Fish Types', 'description' => 'Select which fish to get alerts for'],
+                        ['id' => 'change_frequency', 'title' => '⏰ Change Frequency', 'description' => "Current: {$frequency}"],
+                        ['id' => 'change_location', 'title' => '📍 Change Location', 'description' => 'Update alert location'],
+                    ],
+                ],
+                [
+                    'title' => '🔴 Danger Zone',
+                    'rows' => [
+                        ['id' => 'delete_subscription', 'title' => '🗑️ Delete Subscription', 'description' => 'Stop all fish alerts'],
+                    ],
+                ],
+                [
+                    'title' => '📍 Navigation',
+                    'rows' => [
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
+                    ],
+                ],
             ],
             '🐟 Fish Alerts'
         );
@@ -320,13 +375,27 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
     {
         $subscription = $this->getSubscription($session);
 
-        $this->sendButtons(
+        $this->sendList(
             $session->phone,
             "📏 *Change Alert Radius*\n\nCurrent: {$subscription->radius_km} km\n\nSelect new radius:",
+            'Select Radius',
             [
-                ['id' => 'radius_3', 'title' => '3 km'],
-                ['id' => 'radius_5', 'title' => '5 km'],
-                ['id' => 'radius_10', 'title' => '10 km'],
+                [
+                    'title' => 'Distance Options',
+                    'rows' => [
+                        ['id' => 'radius_3', 'title' => '3 km', 'description' => 'Nearby only'],
+                        ['id' => 'radius_5', 'title' => '5 km', 'description' => 'Recommended'],
+                        ['id' => 'radius_10', 'title' => '10 km', 'description' => 'Wider area'],
+                        ['id' => 'radius_15', 'title' => '15 km', 'description' => 'Extended area'],
+                        ['id' => 'radius_20', 'title' => '20 km', 'description' => 'Maximum range'],
+                    ],
+                ],
+                [
+                    'title' => '📍 Navigation',
+                    'rows' => [
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
+                    ],
+                ],
             ]
         );
     }
@@ -361,6 +430,14 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             'description' => 'Save selection',
         ];
 
+        // Add main menu option
+        $sections[] = [
+            'title' => '📍 Navigation',
+            'rows' => [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
+            ],
+        ];
+
         $this->sendList(
             $session->phone,
             "🐟 *Select Fish Types*\n\nTap to toggle. Selected fish are marked with ✅",
@@ -373,13 +450,25 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
     {
         $subscription = $this->getSubscription($session);
 
-        $this->sendButtons(
+        $this->sendList(
             $session->phone,
             "⏰ *Change Alert Frequency*\n\nCurrent: " . ucfirst($subscription->frequency) . "\n\nSelect new frequency:",
+            'Select Frequency',
             [
-                ['id' => 'freq_instant', 'title' => '⚡ Instant'],
-                ['id' => 'freq_hourly', 'title' => '🕐 Hourly'],
-                ['id' => 'freq_daily', 'title' => '📅 Daily'],
+                [
+                    'title' => 'Frequency Options',
+                    'rows' => [
+                        ['id' => 'freq_instant', 'title' => '⚡ Instant', 'description' => 'Get alerts immediately'],
+                        ['id' => 'freq_hourly', 'title' => '🕐 Hourly', 'description' => 'Batched every hour'],
+                        ['id' => 'freq_daily', 'title' => '📅 Daily', 'description' => 'Daily digest'],
+                    ],
+                ],
+                [
+                    'title' => '📍 Navigation',
+                    'rows' => [
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
+                    ],
+                ],
             ]
         );
     }

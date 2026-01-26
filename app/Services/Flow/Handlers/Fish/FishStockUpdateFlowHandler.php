@@ -12,6 +12,7 @@ use App\Models\FishSeller;
 use App\Services\Fish\FishCatchService;
 use App\Services\Fish\FishAlertService;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
+use App\Services\Flow\FlowRouter;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\Messages\FishMessages;
@@ -32,7 +33,8 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
         protected FishCatchService $catchService,
-        protected FishAlertService $alertService
+        protected FishAlertService $alertService,
+        protected FlowRouter $flowRouter
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -76,6 +78,12 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
             return;
         }
 
+        // Handle cross-flow navigation buttons
+        $selectionId = $this->getSelectionId($message);
+        if ($this->handleCrossFlowNavigation($selectionId, $session)) {
+            return;
+        }
+
         $step = $session->current_step;
 
         match ($step) {
@@ -84,6 +92,42 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
             self::STEP_CONFIRM => $this->handleConfirm($message, $session),
             default => $this->start($session),
         };
+    }
+
+    /**
+     * Handle buttons that navigate to other flows.
+     *
+     * @param string|null $selectionId
+     * @param ConversationSession $session
+     * @return bool True if handled
+     */
+    protected function handleCrossFlowNavigation(?string $selectionId, ConversationSession $session): bool
+    {
+        if (!$selectionId) {
+            return false;
+        }
+
+        // Handle "Post Catch" button - redirect to post catch flow
+        if ($selectionId === 'fish_post_catch') {
+            $this->clearTemp($session);
+            $this->flowRouter->handleMenuSelection('fish_post_catch', $session);
+            return true;
+        }
+
+        // Handle "Update Another" button - restart this flow
+        if ($selectionId === 'update_another') {
+            $this->start($session);
+            return true;
+        }
+
+        // Handle main menu button
+        if ($selectionId === 'main_menu') {
+            $this->clearTemp($session);
+            $this->goToMainMenu($session);
+            return true;
+        }
+
+        return false;
     }
 
     protected function handleSelectCatch(IncomingMessage $message, ConversationSession $session, FishSeller $seller): void
@@ -154,6 +198,27 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
 
         try {
             $catch = $this->catchService->findById($catchId);
+            
+            // Check if status is already the same
+            if ($catch->status === $newStatus) {
+                // Status unchanged - show info message
+                $statusLabel = $newStatus->label();
+                $fishName = $this->getTemp($session, 'fish_name');
+                $this->clearTemp($session);
+
+                $this->sendButtons(
+                    $session->phone,
+                    "ℹ️ *Status Unchanged*\n\n{$fishName} is already marked as {$statusLabel}.",
+                    [
+                        ['id' => 'update_another', 'title' => '📦 Update Another'],
+                        ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                    ],
+                    '🐟 Stock Update'
+                );
+                return;
+            }
+
             $this->catchService->updateStatus($catch, $newStatus);
 
             // Send low stock alerts if applicable
@@ -165,15 +230,27 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
             $fishName = $this->getTemp($session, 'fish_name');
             $this->clearTemp($session);
 
-            $this->sendButtonsWithMenu(
+            $this->sendButtons(
                 $session->phone,
                 "✅ *Stock Updated*\n\n{$fishName}: {$statusLabel}",
-                [['id' => 'update_another', 'title' => '📦 Update Another']]
+                [
+                    ['id' => 'update_another', 'title' => '📦 Update Another'],
+                    ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ],
+                '🐟 Stock Update'
             );
 
         } catch (\Exception $e) {
             Log::error('Failed to update stock', ['error' => $e->getMessage()]);
-            $this->sendErrorWithOptions($session->phone, "❌ Failed to update stock.");
+            $this->sendButtons(
+                $session->phone,
+                "❌ Failed to update stock. Please try again.",
+                [
+                    ['id' => 'update_another', 'title' => '🔄 Try Again'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ]
+            );
         }
     }
 
@@ -182,10 +259,14 @@ class FishStockUpdateFlowHandler extends AbstractFlowHandler
         $catches = $this->catchService->getSellerActiveCatches($seller);
 
         if ($catches->isEmpty()) {
-            $this->sendButtonsWithMenu(
+            $this->sendButtons(
                 $session->phone,
-                "📦 *No Active Catches*\n\nYou don't have any active catches to update.",
-                [['id' => 'fish_post_catch', 'title' => '🎣 Post Catch']]
+                "📦 *No Active Catches*\n\nYou don't have any active catches to update.\n\nPost a new catch to start selling!",
+                [
+                    ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ],
+                '🐟 Stock Update'
             );
             return;
         }

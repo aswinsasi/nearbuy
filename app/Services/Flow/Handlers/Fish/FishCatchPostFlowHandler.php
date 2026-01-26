@@ -12,6 +12,7 @@ use App\Models\FishSeller;
 use App\Services\Fish\FishCatchService;
 use App\Services\Fish\FishAlertService;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
+use App\Services\Flow\FlowRouter;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\Messages\FishMessages;
@@ -21,17 +22,19 @@ use Illuminate\Support\Facades\Log;
  * Handler for the fish catch posting flow.
  *
  * Flow Steps:
- * 1. SELECT_FISH - Choose fish type
- * 2. ENTER_QUANTITY - Select quantity range
- * 3. ENTER_PRICE - Enter price per kg
- * 4. UPLOAD_PHOTO - Optional photo upload
- * 5. CONFIRM - Confirm and post
- * 6. ADD_ANOTHER - Ask to add more fish
+ * 1. SELECT_CATEGORY - Choose fish category (Sea Fish, Freshwater, etc.)
+ * 2. SELECT_FISH - Choose fish type from category (with pagination)
+ * 3. ENTER_QUANTITY - Select quantity range
+ * 4. ENTER_PRICE - Enter price per kg
+ * 5. UPLOAD_PHOTO - Optional photo upload
+ * 6. CONFIRM - Confirm and post
+ * 7. ADD_ANOTHER - Ask to add more fish
  *
  * @srs-ref Pacha Meen Module - Section 2.5.1 Seller Catch Posting Flow
  */
 class FishCatchPostFlowHandler extends AbstractFlowHandler
 {
+    protected const STEP_SELECT_CATEGORY = 'select_category';
     protected const STEP_SELECT_FISH = 'select_fish';
     protected const STEP_ENTER_QUANTITY = 'enter_quantity';
     protected const STEP_ENTER_PRICE = 'enter_price';
@@ -43,7 +46,8 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
         protected FishCatchService $catchService,
-        protected FishAlertService $alertService
+        protected FishAlertService $alertService,
+        protected FlowRouter $flowRouter
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -56,6 +60,7 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
     protected function getSteps(): array
     {
         return [
+            self::STEP_SELECT_CATEGORY,
             self::STEP_SELECT_FISH,
             self::STEP_ENTER_QUANTITY,
             self::STEP_ENTER_PRICE,
@@ -74,8 +79,8 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $this->nextStep($session, self::STEP_SELECT_FISH);
         $this->clearTemp($session);
+        $this->nextStep($session, self::STEP_SELECT_CATEGORY);
 
         $response = FishMessages::startCatchPosting();
         $this->sendFishMessage($session->phone, $response);
@@ -94,6 +99,12 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
             return;
         }
 
+        // Handle cross-flow navigation buttons
+        $selectionId = $this->getSelectionId($message);
+        if ($this->handleCrossFlowNavigation($selectionId, $session)) {
+            return;
+        }
+
         $step = $session->current_step;
 
         Log::debug('FishCatchPostFlowHandler', [
@@ -102,6 +113,7 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         ]);
 
         match ($step) {
+            self::STEP_SELECT_CATEGORY => $this->handleSelectCategory($message, $session),
             self::STEP_SELECT_FISH => $this->handleSelectFish($message, $session),
             self::STEP_ENTER_QUANTITY => $this->handleEnterQuantity($message, $session),
             self::STEP_ENTER_PRICE => $this->handleEnterPrice($message, $session),
@@ -112,41 +124,133 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         };
     }
 
+    /**
+     * Handle buttons that navigate to other flows or trigger actions.
+     */
+    protected function handleCrossFlowNavigation(?string $selectionId, ConversationSession $session): bool
+    {
+        if (!$selectionId) {
+            return false;
+        }
+
+        if ($selectionId === 'main_menu') {
+            $this->clearTemp($session);
+            $this->goToMainMenu($session);
+            return true;
+        }
+
+        if ($selectionId === 'fish_update_stock') {
+            $this->clearTemp($session);
+            $this->flowRouter->handleMenuSelection('fish_update_stock', $session);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Handle category selection (Step 1).
+     */
+    protected function handleSelectCategory(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selectionId = $this->getSelectionId($message);
+
+        // Handle "Select Fish" button from start message
+        if ($selectionId === 'select_fish') {
+            $response = FishMessages::selectFishCategory();
+            $this->sendFishMessage($session->phone, $response);
+            return;
+        }
+
+        // Handle category selection
+        $category = match ($selectionId) {
+            'cat_sea_fish' => FishType::CATEGORY_SEA_FISH,
+            'cat_freshwater' => FishType::CATEGORY_FRESHWATER,
+            'cat_shellfish' => FishType::CATEGORY_SHELLFISH,
+            'cat_crustacean' => FishType::CATEGORY_CRUSTACEAN,
+            default => null,
+        };
+
+        if ($category) {
+            $this->setTemp($session, 'selected_category', $category);
+            $this->setTemp($session, 'category_page', 0);
+            $this->nextStep($session, self::STEP_SELECT_FISH);
+
+            $response = FishMessages::selectFishFromCategory($category, 0);
+            $this->sendFishMessage($session->phone, $response);
+            return;
+        }
+
+        // Show category selection
+        $response = FishMessages::selectFishCategory();
+        $this->sendFishMessage($session->phone, $response);
+    }
+
+    /**
+     * Handle fish selection from category (Step 2).
+     */
     protected function handleSelectFish(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
 
-        // Check for fish type selection from list
+        // Handle back to categories
+        if ($selectionId === 'back_to_categories') {
+            $this->setTemp($session, 'selected_category', null);
+            $this->setTemp($session, 'category_page', 0);
+            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
+
+            $response = FishMessages::selectFishCategory();
+            $this->sendFishMessage($session->phone, $response);
+            return;
+        }
+
+        // Handle pagination within category
+        if ($selectionId && preg_match('/^cat_([a-z_]+)_page_(\d+)$/', $selectionId, $matches)) {
+            $category = $matches[1];
+            $page = (int) $matches[2];
+
+            $this->setTemp($session, 'selected_category', $category);
+            $this->setTemp($session, 'category_page', $page);
+
+            $response = FishMessages::selectFishFromCategory($category, $page);
+            $this->sendFishMessage($session->phone, $response);
+            return;
+        }
+
+        // Handle fish type selection from list (format: fish_1, fish_2, etc.)
         if ($selectionId && str_starts_with($selectionId, 'fish_')) {
             $fishType = FishType::findByListId($selectionId);
             if ($fishType) {
-                $this->setTemp($session, 'fish_type_id', $fishType->id);
-                $this->setTemp($session, 'fish_type_name', $fishType->display_name);
-                $this->nextStep($session, self::STEP_ENTER_QUANTITY);
-
-                $response = FishMessages::askQuantity($fishType);
-                $this->sendFishMessage($session->phone, $response);
+                $this->setFishTypeAndContinue($session, $fishType);
                 return;
             }
         }
 
-        // Check text input for fish name search
-        $text = $this->getTextContent($message);
-        if ($text) {
-            $fishType = $this->searchFishByName($text);
-            if ($fishType) {
-                $this->setTemp($session, 'fish_type_id', $fishType->id);
-                $this->setTemp($session, 'fish_type_name', $fishType->display_name);
-                $this->nextStep($session, self::STEP_ENTER_QUANTITY);
+        // Show fish from current category
+        $category = $this->getTemp($session, 'selected_category');
+        $page = (int) $this->getTemp($session, 'category_page', 0);
 
-                $response = FishMessages::askQuantity($fishType);
-                $this->sendFishMessage($session->phone, $response);
-                return;
-            }
+        if ($category) {
+            $response = FishMessages::selectFishFromCategory($category, $page);
+        } else {
+            // Fallback to category selection
+            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
+            $response = FishMessages::selectFishCategory();
         }
 
-        // Show fish selection again
-        $response = FishMessages::selectFishType();
+        $this->sendFishMessage($session->phone, $response);
+    }
+
+    /**
+     * Set selected fish type and move to quantity step.
+     */
+    protected function setFishTypeAndContinue(ConversationSession $session, FishType $fishType): void
+    {
+        $this->setTemp($session, 'fish_type_id', $fishType->id);
+        $this->setTemp($session, 'fish_type_name', $fishType->display_name);
+        $this->nextStep($session, self::STEP_ENTER_QUANTITY);
+
+        $response = FishMessages::askQuantity($fishType);
         $this->sendFishMessage($session->phone, $response);
     }
 
@@ -155,23 +259,24 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         $selectionId = $this->getSelectionId($message);
         $text = $this->getTextContent($message);
 
-        $quantity = null;
+        $quantityRange = null;
 
-        // Check for quantity range button selection
+        // Check for quantity range button selection (e.g., qty_small, qty_medium, qty_5_10)
         if ($selectionId && str_starts_with($selectionId, 'qty_')) {
-            $quantity = $this->extractQuantityFromButton($selectionId);
+            // Extract the range value (remove 'qty_' prefix)
+            $rangeValue = substr($selectionId, 4);
+            $quantityRange = $rangeValue;
         }
 
-        // Check for text input (e.g., "5", "10kg", "5-10")
-        if (!$quantity && $text) {
-            $quantity = $this->extractQuantityFromText($text);
+        // Check for text input - try to map to a range
+        if (!$quantityRange && $text) {
+            $quantityRange = $this->mapTextToQuantityRange($text);
         }
 
         $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
 
-        if ($quantity) {
-            $this->setTemp($session, 'quantity_min', $quantity['min']);
-            $this->setTemp($session, 'quantity_max', $quantity['max']);
+        if ($quantityRange) {
+            $this->setTemp($session, 'quantity_range', $quantityRange);
             $this->nextStep($session, self::STEP_ENTER_PRICE);
 
             $response = FishMessages::askPrice($fishType);
@@ -182,6 +287,37 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         // Re-prompt
         $response = FishMessages::askQuantity($fishType);
         $this->sendFishMessage($session->phone, $response);
+    }
+
+    /**
+     * Map text input to a quantity range value.
+     */
+    protected function mapTextToQuantityRange(string $text): ?string
+    {
+        // Clean input - extract number
+        $text = preg_replace('/[^\d]/', '', $text);
+        
+        if (!is_numeric($text)) {
+            return null;
+        }
+
+        $qty = (int) $text;
+
+        // Map to FishQuantityRange enum values
+        // These should match your FishQuantityRange enum
+        if ($qty <= 2) {
+            return 'under_2kg';
+        } elseif ($qty <= 5) {
+            return '2_5kg';
+        } elseif ($qty <= 10) {
+            return '5_10kg';
+        } elseif ($qty <= 20) {
+            return '10_20kg';
+        } elseif ($qty <= 50) {
+            return '20_50kg';
+        } else {
+            return 'above_50kg';
+        }
     }
 
     protected function handleEnterPrice(IncomingMessage $message, ConversationSession $session): void
@@ -236,14 +372,23 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         $this->nextStep($session, self::STEP_CONFIRM);
 
         $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
-        $quantityMin = $this->getTemp($session, 'quantity_min');
-        $quantityMax = $this->getTemp($session, 'quantity_max');
+        $quantityRange = $this->getTemp($session, 'quantity_range');
         $price = $this->getTemp($session, 'price_per_kg');
-        $hasPhoto = (bool) $this->getTemp($session, 'photo_media_id');
+        $photoMediaId = $this->getTemp($session, 'photo_media_id');
+        $hasPhoto = (bool) $photoMediaId;
+
+        // If there's a photo, send it first using media ID
+        if ($hasPhoto && $photoMediaId) {
+            $this->whatsApp->sendImage(
+                $session->phone,
+                $photoMediaId,
+                "📸 Your fish photo",
+                true // isMediaId = true
+            );
+        }
 
         $catchData = [
-            'quantity_min' => $quantityMin,
-            'quantity_max' => $quantityMax,
+            'quantity_range' => $quantityRange,
             'price_per_kg' => $price,
             'has_photo' => $hasPhoto,
         ];
@@ -255,6 +400,22 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
     protected function handleConfirm(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
+
+        // Handle "Try Again" / back to categories
+        if ($selectionId === 'back_to_categories') {
+            $this->clearTemp($session);
+            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
+            $response = FishMessages::selectFishCategory();
+            $this->sendFishMessage($session->phone, $response);
+            return;
+        }
+
+        // Handle main menu
+        if ($selectionId === 'main_menu') {
+            $this->clearTemp($session);
+            $this->goToMainMenu($session);
+            return;
+        }
 
         if ($selectionId === 'confirm_post' || $selectionId === 'yes') {
             $this->createCatch($session);
@@ -268,14 +429,37 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        if ($selectionId === 'edit_details') {
-            $this->nextStep($session, self::STEP_SELECT_FISH);
-            $this->start($session);
+        // Handle edit photo - go back to photo upload step
+        if ($selectionId === 'edit_photo') {
+            $this->setTemp($session, 'photo_media_id', null); // Clear existing photo
+            $this->nextStep($session, self::STEP_UPLOAD_PHOTO);
+            $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
+            $response = FishMessages::askPhoto($fishType);
+            $this->sendFishMessage($session->phone, $response);
             return;
         }
 
-        // Re-show confirmation
-        $this->proceedToConfirm($session);
+        if ($selectionId === 'edit_details') {
+            $this->clearTemp($session);
+            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
+            $response = FishMessages::selectFishCategory();
+            $this->sendFishMessage($session->phone, $response);
+            return;
+        }
+
+        // Re-show confirmation only if we have required data
+        $fishTypeId = $this->getTemp($session, 'fish_type_id');
+        $quantityRange = $this->getTemp($session, 'quantity_range');
+        
+        if ($fishTypeId && $quantityRange) {
+            $this->proceedToConfirm($session);
+        } else {
+            // Data missing - restart flow
+            $this->clearTemp($session);
+            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
+            $response = FishMessages::selectFishCategory();
+            $this->sendFishMessage($session->phone, $response);
+        }
     }
 
     protected function createCatch(ConversationSession $session): void
@@ -285,12 +469,11 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
         try {
             $catch = $this->catchService->createCatch($seller, [
                 'fish_type_id' => $this->getTemp($session, 'fish_type_id'),
-                'quantity_kg_min' => $this->getTemp($session, 'quantity_min'),
-                'quantity_kg_max' => $this->getTemp($session, 'quantity_max'),
+                'quantity_range' => $this->getTemp($session, 'quantity_range'),
                 'price_per_kg' => $this->getTemp($session, 'price_per_kg'),
                 'photo_media_id' => $this->getTemp($session, 'photo_media_id'),
-                'catch_latitude' => $seller->latitude ?? $seller->user->latitude,
-                'catch_longitude' => $seller->longitude ?? $seller->user->longitude,
+                'latitude' => $seller->latitude ?? $seller->user->latitude,
+                'longitude' => $seller->longitude ?? $seller->user->longitude,
             ]);
 
             // Process alerts - returns array with counts
@@ -307,9 +490,13 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
                 'error' => $e->getMessage(),
                 'seller_id' => $seller->id,
             ]);
-            $this->sendErrorWithOptions(
+            $this->sendButtons(
                 $session->phone,
-                "❌ Failed to post catch. Please try again."
+                "❌ Failed to post catch. Please try again.",
+                [
+                    ['id' => 'back_to_categories', 'title' => '🔄 Try Again'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ]
             );
         }
     }
@@ -320,7 +507,9 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
 
         if ($selectionId === 'add_another' || $selectionId === 'yes') {
             $this->clearTemp($session);
-            $this->start($session);
+            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
+            $response = FishMessages::selectFishCategory();
+            $this->sendFishMessage($session->phone, $response);
             return;
         }
 
@@ -338,44 +527,6 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
     {
         $user = $this->getUser($session);
         return $user?->fishSeller;
-    }
-
-    protected function searchFishByName(string $name): ?FishType
-    {
-        return FishType::where('name_en', 'LIKE', "%{$name}%")
-            ->orWhere('name_ml', 'LIKE', "%{$name}%")
-            ->orWhere('local_names', 'LIKE', "%{$name}%")
-            ->first();
-    }
-
-    protected function extractQuantityFromButton(string $buttonId): ?array
-    {
-        // Format: qty_5_10 or qty_5
-        if (preg_match('/^qty_(\d+)(?:_(\d+))?$/', $buttonId, $matches)) {
-            $min = (int) $matches[1];
-            $max = isset($matches[2]) ? (int) $matches[2] : $min;
-            return ['min' => $min, 'max' => $max];
-        }
-        return null;
-    }
-
-    protected function extractQuantityFromText(string $text): ?array
-    {
-        // Clean input
-        $text = preg_replace('/[^\d\-\.]/', '', $text);
-
-        // Range: 5-10
-        if (preg_match('/^(\d+)-(\d+)$/', $text, $matches)) {
-            return ['min' => (int) $matches[1], 'max' => (int) $matches[2]];
-        }
-
-        // Single number
-        if (preg_match('/^(\d+)$/', $text, $matches)) {
-            $qty = (int) $matches[1];
-            return ['min' => $qty, 'max' => $qty];
-        }
-
-        return null;
     }
 
     protected function extractPrice(string $text): ?float

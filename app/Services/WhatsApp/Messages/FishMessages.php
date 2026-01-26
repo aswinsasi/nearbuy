@@ -24,6 +24,8 @@ use Illuminate\Support\Collection;
  * - Alert messages
  * - Browse/search results
  *
+ * ENHANCED: All response messages now include main menu button
+ * @srs-ref NFR-U-04: Main menu shall be accessible from any flow state
  * @srs-ref Pacha Meen Module - Section 2.5 Message Formats
  */
 class FishMessages
@@ -40,13 +42,18 @@ class FishMessages
     public static function sellerRegistrationWelcome(): array
     {
         return [
-            'type' => 'text',
-            'text' => "🐟 *Welcome to Pacha Meen!*\n\n" .
+            'type' => 'buttons',
+            'header' => '🐟 Pacha Meen',
+            'body' => "🐟 *Welcome to Pacha Meen!*\n\n" .
                 "Register as a fish seller to:\n" .
                 "• Post your fresh catch\n" .
                 "• Reach customers instantly\n" .
                 "• Manage your sales\n\n" .
                 "Let's get you started! 🎣",
+            'buttons' => [
+                ['id' => 'continue_registration', 'title' => '✅ Continue'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -63,7 +70,10 @@ class FishMessages
             'sections' => [
                 [
                     'title' => 'Seller Types',
-                    'rows' => FishSellerType::toListItems(),
+                    'rows' => array_merge(
+                        FishSellerType::toListItems(),
+                        [['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu']]
+                    ),
                 ],
             ],
         ];
@@ -82,11 +92,15 @@ class FishMessages
         };
 
         return [
-            'type' => 'text',
-            'text' => "📝 *Business Name*\n\n" .
+            'type' => 'buttons',
+            'header' => '📝 Business Name',
+            'body' => "📝 *Business Name*\n\n" .
                 "What's your business/stall name?\n\n" .
                 "{$example}\n\n" .
                 "_Type your business name:_",
+            'buttons' => [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -96,10 +110,14 @@ class FishMessages
     public static function askSellerLocation(): array
     {
         return [
-            'type' => 'text',
-            'text' => "📍 *Your Location*\n\n" .
+            'type' => 'buttons',
+            'header' => '📍 Your Location',
+            'body' => "📍 *Your Location*\n\n" .
                 "Share your selling location so customers can find you.\n\n" .
                 "Tap the 📎 attachment button and select *Location* to share.",
+            'buttons' => [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -109,27 +127,38 @@ class FishMessages
     public static function askMarketName(): array
     {
         return [
-            'type' => 'text',
-            'text' => "🏪 *Market/Harbour Name*\n\n" .
+            'type' => 'buttons',
+            'header' => '🏪 Market/Harbour',
+            'body' => "🏪 *Market/Harbour Name*\n\n" .
                 "Which market or harbour do you sell at?\n\n" .
                 "_e.g., Fort Kochi Harbour, Vypeen Fish Market_\n\n" .
-                "Type the name or send 'skip' to continue:",
+                "Type the name or tap 'Skip':",
+            'buttons' => [
+                ['id' => 'skip_market', 'title' => '⏭️ Skip'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
     /**
      * Seller registration complete.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function sellerRegistrationComplete(FishSeller $seller): array
     {
         return [
-            'type' => 'text',
-            'text' => "✅ *Registration Complete!*\n\n" .
+            'type' => 'buttons',
+            'header' => '✅ Registration Complete',
+            'body' => "✅ *Registration Complete!*\n\n" .
                 "Welcome to Pacha Meen, *{$seller->business_name}*! 🎉\n\n" .
                 "📍 Location: {$seller->location_display}\n" .
                 "🏷️ Type: {$seller->seller_type->label()}\n\n" .
-                "You can now post your fresh catches and reach customers nearby!\n\n" .
-                "Type *menu* to see your options.",
+                "You can now post your fresh catches and reach customers nearby!",
+            'buttons' => [
+                ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -145,37 +174,192 @@ class FishMessages
     public static function startCatchPosting(): array
     {
         return [
-            'type' => 'text',
-            'text' => "🐟 *Post Fresh Catch*\n\n" .
+            'type' => 'buttons',
+            'header' => '🐟 Post Fresh Catch',
+            'body' => "🐟 *Post Fresh Catch*\n\n" .
                 "Let's add your fresh fish to notify nearby customers!\n\n" .
                 "First, select the type of fish you have:",
+            'buttons' => [
+                ['id' => 'select_fish', 'title' => '🐟 Select Fish'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
     /**
-     * Fish type selection list.
+     * Fish category selection.
+     *
+     * Step 1: User selects a category (shows categories with fish count)
+     * Only shows categories that have active fish types.
      */
-    public static function selectFishType(array $sections = null): array
+    public static function selectFishCategory(): array
     {
-        if (!$sections) {
-            $sections = FishType::getListSections();
+        // Get counts for each category
+        $categories = [
+            FishType::CATEGORY_SEA_FISH => [
+                'icon' => '🌊',
+                'title' => 'Sea Fish',
+                'examples' => 'Sardine, Mackerel, Tuna',
+            ],
+            FishType::CATEGORY_FRESHWATER => [
+                'icon' => '🏞️',
+                'title' => 'Freshwater',
+                'examples' => 'Tilapia, Rohu, Catfish',
+            ],
+            FishType::CATEGORY_SHELLFISH => [
+                'icon' => '🐚',
+                'title' => 'Shellfish',
+                'examples' => 'Mussels, Clams, Oysters',
+            ],
+            FishType::CATEGORY_CRUSTACEAN => [
+                'icon' => '🦐',
+                'title' => 'Crustacean',
+                'examples' => 'Prawns, Crabs, Lobster',
+            ],
+        ];
+
+        $rows = [];
+        $totalFish = 0;
+
+        foreach ($categories as $categoryKey => $categoryInfo) {
+            $count = FishType::active()->where('category', $categoryKey)->count();
+            if ($count > 0) {
+                $totalFish += $count;
+                $rows[] = [
+                    'id' => 'cat_' . $categoryKey,
+                    'title' => "{$categoryInfo['icon']} {$categoryInfo['title']}",
+                    'description' => "{$count} types - {$categoryInfo['examples']}",
+                ];
+            }
         }
+
+        // Add main menu
+        $rows[] = [
+            'id' => 'main_menu',
+            'title' => '🏠 Main Menu',
+            'description' => 'Return to main menu',
+        ];
 
         return [
             'type' => 'list',
-            'header' => '🐟 Select Fish',
-            'body' => "What fish do you have today?\n\nSelect from the list below:",
-            'button' => 'Choose Fish',
-            'sections' => $sections,
+            'header' => '🐟 Select Category',
+            'body' => "What fish do you have today?\n\nSelect a category to browse fish types.\n\n📊 Total: {$totalFish} fish types available",
+            'button' => 'Choose Category',
+            'sections' => [
+                [
+                    'title' => '📂 Fish Categories',
+                    'rows' => $rows,
+                ],
+            ],
         ];
+    }
+
+    /**
+     * Fish selection from category with pagination.
+     *
+     * Step 2: Shows fish from selected category (max 8 fish + navigation)
+     *
+     * @param string $category Category constant (sea_fish, freshwater, etc.)
+     * @param int $page Page number (0-based)
+     */
+    public static function selectFishFromCategory(string $category, int $page = 0): array
+    {
+        $perPage = 8; // 8 fish + navigation options = max 10 items
+        $offset = $page * $perPage;
+
+        // Get fish from this category
+        $query = FishType::active()
+            ->where('category', $category)
+            ->orderByDesc('is_popular')
+            ->orderBy('sort_order')
+            ->orderBy('name_en');
+
+        $totalInCategory = $query->count();
+        $fishTypes = (clone $query)->skip($offset)->take($perPage)->get();
+
+        $hasMore = ($offset + $perPage) < $totalInCategory;
+        $hasPrevious = $page > 0;
+
+        // Build rows with fish items
+        $rows = $fishTypes->map(fn($fish) => $fish->toListItem())->toArray();
+
+        // Add navigation options
+        if ($hasMore) {
+            $remaining = $totalInCategory - $offset - $perPage;
+            $rows[] = [
+                'id' => "cat_{$category}_page_" . ($page + 1),
+                'title' => '➡️ More Fish',
+                'description' => "Show next " . min($perPage, $remaining) . " fish",
+            ];
+        }
+
+        if ($hasPrevious) {
+            $rows[] = [
+                'id' => "cat_{$category}_page_" . ($page - 1),
+                'title' => '⬅️ Previous',
+                'description' => 'Show previous fish',
+            ];
+        }
+
+        // Always add back to categories
+        $rows[] = [
+            'id' => 'back_to_categories',
+            'title' => '🔙 Back to Categories',
+            'description' => 'Choose different category',
+        ];
+
+        // Ensure we don't exceed 10 items
+        $rows = array_slice($rows, 0, 10);
+
+        $categoryLabels = [
+            'sea_fish' => '🌊 Sea Fish',
+            'freshwater' => '🏞️ Freshwater',
+            'shellfish' => '🐚 Shellfish',
+            'crustacean' => '🦐 Crustacean',
+        ];
+
+        $categoryLabel = $categoryLabels[$category] ?? '🐟 Fish';
+        $showingStart = $offset + 1;
+        $showingEnd = min($offset + $perPage, $totalInCategory);
+        $pageInfo = $totalInCategory > $perPage 
+            ? "\n\n📄 Showing {$showingStart}-{$showingEnd} of {$totalInCategory}" 
+            : "\n\n📄 {$totalInCategory} fish types";
+
+        return [
+            'type' => 'list',
+            'header' => $categoryLabel,
+            'body' => "Select your fish:{$pageInfo}",
+            'button' => 'Choose Fish',
+            'sections' => [
+                [
+                    'title' => $categoryLabel,
+                    'rows' => $rows,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Fish type selection list (legacy - for backward compatibility).
+     *
+     * CRITICAL: WhatsApp limits lists to 10 items total across all sections.
+     */
+    public static function selectFishType(array $sections = null): array
+    {
+        // Default to category selection for better UX
+        return self::selectFishCategory();
     }
 
     /**
      * Popular fish quick selection.
+     *
+     * CRITICAL: WhatsApp limits lists to 10 items total.
      */
     public static function selectPopularFish(): array
     {
-        $popular = FishType::getPopularListItems(10);
+        // Use model's method - 9 fish + 1 main menu = 10
+        $popular = FishType::getPopularListItems(9);
+        $popular[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
 
         return [
             'type' => 'list',
@@ -209,6 +393,14 @@ class FishMessages
      */
     public static function askQuantityList(FishType $fishType): array
     {
+        $rows = array_map(fn($range) => [
+            'id' => 'qty_' . $range->value,
+            'title' => $range->label(),
+            'description' => $range->approximateDisplay(),
+        ], FishQuantityRange::cases());
+
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+
         return [
             'type' => 'list',
             'header' => '📦 Quantity',
@@ -217,11 +409,7 @@ class FishMessages
             'sections' => [
                 [
                     'title' => 'Quantity Range',
-                    'rows' => array_map(fn($range) => [
-                        'id' => 'qty_' . $range->value,
-                        'title' => $range->label(),
-                        'description' => $range->approximateDisplay(),
-                    ], FishQuantityRange::cases()),
+                    'rows' => $rows,
                 ],
             ],
         ];
@@ -237,12 +425,16 @@ class FishMessages
             : "Enter your price per kg";
 
         return [
-            'type' => 'text',
-            'text' => "💰 *Price per kg*\n\n" .
+            'type' => 'buttons',
+            'header' => '💰 Price',
+            'body' => "💰 *Price per kg*\n\n" .
                 "{$fishType->emoji} {$fishType->name_en}\n\n" .
                 "{$priceHint}\n\n" .
                 "_Type the price (just the number):_\n" .
                 "e.g., 180",
+            'buttons' => [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -259,6 +451,7 @@ class FishMessages
                 "Or skip if you don't have a photo ready.",
             'buttons' => [
                 ['id' => 'skip_photo', 'title' => '⏭️ Skip Photo'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
             ],
         ];
     }
@@ -268,12 +461,27 @@ class FishMessages
      */
     public static function confirmCatchPosting(array $catchData, FishType $fishType): array
     {
-        $qty = $catchData['quantity_range'] instanceof FishQuantityRange
-            ? $catchData['quantity_range']->label()
-            : FishQuantityRange::from($catchData['quantity_range'])->label();
+        // Format quantity range for display
+        $qtyRange = $catchData['quantity_range'] ?? 'unknown';
+        $qty = self::formatQuantityRange($qtyRange);
 
-        $price = number_format($catchData['price_per_kg']);
-        $hasPhoto = !empty($catchData['photo_url']) ? '✅ Photo added' : '📷 No photo';
+        $price = number_format($catchData['price_per_kg'] ?? 0);
+        $hasPhoto = !empty($catchData['has_photo']);
+        $photoStatus = $hasPhoto ? '✅ Photo added' : '📷 No photo';
+
+        // Build buttons - WhatsApp max 3 buttons
+        $buttons = [
+            ['id' => 'confirm_post', 'title' => '✅ Post Now'],
+        ];
+
+        // Add photo edit option
+        if ($hasPhoto) {
+            $buttons[] = ['id' => 'edit_photo', 'title' => '📷 Change Photo'];
+        } else {
+            $buttons[] = ['id' => 'edit_photo', 'title' => '📷 Add Photo'];
+        }
+
+        $buttons[] = ['id' => 'edit_details', 'title' => '✏️ Edit All'];
 
         return [
             'type' => 'buttons',
@@ -283,18 +491,33 @@ class FishMessages
                 "({$fishType->name_ml})\n\n" .
                 "📦 Quantity: {$qty}\n" .
                 "💰 Price: ₹{$price}/kg\n" .
-                "{$hasPhoto}\n\n" .
+                "{$photoStatus}\n\n" .
                 "Post this catch?",
-            'buttons' => [
-                ['id' => 'confirm_catch', 'title' => '✅ Post Now'],
-                ['id' => 'edit_catch', 'title' => '✏️ Edit'],
-                ['id' => 'cancel_catch', 'title' => '❌ Cancel'],
-            ],
+            'buttons' => $buttons,
         ];
     }
 
     /**
+     * Format quantity range for display.
+     */
+    protected static function formatQuantityRange(string $range): string
+    {
+        // Handle common FishQuantityRange enum formats
+        return match ($range) {
+            'under_2kg', 'small' => 'Under 2 kg',
+            '2_5kg', '2_5' => '2-5 kg',
+            '5_10kg', '5_10' => '5-10 kg',
+            '10_20kg', '10_20' => '10-20 kg',
+            '20_50kg', '20_50' => '20-50 kg',
+            'above_50kg', 'large' => 'Above 50 kg',
+            default => str_replace('_', '-', $range) . ' kg',
+        };
+    }
+
+    /**
      * Catch posted successfully.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function catchPostedSuccess(FishCatch $catch, int $subscriberCount): array
     {
@@ -312,9 +535,9 @@ class FishMessages
                 "⏰ Expires: {$catch->time_remaining}\n\n" .
                 "{$alertMsg}",
             'buttons' => [
-                ['id' => 'add_another_fish', 'title' => '➕ Add Another'],
+                ['id' => 'add_another', 'title' => '➕ Add Another'],
                 ['id' => 'view_my_catches', 'title' => '📋 My Catches'],
-                ['id' => 'back_to_menu', 'title' => '🏠 Menu'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
             ],
         ];
     }
@@ -330,6 +553,7 @@ class FishMessages
             'buttons' => [
                 ['id' => 'add_another_yes', 'title' => '➕ Yes, Add More'],
                 ['id' => 'add_another_no', 'title' => '✅ Done'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
             ],
         ];
     }
@@ -347,14 +571,20 @@ class FishMessages
     {
         if ($catches->isEmpty()) {
             return [
-                'type' => 'text',
-                'text' => "📋 *No Active Catches*\n\n" .
+                'type' => 'buttons',
+                'header' => '📋 No Active Catches',
+                'body' => "📋 *No Active Catches*\n\n" .
                     "You don't have any active catches to update.\n\n" .
                     "Post a new catch to get started!",
+                'buttons' => [
+                    ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ],
             ];
         }
 
         $rows = $catches->map(fn($catch) => $catch->toListItem())->toArray();
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
 
         return [
             'type' => 'list',
@@ -382,24 +612,31 @@ class FishMessages
                 "Current: {$catch->status->display()}\n\n" .
                 "Select new status:",
             'buttons' => [
-                ['id' => 'stock_low', 'title' => '⚠️ Low Stock'],
-                ['id' => 'stock_soldout', 'title' => '❌ Sold Out'],
-                ['id' => 'stock_available', 'title' => '✅ Available'],
+                ['id' => 'status_available', 'title' => '✅ Available'],
+                ['id' => 'status_low_stock', 'title' => '⚠️ Low Stock'],
+                ['id' => 'status_sold_out', 'title' => '❌ Sold Out'],
             ],
         ];
     }
 
     /**
      * Stock updated confirmation.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function stockUpdated(FishCatch $catch): array
     {
         return [
-            'type' => 'text',
-            'text' => "✅ *Stock Updated*\n\n" .
+            'type' => 'buttons',
+            'header' => '✅ Stock Updated',
+            'body' => "✅ *Stock Updated*\n\n" .
                 "{$catch->fishType->emoji} {$catch->fishType->name_en}\n" .
                 "Status: {$catch->status->display()}\n\n" .
                 "Customers have been notified.",
+            'buttons' => [
+                ['id' => 'fish_update_stock', 'title' => '📦 Update Another'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -415,13 +652,18 @@ class FishMessages
     public static function subscriptionWelcome(): array
     {
         return [
-            'type' => 'text',
-            'text' => "🐟 *Fresh Fish Alerts*\n\n" .
+            'type' => 'buttons',
+            'header' => '🐟 Fish Alerts',
+            'body' => "🐟 *Fresh Fish Alerts*\n\n" .
                 "Get notified when fresh fish arrives near you!\n\n" .
                 "• Choose your preferred fish types\n" .
                 "• Set your location & radius\n" .
                 "• Receive instant alerts\n\n" .
                 "Let's set up your subscription! 📍",
+            'buttons' => [
+                ['id' => 'continue_subscribe', 'title' => '✅ Continue'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -431,10 +673,14 @@ class FishMessages
     public static function askSubscriptionLocation(): array
     {
         return [
-            'type' => 'text',
-            'text' => "📍 *Your Location*\n\n" .
+            'type' => 'buttons',
+            'header' => '📍 Your Location',
+            'body' => "📍 *Your Location*\n\n" .
                 "Share your location to receive alerts for fresh fish nearby.\n\n" .
                 "Tap 📎 → *Location* to share where you want alerts.",
+            'buttons' => [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -456,6 +702,7 @@ class FishMessages
                         ['id' => 'radius_5', 'title' => '5 km', 'description' => 'Recommended'],
                         ['id' => 'radius_10', 'title' => '10 km', 'description' => 'Wider area'],
                         ['id' => 'radius_15', 'title' => '15 km', 'description' => 'Extended area'],
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
                     ],
                 ],
             ],
@@ -475,23 +722,152 @@ class FishMessages
             'buttons' => [
                 ['id' => 'fish_pref_all', 'title' => '🐟 All Fish Types'],
                 ['id' => 'fish_pref_select', 'title' => '✅ Select Types'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
 
     /**
-     * Select specific fish types.
+     * Select specific fish types for alerts.
+     *
+     * Uses category selection for better UX.
      */
     public static function selectFishPreferences(): array
     {
-        $sections = FishType::getListSections();
+        return self::selectFishPreferencesCategory();
+    }
+
+    /**
+     * Fish category selection for alert preferences.
+     */
+    public static function selectFishPreferencesCategory(): array
+    {
+        $categories = [
+            FishType::CATEGORY_SEA_FISH => ['icon' => '🌊', 'title' => 'Sea Fish'],
+            FishType::CATEGORY_FRESHWATER => ['icon' => '🏞️', 'title' => 'Freshwater'],
+            FishType::CATEGORY_SHELLFISH => ['icon' => '🐚', 'title' => 'Shellfish'],
+            FishType::CATEGORY_CRUSTACEAN => ['icon' => '🦐', 'title' => 'Crustacean'],
+        ];
+
+        $rows = [];
+
+        foreach ($categories as $categoryKey => $categoryInfo) {
+            $count = FishType::active()->where('category', $categoryKey)->count();
+            if ($count > 0) {
+                $rows[] = [
+                    'id' => 'pref_cat_' . $categoryKey,
+                    'title' => "{$categoryInfo['icon']} {$categoryInfo['title']}",
+                    'description' => "{$count} types available",
+                ];
+            }
+        }
+
+        $rows[] = [
+            'id' => 'pref_done',
+            'title' => '✅ Done',
+            'description' => 'Finish selection',
+        ];
+
+        $rows[] = [
+            'id' => 'main_menu',
+            'title' => '🏠 Main Menu',
+            'description' => 'Return to main menu',
+        ];
 
         return [
             'type' => 'list',
-            'header' => '🐟 Select Fish Types',
-            'body' => "Choose the fish you want alerts for:\n\n_You can select multiple. Send 'done' when finished._",
-            'button' => 'Select Fish',
-            'sections' => $sections,
+            'header' => '🐟 Fish Preferences',
+            'body' => "Select fish categories you want alerts for:\n\n_Select categories, then tap 'Done' when finished._",
+            'button' => 'Select Category',
+            'sections' => [
+                [
+                    'title' => '📂 Categories',
+                    'rows' => $rows,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Fish selection from category for preferences.
+     *
+     * @param string $category
+     * @param int $page
+     * @param array $selectedIds Already selected fish IDs
+     */
+    public static function selectFishPreferencesFromCategory(string $category, int $page = 0, array $selectedIds = []): array
+    {
+        $perPage = 7; // 7 fish + navigation options
+        $offset = $page * $perPage;
+
+        $query = FishType::active()
+            ->where('category', $category)
+            ->orderByDesc('is_popular')
+            ->orderBy('name_en');
+
+        $totalInCategory = $query->count();
+        $fishTypes = (clone $query)->skip($offset)->take($perPage)->get();
+
+        $hasMore = ($offset + $perPage) < $totalInCategory;
+        $hasPrevious = $page > 0;
+
+        // Build rows with selection indicator
+        $rows = $fishTypes->map(function ($fish) use ($selectedIds) {
+            $isSelected = in_array($fish->id, $selectedIds);
+            return [
+                'id' => 'pref_fish_' . $fish->id,
+                'title' => ($isSelected ? '✅ ' : '') . substr($fish->display_name, 0, 22),
+                'description' => $fish->name_ml,
+            ];
+        })->toArray();
+
+        // Navigation
+        if ($hasMore) {
+            $rows[] = [
+                'id' => "pref_cat_{$category}_page_" . ($page + 1),
+                'title' => '➡️ More Fish',
+                'description' => 'Show more fish',
+            ];
+        }
+
+        if ($hasPrevious) {
+            $rows[] = [
+                'id' => "pref_cat_{$category}_page_" . ($page - 1),
+                'title' => '⬅️ Previous',
+                'description' => 'Show previous fish',
+            ];
+        }
+
+        $rows[] = [
+            'id' => 'pref_back_categories',
+            'title' => '🔙 Back to Categories',
+            'description' => 'Select from other categories',
+        ];
+
+        $rows = array_slice($rows, 0, 10);
+
+        $categoryLabels = [
+            'sea_fish' => '🌊 Sea Fish',
+            'freshwater' => '🏞️ Freshwater',
+            'shellfish' => '🐚 Shellfish',
+            'crustacean' => '🦐 Crustacean',
+        ];
+
+        $categoryLabel = $categoryLabels[$category] ?? '🐟 Fish';
+        $selectedCount = count($selectedIds);
+        $selectedInfo = $selectedCount > 0 ? "\n\n✅ {$selectedCount} fish selected" : "";
+
+        return [
+            'type' => 'list',
+            'header' => $categoryLabel,
+            'body' => "Select fish for alerts:{$selectedInfo}",
+            'button' => 'Choose Fish',
+            'sections' => [
+                [
+                    'title' => $categoryLabel,
+                    'rows' => $rows,
+                ],
+            ],
         ];
     }
 
@@ -500,6 +876,9 @@ class FishMessages
      */
     public static function askAlertFrequency(): array
     {
+        $rows = FishAlertFrequency::toListItems();
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
+
         return [
             'type' => 'list',
             'header' => '🔔 Alert Frequency',
@@ -508,7 +887,7 @@ class FishMessages
             'sections' => [
                 [
                     'title' => 'Frequency Options',
-                    'rows' => FishAlertFrequency::toListItems(),
+                    'rows' => $rows,
                 ],
             ],
         ];
@@ -540,24 +919,33 @@ class FishMessages
             'buttons' => [
                 ['id' => 'confirm_subscription', 'title' => '✅ Subscribe'],
                 ['id' => 'edit_subscription', 'title' => '✏️ Edit'],
-                ['id' => 'cancel_subscription', 'title' => '❌ Cancel'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
 
     /**
      * Subscription created successfully.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible from any flow state
+     * @srs-ref PM-015: Modify subscriptions (manage alerts option)
      */
     public static function subscriptionCreated(FishSubscription $subscription): array
     {
         return [
-            'type' => 'text',
-            'text' => "🎉 *Subscribed!*\n\n" .
+            'type' => 'buttons',
+            'header' => '🎉 Subscribed!',
+            'body' => "🎉 *Subscribed!*\n\n" .
                 "You'll receive fresh fish alerts:\n\n" .
                 "📍 Within {$subscription->radius_km} km\n" .
                 "🐟 {$subscription->fish_types_display}\n" .
                 "🔔 {$subscription->frequency_display}\n\n" .
                 "We'll notify you when fresh fish arrives nearby! 🐟",
+            'buttons' => [
+                ['id' => 'fish_browse', 'title' => '🔍 Browse Fish'],
+                ['id' => 'fish_manage_alerts', 'title' => '⚙️ Manage Alerts'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -571,6 +959,7 @@ class FishMessages
      * New catch alert message.
      *
      * @srs-ref Section 2.5.2 - Customer Alert Message Format
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function newCatchAlert(FishCatch $catch, FishAlert $alert): array
     {
@@ -601,6 +990,7 @@ class FishMessages
         $buttons = [
             ['id' => "fish_coming_{$catch->id}_{$alert->id}", 'title' => "🏃 I'm Coming!"],
             ['id' => "fish_location_{$catch->id}_{$alert->id}", 'title' => '📍 Get Location'],
+            ['id' => 'main_menu', 'title' => '🏠 Menu'],
         ];
 
         $message = [
@@ -620,6 +1010,8 @@ class FishMessages
 
     /**
      * Low stock alert message.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function lowStockAlert(FishCatch $catch, FishAlert $alert): array
     {
@@ -633,12 +1025,15 @@ class FishMessages
             'buttons' => [
                 ['id' => "fish_coming_{$catch->id}_{$alert->id}", 'title' => "🏃 On My Way!"],
                 ['id' => "fish_location_{$catch->id}_{$alert->id}", 'title' => '📍 Location'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
 
     /**
      * Batch digest message.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function batchDigest(Collection $catches, FishSubscription $subscription): array
     {
@@ -661,23 +1056,32 @@ class FishMessages
             'buttons' => [
                 ['id' => 'fish_browse_all', 'title' => '🔍 View All'],
                 ['id' => 'fish_manage_alerts', 'title' => '⚙️ Settings'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
 
     /**
      * Coming confirmation to customer.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function comingConfirmation(FishCatch $catch): array
     {
         return [
-            'type' => 'text',
-            'text' => "🏃 *You're on your way!*\n\n" .
+            'type' => 'buttons',
+            'header' => "🏃 You're on your way!",
+            'body' => "🏃 *You're on your way!*\n\n" .
                 "The seller has been notified.\n\n" .
                 "{$catch->fishType->emoji} {$catch->fishType->name_en}\n" .
                 "📍 {$catch->seller->business_name}\n" .
                 "📞 {$catch->seller->user->formatted_phone}\n\n" .
                 "Safe travels! 🚗",
+            'buttons' => [
+                ['id' => "fish_location_{$catch->id}_0", 'title' => '📍 Get Directions'],
+                ['id' => 'fish_browse', 'title' => '🔍 Browse More'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
@@ -703,6 +1107,8 @@ class FishMessages
 
     /**
      * Browse results.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function browseResults(Collection $catches, string $location = 'your area'): array
     {
@@ -720,11 +1126,14 @@ class FishMessages
             ];
         }
 
-        $rows = $catches->take(10)->map(fn($catch) => [
+        $rows = $catches->take(9)->map(fn($catch) => [
             'id' => 'catch_' . $catch->id,
             'title' => substr($catch->fishType->display_name, 0, 24),
             'description' => substr("{$catch->price_display} • {$catch->freshness_display}", 0, 72),
         ])->toArray();
+
+        // Add main menu option
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
 
         return [
             'type' => 'list',
@@ -742,6 +1151,8 @@ class FishMessages
 
     /**
      * Catch detail view.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible from any flow state
      */
     public static function catchDetail(FishCatch $catch, ?float $distanceKm = null): array
     {
@@ -770,7 +1181,7 @@ class FishMessages
             'buttons' => [
                 ['id' => "fish_coming_{$catch->id}_0", 'title' => "🏃 I'm Coming!"],
                 ['id' => "fish_location_{$catch->id}_0", 'title' => '📍 Get Location'],
-                ['id' => "fish_call_{$catch->id}", 'title' => '📞 Call Seller'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
 
@@ -789,6 +1200,8 @@ class FishMessages
 
     /**
      * Fish seller menu.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function fishSellerMenu(FishSeller $seller): array
     {
@@ -810,6 +1223,7 @@ class FishMessages
                         ['id' => 'fish_my_catches', 'title' => '📋 My Catches', 'description' => 'View active posts'],
                         ['id' => 'fish_my_stats', 'title' => '📊 My Stats', 'description' => 'Sales & ratings'],
                         ['id' => 'fish_settings', 'title' => '⚙️ Settings', 'description' => 'Profile & alerts'],
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
                     ],
                 ],
             ],
@@ -818,6 +1232,9 @@ class FishMessages
 
     /**
      * Customer fish menu.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
+     * @srs-ref PM-015: Manage subscription option
      */
     public static function customerFishMenu(bool $hasSubscription = false): array
     {
@@ -826,11 +1243,16 @@ class FishMessages
         ];
 
         if ($hasSubscription) {
-            $rows[] = ['id' => 'fish_manage_alerts', 'title' => '⚙️ Manage Alerts', 'description' => 'Edit preferences'];
+            // User has subscription - show manage option (unsubscribe, edit, etc.)
+            // @srs-ref PM-015: Allow subscription modification
+            $rows[] = ['id' => 'fish_manage_alerts', 'title' => '⚙️ Manage Alerts', 'description' => 'Edit or unsubscribe'];
             $rows[] = ['id' => 'fish_pause_alerts', 'title' => '⏸️ Pause Alerts', 'description' => 'Temporarily stop'];
         } else {
             $rows[] = ['id' => 'fish_subscribe', 'title' => '🔔 Get Fish Alerts', 'description' => 'Subscribe to notifications'];
         }
+
+        // Always add main menu option
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'];
 
         return [
             'type' => 'list',
@@ -854,39 +1276,58 @@ class FishMessages
 
     /**
      * Invalid fish type error.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorInvalidFishType(): array
     {
         return [
-            'type' => 'text',
-            'text' => "❌ Invalid fish type selected.\n\nPlease choose from the list or type a valid fish name.",
+            'type' => 'buttons',
+            'body' => "❌ Invalid fish type selected.\n\nPlease choose from the list or type a valid fish name.",
+            'buttons' => [
+                ['id' => 'retry', 'title' => '🔄 Try Again'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
     /**
      * Invalid price error.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorInvalidPrice(): array
     {
         return [
-            'type' => 'text',
-            'text' => "❌ Invalid price.\n\nPlease enter a valid price in rupees.\n_e.g., 180_",
+            'type' => 'buttons',
+            'body' => "❌ Invalid price.\n\nPlease enter a valid price in rupees.\n_e.g., 180_",
+            'buttons' => [
+                ['id' => 'retry', 'title' => '🔄 Try Again'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
     /**
      * Location required error.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorLocationRequired(): array
     {
         return [
-            'type' => 'text',
-            'text' => "📍 Please share your location.\n\nTap 📎 → *Location* to share.",
+            'type' => 'buttons',
+            'body' => "📍 Please share your location.\n\nTap 📎 → *Location* to share.",
+            'buttons' => [
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 
     /**
      * Not a fish seller error.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorNotFishSeller(): array
     {
@@ -894,22 +1335,29 @@ class FishMessages
             'type' => 'buttons',
             'body' => "🐟 This feature is for registered fish sellers.\n\nWould you like to register as a fish seller?",
             'buttons' => [
-                ['id' => 'fish_register_seller', 'title' => '✅ Register Now'],
-                ['id' => 'back_to_menu', 'title' => '🏠 Back to Menu'],
+                ['id' => 'fish_seller_register', 'title' => '✅ Register Now'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
             ],
         ];
     }
 
     /**
      * Daily limit reached error.
+     *
+     * @srs-ref NFR-U-04: Main menu accessible
      */
     public static function errorDailyLimitReached(): array
     {
         return [
-            'type' => 'text',
-            'text' => "⚠️ *Daily Limit Reached*\n\n" .
+            'type' => 'buttons',
+            'header' => '⚠️ Daily Limit',
+            'body' => "⚠️ *Daily Limit Reached*\n\n" .
                 "You've reached the maximum number of catch postings for today.\n\n" .
                 "Try again tomorrow!",
+            'buttons' => [
+                ['id' => 'fish_my_catches', 'title' => '📋 My Catches'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
         ];
     }
 }

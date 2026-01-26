@@ -24,6 +24,10 @@ use Illuminate\Support\Facades\Log;
  * 4. Better session recovery
  * 5. Global interception of product request response buttons
  * 6. Fish (Pacha Meen) flow support
+ * 7. FIXED: isFishSeller() now checks for fish_seller PROFILE, not user type
+ * 8. FIXED: main_menu handled in handleMenuSelection()
+ *
+ * @srs-ref Section 2.2: Fish sellers are separate registration from customers/shops
  */
 class FlowRouter
 {
@@ -60,6 +64,10 @@ class FlowRouter
         'pachameen' => 'fish_menu',
         'fresh fish' => 'fish_browse',
         'catch' => 'fish_post_catch',
+        // Quick actions for fish alerts
+        'alerts' => 'fish_manage_alerts',
+        'unsubscribe' => 'fish_manage_alerts',
+        'sell fish' => 'fish_seller_register',
     ];
 
     public function __construct(
@@ -89,7 +97,7 @@ class FlowRouter
             }
 
             // =====================================================
-            // NEW: Check for product request response buttons
+            // Check for product request response buttons
             // This intercepts yes/no buttons from notifications
             // regardless of what flow the user is currently in
             // =====================================================
@@ -163,14 +171,6 @@ class FlowRouter
 
     /**
      * Handle fish alert response buttons from notifications.
-     * 
-     * This intercepts buttons like:
-     * - "fish_coming_123_456" (I'm Coming button with catch_id and alert_id)
-     * - "fish_location_123_456" (Get Location button)
-     *
-     * @param IncomingMessage $message
-     * @param ConversationSession $session
-     * @return bool True if handled, false otherwise
      */
     protected function handleFishAlertResponse(IncomingMessage $message, ConversationSession $session): bool
     {
@@ -219,12 +219,6 @@ class FlowRouter
 
     /**
      * Route to FishBrowseFlowHandler for alert responses.
-     *
-     * @param ConversationSession $session
-     * @param int $catchId
-     * @param string $action 'coming' or 'location'
-     * @param int $alertId
-     * @return bool
      */
     protected function routeToFishBrowseHandler(ConversationSession $session, int $catchId, string $action, int $alertId): bool
     {
@@ -245,17 +239,6 @@ class FlowRouter
 
     /**
      * Handle product request response buttons from notifications.
-     * 
-     * This intercepts buttons like:
-     * - "respond_yes_17" or "respond_no_17" (new format with request ID)
-     * - "yes" or "no" (legacy format - uses temp data for request ID)
-     * 
-     * This allows shops to respond to product requests from ANY flow,
-     * not just when they're in the ProductRespond flow.
-     *
-     * @param IncomingMessage $message
-     * @param ConversationSession $session
-     * @return bool True if handled, false otherwise
      */
     protected function handleProductRequestResponse(IncomingMessage $message, ConversationSession $session): bool
     {
@@ -263,7 +246,6 @@ class FlowRouter
             return false;
         }
 
-        // Extract the button/list selection ID
         $buttonId = $this->extractSelectionId($message);
 
         if (!$buttonId) {
@@ -272,7 +254,7 @@ class FlowRouter
 
         // Pattern 1: New format with request ID - "respond_yes_17" or "respond_no_17"
         if (preg_match('/^respond_(yes|no)_(\d+)$/', $buttonId, $matches)) {
-            $action = $matches[1]; // 'yes' or 'no'
+            $action = $matches[1];
             $requestId = (int) $matches[2];
 
             Log::info('Product request response button intercepted (new format)', [
@@ -287,15 +269,11 @@ class FlowRouter
         }
 
         // Pattern 2: Legacy format - plain "yes" or "no" button
-        // Only intercept if user is NOT already in the product_respond flow
-        // (to avoid double-handling when they're already in the correct flow)
         if (in_array($buttonId, ['yes', 'no']) && $session->current_flow !== 'product_respond') {
-            
-            // Check if there's a pending request ID in temp data
             $requestId = $this->sessionManager->getTempData($session, 'respond_request_id');
             
             if ($requestId) {
-                $action = $buttonId; // 'yes' or 'no'
+                $action = $buttonId;
 
                 Log::info('Product request response button intercepted (legacy format)', [
                     'button_id' => $buttonId,
@@ -308,10 +286,7 @@ class FlowRouter
                 return $this->routeToProductResponseHandler($session, (int) $requestId, $action);
             }
             
-            // No request ID in temp data - this might be a yes/no from another context
-            // Check if the user is a shop owner and there are pending requests
             if ($this->isShopOwner($session)) {
-                // Try to get the most recent notification request for this shop
                 $requestId = $this->getRecentNotificationRequestId($session);
                 
                 if ($requestId) {
@@ -335,11 +310,6 @@ class FlowRouter
 
     /**
      * Route to ProductResponseFlowHandler.
-     *
-     * @param ConversationSession $session
-     * @param int $requestId
-     * @param string $action 'yes' or 'no'
-     * @return bool
      */
     protected function routeToProductResponseHandler(ConversationSession $session, int $requestId, string $action): bool
     {
@@ -360,31 +330,23 @@ class FlowRouter
 
     /**
      * Extract selection ID from interactive message (button or list reply).
-     *
-     * @param IncomingMessage $message
-     * @return string|null
      */
     protected function extractSelectionId(IncomingMessage $message): ?string
     {
-        // Try button reply first
         if ($message->isButtonReply()) {
             return $message->buttonReplyId ?? null;
         }
 
-        // Try list reply
         if ($message->isListReply()) {
             return $message->listReplyId ?? null;
         }
 
-        // Fallback: check interactive data directly
         $interactive = $message->interactive ?? [];
         
-        // Button reply format
         if (isset($interactive['button_reply']['id'])) {
             return $interactive['button_reply']['id'];
         }
         
-        // List reply format
         if (isset($interactive['list_reply']['id'])) {
             return $interactive['list_reply']['id'];
         }
@@ -394,10 +356,6 @@ class FlowRouter
 
     /**
      * Get the most recent notification request ID for a shop.
-     * This is used as a fallback when legacy 'yes'/'no' buttons are clicked.
-     *
-     * @param ConversationSession $session
-     * @return int|null
      */
     protected function getRecentNotificationRequestId(ConversationSession $session): ?int
     {
@@ -407,8 +365,6 @@ class FlowRouter
             return null;
         }
 
-        // Get the most recent pending product request for this shop
-        // that was notified within the last hour
         $recentRequest = \App\Models\ProductRequest::query()
             ->where('status', 'open')
             ->where('expires_at', '>', now())
@@ -433,19 +389,16 @@ class FlowRouter
 
         $text = strtolower(trim($message->text ?? ''));
 
-        // Menu keywords
         if (in_array($text, self::MENU_KEYWORDS)) {
             $this->goToMainMenu($session);
             return true;
         }
 
-        // Help keywords
         if (in_array($text, self::HELP_KEYWORDS)) {
             $this->showHelp($message->from, $session);
             return true;
         }
 
-        // Cancel keywords (only if in a flow)
         if (in_array($text, self::CANCEL_KEYWORDS) && !$this->sessionManager->isIdle($session)) {
             $this->handleCancel($session);
             return true;
@@ -477,7 +430,7 @@ class FlowRouter
     /**
      * Go to main menu.
      */
-    protected function goToMainMenu(ConversationSession $session): void
+    public function goToMainMenu(ConversationSession $session): void
     {
         $this->sessionManager->resetToMainMenu($session);
 
@@ -487,8 +440,6 @@ class FlowRouter
 
     /**
      * Show help message with buttons.
-     * 
-     * ENHANCED: Now uses buttons instead of plain text.
      */
     protected function showHelp(string $phone, ConversationSession $session): void
     {
@@ -508,12 +459,9 @@ class FlowRouter
 
     /**
      * Handle cancel action.
-     * 
-     * ENHANCED: Now uses buttons and clears temp data.
      */
     protected function handleCancel(ConversationSession $session): void
     {
-        // Clear any temp data
         $this->sessionManager->clearTempData($session);
 
         $this->whatsApp->sendButtons(
@@ -532,8 +480,6 @@ class FlowRouter
 
     /**
      * Handle user not registered.
-     * 
-     * ENHANCED: Better messaging with clear CTA.
      */
     protected function handleNotRegistered(IncomingMessage $message, ConversationSession $session): void
     {
@@ -566,16 +512,14 @@ class FlowRouter
 
     /**
      * Handle fish-seller-only feature access by non-fish-seller user.
-     *
-     * @srs-ref Pacha Meen Module
      */
     protected function handleFishSellerOnly(IncomingMessage $message, ConversationSession $session): void
     {
         $this->whatsApp->sendButtons(
             $message->from,
-            "🐟 *Fish Seller Feature*\n\nThis feature is only available for registered fish sellers.\n\nWould you like to register as a fish seller?",
+            "🐟 *Fish Seller Feature*\n\nThis feature is only available for registered fish sellers.\n\nWould you like to register as a fish seller? You can sell fish while keeping your current account.",
             [
-                ['id' => 'menu_fish_seller_register', 'title' => '🐟 Register as Seller'],
+                ['id' => 'fish_seller_register', 'title' => '🐟 Register as Seller'],
                 ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
             ],
             '🐟 Fish Seller Required',
@@ -593,26 +537,47 @@ class FlowRouter
     }
 
     /**
-     * Check if user is a fish seller.
+     * Check if user is a fish seller (has fish seller PROFILE).
      *
-     * @srs-ref Pacha Meen Module
+     * FIXED: Checks for profile, not user type.
      */
     protected function isFishSeller(ConversationSession $session): bool
     {
         $user = $this->sessionManager->getUser($session);
-        return $user?->type === UserType::FISH_SELLER;
+        
+        if (!$user) {
+            return false;
+        }
+
+        return $user->fishSeller !== null;
     }
 
     /**
-     * Route to appropriate fish menu based on user type.
-     *
-     * @srs-ref Pacha Meen Module
+     * Check if user has an active fish subscription.
+     */
+    protected function hasFishSubscription(ConversationSession $session): bool
+    {
+        $user = $this->sessionManager->getUser($session);
+        
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'activeFishSubscriptions')) {
+            return $user->activeFishSubscriptions()->exists();
+        }
+
+        return false;
+    }
+
+    /**
+     * Route to appropriate fish menu based on user's fish seller profile.
      */
     protected function routeToFishMenu(ConversationSession $session): FlowType
     {
         $user = $this->sessionManager->getUser($session);
         
-        if ($user?->type === UserType::FISH_SELLER) {
+        if ($user?->fishSeller !== null) {
             return FlowType::FISH_SELLER_MENU;
         }
         
@@ -639,7 +604,6 @@ class FlowRouter
      */
     public function startFlow(ConversationSession $session, FlowType $flowType): void
     {
-        // Check access first
         if ($flowType->requiresAuth() && !$this->sessionManager->isRegistered($session)) {
             $this->handleNotRegistered(
                 new IncomingMessage(
@@ -679,39 +643,41 @@ class FlowRouter
             return;
         }
 
-        // Clear any previous temp data before starting new flow
         $this->sessionManager->clearTempData($session);
 
-        // Update session
         $this->sessionManager->setFlowStep(
             $session,
             $flowType,
             $flowType->initialStep()
         );
 
-        // Start the flow
         $handler = $this->resolveHandler($flowType);
         $handler?->start($session);
     }
 
     /**
      * Handle menu selection and route to appropriate flow.
+     *
+     * FIXED: Added 'main_menu' case to prevent "Unknown menu selection" warning.
      */
     public function handleMenuSelection(string $selectionId, ConversationSession $session): void
     {
-        // Special handling for my_requests and view_responses - show existing requests, not start new search
+        // FIXED: Handle main_menu selection explicitly
+        if ($selectionId === 'main_menu') {
+            $this->goToMainMenu($session);
+            return;
+        }
+
         if (in_array($selectionId, ['my_requests', 'view_responses'])) {
             $this->startMyRequestsFlow($session);
             return;
         }
 
-        // Special handling for shop_profile - go directly to shop profile in settings
         if ($selectionId === 'shop_profile') {
             $this->startShopProfileFlow($session);
             return;
         }
 
-        // Special handling for fish_menu - route based on user type
         if (in_array($selectionId, ['fish_menu', 'menu_fish_dashboard'])) {
             $flowType = $this->routeToFishMenu($session);
             $this->startFlow($session, $flowType);
@@ -735,7 +701,7 @@ class FlowRouter
             'fish_manage_alerts', 'menu_fish_manage' => FlowType::FISH_MANAGE_SUBSCRIPTION,
             'fish_seller_register', 'menu_fish_seller_register' => FlowType::FISH_SELLER_REGISTER,
             'fish_post_catch', 'menu_fish_post' => FlowType::FISH_POST_CATCH,
-            'fish_update_stock', 'menu_fish_stock' => FlowType::FISH_STOCK_UPDATE,
+            'fish_update_stock', 'menu_fish_stock', 'fish_my_catches', 'view_my_catches' => FlowType::FISH_STOCK_UPDATE,
             'fish_seller_menu' => FlowType::FISH_SELLER_MENU,
             default => null,
         };
@@ -749,13 +715,12 @@ class FlowRouter
     }
 
     /**
-     * Start the Shop Profile flow (go directly to shop profile settings).
+     * Start the Shop Profile flow.
      */
     protected function startShopProfileFlow(ConversationSession $session): void
     {
         $flowType = FlowType::SETTINGS;
 
-        // Check access
         if ($flowType->requiresAuth() && !$this->sessionManager->isRegistered($session)) {
             $this->handleNotRegistered(
                 new IncomingMessage(
@@ -769,7 +734,6 @@ class FlowRouter
             return;
         }
 
-        // Check if shop owner
         if (!$this->isShopOwner($session)) {
             $this->handleShopOnly(
                 new IncomingMessage(
@@ -783,28 +747,24 @@ class FlowRouter
             return;
         }
 
-        // Clear any previous temp data
         $this->sessionManager->clearTempData($session);
 
-        // Get the handler and call startShopProfile instead of start
         $handler = $this->resolveHandler($flowType);
         
         if ($handler instanceof \App\Services\Flow\Handlers\SettingsFlowHandler) {
             $handler->startShopProfile($session);
         } else {
-            // Fallback to regular start
             $this->startFlow($session, $flowType);
         }
     }
 
     /**
-     * Start the My Requests flow (view existing product requests).
+     * Start the My Requests flow.
      */
     protected function startMyRequestsFlow(ConversationSession $session): void
     {
         $flowType = FlowType::PRODUCT_SEARCH;
 
-        // Check access
         if ($flowType->requiresAuth() && !$this->sessionManager->isRegistered($session)) {
             $this->handleNotRegistered(
                 new IncomingMessage(
@@ -818,24 +778,19 @@ class FlowRouter
             return;
         }
 
-        // Clear any previous temp data
         $this->sessionManager->clearTempData($session);
 
-        // Get the handler and call startMyRequests instead of start
         $handler = $this->resolveHandler($flowType);
         
         if ($handler instanceof \App\Services\Flow\Handlers\ProductSearchFlowHandler) {
             $handler->startMyRequests($session);
         } else {
-            // Fallback to regular start if handler doesn't have the method
             $this->startFlow($session, $flowType);
         }
     }
 
     /**
      * Send an error message with menu button.
-     * 
-     * ENHANCED: All errors now have actionable buttons.
      */
     protected function sendErrorWithMenu(string $phone, string $message): void
     {

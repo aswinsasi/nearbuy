@@ -19,7 +19,12 @@ use Illuminate\Support\Facades\Log;
 /**
  * Handler for fish seller registration flow.
  *
+ * IMPORTANT: This handler supports TWO registration paths:
+ * 1. Existing registered users (customers/shops) - adds fish seller profile
+ * 2. New unregistered users - creates new user with FISH_SELLER type
+ *
  * @srs-ref Pacha Meen Module - Seller Registration
+ * @srs-ref Section 2.2: Any user can become a fish seller
  */
 class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
 {
@@ -55,6 +60,21 @@ class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
 
     public function start(ConversationSession $session): void
     {
+        $user = $this->getUser($session);
+
+        // Check if user is already a fish seller
+        if ($user && $user->fishSeller) {
+            $this->sendButtonsWithMenu(
+                $session->phone,
+                "🐟 *Already Registered*\n\nYou are already registered as a fish seller!\n\nBusiness: *{$user->fishSeller->business_name}*",
+                [
+                    ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                    ['id' => 'fish_seller_menu', 'title' => '📋 Seller Menu'],
+                ]
+            );
+            return;
+        }
+
         $this->clearTemp($session);
         $this->nextStep($session, self::STEP_SELLER_TYPE);
 
@@ -174,7 +194,7 @@ class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
         $selectionId = $this->getSelectionId($message);
 
         if ($selectionId === 'confirm_register') {
-            $this->createFishSeller($session);
+            $this->registerFishSeller($session);
             return;
         }
 
@@ -188,38 +208,129 @@ class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
         $this->showConfirmation($session);
     }
 
-    protected function createFishSeller(ConversationSession $session): void
+    /**
+     * Register the user as a fish seller.
+     *
+     * FIXED: Now handles TWO cases:
+     * 1. Existing registered user → registerExistingUserAsSeller()
+     * 2. New unregistered user → createFishSeller()
+     *
+     * @srs-ref Section 2.2: Any user can become a fish seller
+     */
+    protected function registerFishSeller(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
+        // Get registration data from temp storage
+        $sellerTypeValue = $this->getTemp($session, 'seller_type');
+        $sellerType = FishSellerType::from($sellerTypeValue);
+        $businessName = $this->getTemp($session, 'business_name');
+        $latitude = (float) $this->getTemp($session, 'latitude');
+        $longitude = (float) $this->getTemp($session, 'longitude');
+        $marketName = $this->getTemp($session, 'market_name');
+
         try {
-            // createFishSeller returns User with attached fishSeller
-            $updatedUser = $this->sellerService->createFishSeller([
-                'user_id' => $user->id,
-                'phone' => $user->phone,
-                'name' => $user->name,
-                'seller_type' => $this->getTemp($session, 'seller_type'),
-                'business_name' => $this->getTemp($session, 'business_name'),
-                'latitude' => $this->getTemp($session, 'latitude'),
-                'longitude' => $this->getTemp($session, 'longitude'),
-                'market_name' => $this->getTemp($session, 'market_name'),
+            // Check if user is already registered (has registered_at set)
+            if ($user && $user->registered_at) {
+                // EXISTING USER: Add fish seller profile without changing user type
+                // User keeps their type (CUSTOMER, SHOP) but also becomes a fish seller
+                Log::info('Registering existing user as fish seller', [
+                    'user_id' => $user->id,
+                    'user_type' => $user->type->value,
+                    'seller_type' => $sellerType->value,
+                ]);
+
+                $seller = $this->sellerService->registerExistingUserAsSeller(
+                    $user,
+                    $sellerType,
+                    $businessName,
+                    $latitude,
+                    $longitude,
+                    $marketName
+                );
+
+                $this->clearTemp($session);
+
+                // Show success message with context
+                $userTypeLabel = $user->type === UserType::SHOP ? 'shop owner' : 'customer';
+                $this->sendButtons(
+                    $session->phone,
+                    "✅ *Registration Successful!*\n\n" .
+                    "🐟 *{$businessName}*\n" .
+                    "Type: {$sellerType->label()}\n\n" .
+                    "You can now sell fish while continuing as a {$userTypeLabel}!\n\n" .
+                    "Ready to post your first catch?",
+                    [
+                        ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                    ],
+                    '🐟 Fish Seller'
+                );
+
+            } else {
+                // NEW USER: Create new user with FISH_SELLER type
+                Log::info('Creating new fish seller user', [
+                    'phone' => $session->phone,
+                    'seller_type' => $sellerType->value,
+                ]);
+
+                $updatedUser = $this->sellerService->createFishSeller([
+                    'phone' => $session->phone,
+                    'name' => $businessName, // Use business name as user name for new users
+                    'seller_type' => $sellerType->value,
+                    'business_name' => $businessName,
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'market_name' => $marketName,
+                ]);
+
+                $seller = $updatedUser->fishSeller;
+
+                // Link session to new user
+                $this->sellerService->linkSessionToUser($session, $updatedUser);
+
+                $this->clearTemp($session);
+
+                $response = FishMessages::sellerRegistrationComplete($seller);
+                $this->sendFishMessage($session->phone, $response);
+            }
+
+        } catch (\InvalidArgumentException $e) {
+            Log::error('Fish seller registration validation failed', [
+                'error' => $e->getMessage(),
+                'user_id' => $user?->id,
             ]);
-
-            $seller = $updatedUser->fishSeller;
-
-            $this->clearTemp($session);
-            $response = FishMessages::sellerRegistrationComplete($seller);
-            $this->sendFishMessage($session->phone, $response);
-            $this->goToMainMenu($session);
+            
+            $this->sendButtons(
+                $session->phone,
+                "❌ *Registration Failed*\n\n{$e->getMessage()}\n\nPlease try again.",
+                [
+                    ['id' => 'fish_seller_register', 'title' => '🔄 Try Again'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ]
+            );
 
         } catch (\Exception $e) {
-            Log::error('Failed to create fish seller', ['error' => $e->getMessage()]);
-            $this->sendErrorWithOptions($session->phone, "❌ Registration failed. Please try again.");
+            Log::error('Failed to create fish seller', [
+                'error' => $e->getMessage(),
+                'user_id' => $user?->id,
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            $this->sendButtons(
+                $session->phone,
+                "❌ *Registration Failed*\n\nSomething went wrong. Please try again later.",
+                [
+                    ['id' => 'fish_seller_register', 'title' => '🔄 Try Again'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ]
+            );
         }
     }
 
     protected function showConfirmation(ConversationSession $session): void
     {
+        $user = $this->getUser($session);
         $sellerTypeValue = $this->getTemp($session, 'seller_type');
         $sellerType = FishSellerType::from($sellerTypeValue);
         $businessName = $this->getTemp($session, 'business_name');
@@ -227,11 +338,19 @@ class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
 
         $typeLabel = $sellerType->label();
 
+        // Show different message for existing users
+        $additionalNote = '';
+        if ($user && $user->registered_at) {
+            $userTypeLabel = $user->type === UserType::SHOP ? 'shop owner' : 'customer';
+            $additionalNote = "\n\n_Note: You'll be able to sell fish while continuing as a {$userTypeLabel}._";
+        }
+
         $text = "📋 *Confirm Registration*\n\n" .
             "Type: {$typeLabel}\n" .
             "Business: {$businessName}\n" .
             ($marketName ? "Market: {$marketName}\n" : "") .
-            "\nIs this correct?";
+            $additionalNote .
+            "\n\nIs this correct?";
 
         $this->sendButtons(
             $session->phone,

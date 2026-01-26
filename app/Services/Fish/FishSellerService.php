@@ -17,12 +17,17 @@ use Illuminate\Support\Facades\Log;
  * Service for managing fish sellers.
  *
  * Handles:
- * - Fish seller registration
+ * - Fish seller registration (new users AND existing users)
  * - Profile management
  * - Verification
  * - Statistics
  *
+ * IMPORTANT: There are TWO ways to become a fish seller:
+ * 1. createFishSeller() - Creates a NEW user with type FISH_SELLER
+ * 2. registerExistingUserAsSeller() - Adds fish seller profile to EXISTING user (customer/shop)
+ *
  * @srs-ref Pacha Meen Module - Section 2.3.1 Seller/Fisherman Registration
+ * @srs-ref Section 2.2: Fish sellers are separate registration from customers/shops
  */
 class FishSellerService
 {
@@ -35,6 +40,9 @@ class FishSellerService
 
     /**
      * Create a new fish seller with user account.
+     * 
+     * Use this for NEW users who are registering as fish sellers.
+     * For existing users (customers/shops), use registerExistingUserAsSeller() instead.
      *
      * @param array $data {
      *     @type string $phone Phone number (required)
@@ -105,9 +113,10 @@ class FishSellerService
                 'user_id' => $user->id,
                 'seller_id' => $seller->id,
                 'seller_type' => $sellerType->value,
+                'registration_type' => 'new_user',
             ]);
 
-            Log::info('Fish seller registered', [
+            Log::info('Fish seller registered (new user)', [
                 'user_id' => $user->id,
                 'seller_id' => $seller->id,
                 'phone' => $this->maskPhone($data['phone']),
@@ -116,6 +125,142 @@ class FishSellerService
 
             return $user->load('fishSeller');
         });
+    }
+
+    /**
+     * Register an EXISTING user as a fish seller.
+     *
+     * This allows customers and shop owners to ALSO become fish sellers
+     * WITHOUT changing their user type. The fish seller profile is an
+     * ADDITION to their existing account.
+     *
+     * @srs-ref Section 2.2: Fish sellers are separate from main user types
+     * @srs-ref PM-001: Three types of fish sellers (shop, fisherman, vendor)
+     *
+     * @param User $user Existing registered user
+     * @param FishSellerType $sellerType Type of fish seller
+     * @param string $businessName Business/stall name
+     * @param float $latitude Location latitude
+     * @param float $longitude Location longitude
+     * @param string|null $marketName Harbour/market name
+     * @param string|null $address Address text
+     * @return FishSeller The created fish seller profile
+     * @throws \InvalidArgumentException
+     */
+    public function registerExistingUserAsSeller(
+        User $user,
+        FishSellerType $sellerType,
+        string $businessName,
+        float $latitude,
+        float $longitude,
+        ?string $marketName = null,
+        ?string $address = null
+    ): FishSeller {
+        // Validate user can register
+        if (!$this->canRegisterAsSeller($user)) {
+            if (!$user->registered_at) {
+                throw new \InvalidArgumentException('User must be registered first');
+            }
+            if ($user->fishSeller) {
+                throw new \InvalidArgumentException('User is already a fish seller');
+            }
+            throw new \InvalidArgumentException('User cannot register as fish seller');
+        }
+
+        // Validate business name
+        if (!$this->isValidName($businessName)) {
+            throw new \InvalidArgumentException('Invalid business name');
+        }
+
+        // Validate coordinates
+        if (!$this->isValidCoordinates($latitude, $longitude)) {
+            throw new \InvalidArgumentException('Invalid coordinates');
+        }
+
+        return DB::transaction(function () use (
+            $user,
+            $sellerType,
+            $businessName,
+            $latitude,
+            $longitude,
+            $marketName,
+            $address
+        ) {
+            // IMPORTANT: Do NOT change user type!
+            // User remains CUSTOMER or SHOP, but gets a fish seller profile added
+
+            // Create fish seller profile
+            $seller = FishSeller::create([
+                'user_id' => $user->id,
+                'business_name' => $this->sanitizeName($businessName),
+                'seller_type' => $sellerType,
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'address' => $address,
+                'market_name' => $marketName,
+                'operating_hours' => $this->getDefaultOperatingHours(),
+                'catch_days' => [1, 2, 3, 4, 5, 6], // Mon-Sat default
+                'default_alert_radius_km' => $sellerType->defaultNotificationRadius(),
+                'is_active' => true,
+                'is_verified' => false,
+            ]);
+
+            // Track analytics
+            $this->trackEvent(self::EVENT_SELLER_REGISTERED, [
+                'user_id' => $user->id,
+                'seller_id' => $seller->id,
+                'seller_type' => $sellerType->value,
+                'original_user_type' => $user->type->value,
+                'registration_type' => 'existing_user',
+            ]);
+
+            Log::info('Existing user registered as fish seller', [
+                'user_id' => $user->id,
+                'seller_id' => $seller->id,
+                'original_user_type' => $user->type->value, // User keeps this type!
+                'seller_type' => $sellerType->value,
+                'business_name' => $businessName,
+            ]);
+
+            return $seller;
+        });
+    }
+
+    /**
+     * Check if user can register as a fish seller.
+     *
+     * Any registered user who doesn't already have a fish seller profile can register.
+     *
+     * @param User $user
+     * @return bool
+     */
+    public function canRegisterAsSeller(User $user): bool
+    {
+        // Must be registered
+        if (!$user->registered_at) {
+            return false;
+        }
+
+        // Must not already have a fish seller profile
+        if ($user->fishSeller) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if user is a fish seller (has fish_seller profile).
+     *
+     * This checks for the PROFILE, not user type!
+     * A user can be type=CUSTOMER but also have a fish seller profile.
+     *
+     * @param User $user
+     * @return bool
+     */
+    public function isFishSeller(User $user): bool
+    {
+        return $user->fishSeller !== null;
     }
 
     /**
@@ -307,13 +452,16 @@ class FishSellerService
     /**
      * Find fish seller by phone number.
      *
+     * NOTE: Updated to find ANY user with a fish seller profile,
+     * not just users with type=FISH_SELLER.
+     *
      * @param string $phone
      * @return FishSeller|null
      */
     public function findByPhone(string $phone): ?FishSeller
     {
         $user = User::where('phone', $this->normalizePhone($phone))
-            ->where('type', UserType::FISH_SELLER)
+            ->whereHas('fishSeller') // Has fish seller profile (any user type)
             ->first();
 
         return $user?->fishSeller;
