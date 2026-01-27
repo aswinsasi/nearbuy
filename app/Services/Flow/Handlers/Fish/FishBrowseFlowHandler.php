@@ -372,12 +372,12 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
 
         // Calculate distance if we have customer location
         $distance = null;
-        if ($customerLat && $customerLng && $catch->catch_latitude && $catch->catch_longitude) {
+        if ($customerLat && $customerLng && $catch->latitude && $catch->longitude) {
             $distance = $this->calculateDistance(
                 (float) $customerLat,
                 (float) $customerLng,
-                (float) $catch->catch_latitude,
-                (float) $catch->catch_longitude
+                (float) $catch->latitude,
+                (float) $catch->longitude
             );
         }
 
@@ -642,5 +642,17 @@ class FishBrowseFlowHandler extends AbstractFlowHandler
         $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
 
         return $earthRadius * $c;
+    }
+
+    /**
+     * Mask phone number for privacy in logs.
+     */
+    protected function maskPhone(string $phone): string
+    {
+        $length = strlen($phone);
+        if ($length <= 4) {
+            return str_repeat('*', $length);
+        }
+        return substr($phone, 0, -4) . '****';
     }
 }

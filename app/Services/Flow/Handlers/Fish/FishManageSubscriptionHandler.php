@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Flow\Handlers\Fish;
 
 use App\DTOs\IncomingMessage;
+use App\Enums\FishAlertFrequency;
 use App\Enums\FlowType;
 use App\Models\ConversationSession;
 use App\Models\FishSubscription;
@@ -174,8 +175,11 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
 
         if ($selectionId === 'all_fish') {
             $subscription = $this->getSubscription($session);
-            $subscription->fishTypes()->detach();
-            $subscription->update(['all_fish_types' => true]);
+            // FIX: Use the correct update method for JSON array
+            $subscription->update([
+                'fish_type_ids' => null,
+                'all_fish_types' => true,
+            ]);
 
             $this->sendTextWithMenu($session->phone, "✅ You'll now receive alerts for all fish types!");
             $this->start($session);
@@ -192,18 +196,62 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             return;
         }
 
+        // Handle category selection - show fish from that category
+        if ($selectionId && str_starts_with($selectionId, 'cat_')) {
+            $category = match ($selectionId) {
+                'cat_sea_fish' => FishType::CATEGORY_SEA_FISH,
+                'cat_freshwater' => FishType::CATEGORY_FRESHWATER,
+                'cat_shellfish' => FishType::CATEGORY_SHELLFISH,
+                'cat_crustacean' => FishType::CATEGORY_CRUSTACEAN,
+                default => null,
+            };
+            
+            if ($category) {
+                $this->setTemp($session, 'fish_category', $category);
+                $this->showFishFromCategory($session, $category);
+                return;
+            }
+        }
+
+        // Handle back to categories
+        if ($selectionId === 'back_to_categories') {
+            $this->setTemp($session, 'fish_category', null);
+            $this->showFishCategorySelection($session);
+            return;
+        }
+
+        // Handle fish type toggle
         if ($selectionId && str_starts_with($selectionId, 'fish_')) {
             $fishType = FishType::findByListId($selectionId);
             if ($fishType) {
                 $subscription = $this->getSubscription($session);
-                $subscription->fishTypes()->toggle([$fishType->id]);
-                $subscription->update(['all_fish_types' => false]);
-
-                $this->sendText($session->phone, "✅ {$fishType->display_name} toggled!");
+                
+                // FIX: Use JSON array methods instead of relationship
+                $currentIds = $subscription->fish_type_ids ?? [];
+                
+                if (in_array($fishType->id, $currentIds)) {
+                    // Remove - use model method
+                    $subscription->removeFishType($fishType->id);
+                    $this->sendText($session->phone, "❌ {$fishType->display_name} removed");
+                } else {
+                    // Add - use model method
+                    $subscription->addFishType($fishType->id);
+                    $this->sendText($session->phone, "✅ {$fishType->display_name} added");
+                }
+                
+                // Show fish from same category again
+                $category = $this->getTemp($session, 'fish_category');
+                if ($category) {
+                    $this->showFishFromCategory($session, $category);
+                } else {
+                    $this->showFishCategorySelection($session);
+                }
+                return;
             }
         }
 
-        $this->showFishOptions($session);
+        // Default: show category selection
+        $this->showFishCategorySelection($session);
     }
 
     protected function handleChangeFrequency(IncomingMessage $message, ConversationSession $session): void
@@ -215,18 +263,15 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             return;
         }
 
-        $frequency = match ($selectionId) {
-            'freq_instant' => 'instant',
-            'freq_hourly' => 'hourly',
-            'freq_daily' => 'daily',
-            default => null,
-        };
+        // FIX: Use FishAlertFrequency::fromListId() to get enum from list ID
+        // List IDs are formatted as: fish_freq_{enum_value}
+        $frequency = FishAlertFrequency::fromListId($selectionId);
 
         if ($frequency) {
             $subscription = $this->getSubscription($session);
             $subscription->update(['alert_frequency' => $frequency]);
 
-            $label = ucfirst($frequency);
+            $label = $frequency->label();
             $this->sendTextWithMenu($session->phone, "✅ Alert frequency updated to {$label}!");
             $this->start($session);
             return;
@@ -318,12 +363,15 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
 
     protected function showSubscriptionDetails(ConversationSession $session, FishSubscription $subscription): void
     {
+        // FIX: display_name is an accessor, not a column - must load models first
         $fishTypes = $subscription->all_fish_types
             ? 'All fish types'
-            : $subscription->fishTypes->pluck('display_name')->join(', ');
+            : ($subscription->fish_type_ids 
+                ? FishType::whereIn('id', $subscription->fish_type_ids)->get()->pluck('display_name')->join(', ')
+                : 'None selected');
 
         $status = $subscription->is_paused ? '⏸️ Paused' : '✅ Active';
-        $frequency = ucfirst($subscription->frequency);
+        $frequency = $subscription->alert_frequency?->label() ?? 'Immediate';
 
         $stats = $this->subscriptionService->getSubscriptionStats($subscription);
 
@@ -402,66 +450,110 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
 
     protected function showFishOptions(ConversationSession $session): void
     {
+        // Start with category selection
+        $this->showFishCategorySelection($session);
+    }
+
+    /**
+     * Show fish category selection (fits within 10-row limit).
+     */
+    protected function showFishCategorySelection(ConversationSession $session): void
+    {
         $subscription = $this->getSubscription($session);
-        $selectedIds = $subscription->fishTypes->pluck('id')->toArray();
-
-        $sections = FishType::getListSections();
-
-        // Mark selected fish
-        foreach ($sections as &$section) {
-            foreach ($section['rows'] as &$row) {
-                $fishType = FishType::findByListId($row['id']);
-                if ($fishType && in_array($fishType->id, $selectedIds)) {
-                    $row['title'] = "✅ " . $row['title'];
-                }
-            }
-        }
-
-        // Add options at top
-        array_unshift($sections[0]['rows'], [
-            'id' => 'all_fish',
-            'title' => '🐟 All Fish Types',
-            'description' => 'Get alerts for all fish',
-        ]);
-
-        $sections[0]['rows'][] = [
-            'id' => 'done_selecting',
-            'title' => '✅ Done',
-            'description' => 'Save selection',
-        ];
-
-        // Add main menu option
-        $sections[] = [
-            'title' => '📍 Navigation',
-            'rows' => [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
-            ],
-        ];
+        // FIX: Use fish_type_ids array instead of fishTypes relationship
+        $selectedCount = $subscription->fish_type_ids ? count($subscription->fish_type_ids) : 0;
+        $selectedText = $selectedCount > 0 ? "\n\n✅ Selected: {$selectedCount} fish types" : "";
 
         $this->sendList(
             $session->phone,
-            "🐟 *Select Fish Types*\n\nTap to toggle. Selected fish are marked with ✅",
-            'Select Fish',
-            $sections
+            "🐟 *Select Fish Types*\n\nChoose a category to select fish.{$selectedText}",
+            'Select',
+            [
+                [
+                    'title' => 'Fish Categories',
+                    'rows' => [
+                        ['id' => 'all_fish', 'title' => '🐟 All Fish', 'description' => 'Get alerts for all types'],
+                        ['id' => 'cat_sea_fish', 'title' => '🌊 Sea Fish', 'description' => 'Tuna, Mackerel, Sardine...'],
+                        ['id' => 'cat_freshwater', 'title' => '🏞️ Freshwater', 'description' => 'Tilapia, Catfish...'],
+                        ['id' => 'cat_shellfish', 'title' => '🐚 Shellfish', 'description' => 'Mussels, Clams, Oysters...'],
+                        ['id' => 'cat_crustacean', 'title' => '🦐 Crustaceans', 'description' => 'Prawns, Crabs, Lobster...'],
+                        ['id' => 'done_selecting', 'title' => '✅ Done', 'description' => 'Save and go back'],
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
+                    ],
+                ],
+            ]
+        );
+    }
+
+    /**
+     * Show fish from a specific category (paginated to fit 10-row limit).
+     */
+    protected function showFishFromCategory(ConversationSession $session, string $category): void
+    {
+        $subscription = $this->getSubscription($session);
+        // FIX: Use fish_type_ids array instead of fishTypes relationship
+        $selectedIds = $subscription->fish_type_ids ?? [];
+
+        // Get fish from this category
+        $fishTypes = FishType::where('category', $category)
+            ->where('is_active', true)
+            ->orderBy('name_ml')
+            ->take(7) // Max 7 fish + Back + Done + Main Menu = 10 rows
+            ->get();
+
+        $categoryName = match ($category) {
+            FishType::CATEGORY_SEA_FISH => '🌊 Sea Fish',
+            FishType::CATEGORY_FRESHWATER => '🏞️ Freshwater',
+            FishType::CATEGORY_SHELLFISH => '🐚 Shellfish',
+            FishType::CATEGORY_CRUSTACEAN => '🦐 Crustaceans',
+            default => '🐟 Fish',
+        };
+
+        $rows = [];
+        foreach ($fishTypes as $fish) {
+            $isSelected = in_array($fish->id, $selectedIds);
+            $prefix = $isSelected ? '✅ ' : '';
+            $rows[] = [
+                'id' => $fish->list_id,
+                'title' => $prefix . $fish->name_ml,
+                'description' => $fish->name_en,
+            ];
+        }
+
+        // Add navigation options
+        $rows[] = ['id' => 'back_to_categories', 'title' => '⬅️ Back', 'description' => 'Choose another category'];
+        $rows[] = ['id' => 'done_selecting', 'title' => '✅ Done', 'description' => 'Save selection'];
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main menu'];
+
+        $this->sendList(
+            $session->phone,
+            "{$categoryName}\n\nTap to toggle. ✅ = selected",
+            'Select',
+            [
+                [
+                    'title' => $categoryName,
+                    'rows' => $rows,
+                ],
+            ]
         );
     }
 
     protected function showFrequencyOptions(ConversationSession $session): void
     {
         $subscription = $this->getSubscription($session);
+        $currentLabel = $subscription->alert_frequency?->label() ?? 'Immediate';
+
+        // FIX: Use enum's toListItems() to get properly formatted options
+        $frequencyRows = FishAlertFrequency::toListItems();
 
         $this->sendList(
             $session->phone,
-            "⏰ *Change Alert Frequency*\n\nCurrent: " . ucfirst($subscription->frequency) . "\n\nSelect new frequency:",
-            'Select Frequency',
+            "⏰ *Change Alert Frequency*\n\nCurrent: {$currentLabel}\n\nSelect new frequency:",
+            'Select',
             [
                 [
                     'title' => 'Frequency Options',
-                    'rows' => [
-                        ['id' => 'freq_instant', 'title' => '⚡ Instant', 'description' => 'Get alerts immediately'],
-                        ['id' => 'freq_hourly', 'title' => '🕐 Hourly', 'description' => 'Batched every hour'],
-                        ['id' => 'freq_daily', 'title' => '📅 Daily', 'description' => 'Daily digest'],
-                    ],
+                    'rows' => $frequencyRows,
                 ],
                 [
                     'title' => '📍 Navigation',
