@@ -36,6 +36,21 @@ enum FlowType: string
     case FISH_MANAGE_SUBSCRIPTION = 'fish_manage_subscription';
     case FISH_SELLER_MENU = 'fish_seller_menu';
 
+    /*
+    |--------------------------------------------------------------------------
+    | Njaanum Panikkar (Basic Jobs Marketplace) Flows
+    |--------------------------------------------------------------------------
+    |
+    | @srs-ref Section 3 - Jobs Marketplace Module
+    */
+    case JOB_WORKER_REGISTER = 'job_worker_register';
+    case JOB_POST = 'job_post';
+    case JOB_BROWSE = 'job_browse';
+    case JOB_WORKER_MENU = 'job_worker_menu';
+    case JOB_POSTER_MENU = 'job_poster_menu';
+    case JOB_APPLICATIONS = 'job_applications';
+    case JOB_EXECUTION = 'job_execution';
+
     /**
      * Get the display label.
      */
@@ -61,6 +76,14 @@ enum FlowType: string
             self::FISH_BROWSE => 'Browse Fresh Fish',
             self::FISH_MANAGE_SUBSCRIPTION => 'Manage Fish Alerts',
             self::FISH_SELLER_MENU => 'Fish Seller Menu',
+            // Job flows
+            self::JOB_WORKER_REGISTER => 'Worker Registration',
+            self::JOB_POST => 'Post Task',
+            self::JOB_BROWSE => 'Browse Tasks',
+            self::JOB_WORKER_MENU => 'Worker Dashboard',
+            self::JOB_POSTER_MENU => 'Task Poster Menu',
+            self::JOB_APPLICATIONS => 'Job Applications',
+            self::JOB_EXECUTION => 'Task Execution',
         };
     }
 
@@ -89,6 +112,14 @@ enum FlowType: string
             self::FISH_BROWSE => '🐟',
             self::FISH_MANAGE_SUBSCRIPTION => '⚙️',
             self::FISH_SELLER_MENU => '🐟',
+            // Job flows
+            self::JOB_WORKER_REGISTER => '👷',
+            self::JOB_POST => '📋',
+            self::JOB_BROWSE => '🔍',
+            self::JOB_WORKER_MENU => '👷',
+            self::JOB_POSTER_MENU => '📋',
+            self::JOB_APPLICATIONS => '📝',
+            self::JOB_EXECUTION => '✅',
         };
     }
 
@@ -125,6 +156,14 @@ enum FlowType: string
             self::FISH_BROWSE => \App\Services\Flow\Handlers\Fish\FishBrowseFlowHandler::class,
             self::FISH_MANAGE_SUBSCRIPTION => \App\Services\Flow\Handlers\Fish\FishManageSubscriptionHandler::class,
             self::FISH_SELLER_MENU => \App\Services\Flow\Handlers\Fish\FishSellerMenuHandler::class,
+            // Job flows - in Jobs subdirectory
+            self::JOB_WORKER_REGISTER => \App\Services\Flow\Handlers\Jobs\JobWorkerRegistrationFlowHandler::class,
+            self::JOB_POST => \App\Services\Flow\Handlers\Jobs\JobPostFlowHandler::class,
+            self::JOB_BROWSE => \App\Services\Flow\Handlers\Jobs\JobBrowseFlowHandler::class,
+            self::JOB_WORKER_MENU => \App\Services\Flow\Handlers\Jobs\JobWorkerMenuHandler::class,
+            self::JOB_POSTER_MENU => \App\Services\Flow\Handlers\Jobs\JobPosterMenuHandler::class,
+            self::JOB_APPLICATIONS => \App\Services\Flow\Handlers\Jobs\JobApplicationsFlowHandler::class,
+            self::JOB_EXECUTION => \App\Services\Flow\Handlers\Jobs\JobExecutionFlowHandler::class,
         };
     }
 
@@ -138,7 +177,8 @@ enum FlowType: string
         return match ($this) {
             self::REGISTRATION => false,
             self::MAIN_MENU => false,
-            self::FISH_BROWSE => false, // Allow browsing without auth
+            self::FISH_BROWSE => false,  // Allow browsing without auth
+            self::JOB_BROWSE => false,   // Allow browsing jobs without auth
             default => true,
         };
     }
@@ -168,6 +208,19 @@ enum FlowType: string
             self::FISH_POST_CATCH,
             self::FISH_STOCK_UPDATE,
             self::FISH_SELLER_MENU,
+        ]);
+    }
+
+    /**
+     * Check if this flow is for job workers only.
+     *
+     * @srs-ref Njaanum Panikkar Module - Section 3.2
+     */
+    public function isJobWorkerOnly(): bool
+    {
+        return in_array($this, [
+            self::JOB_WORKER_MENU,
+            self::JOB_EXECUTION,
         ]);
     }
 
@@ -203,6 +256,24 @@ enum FlowType: string
     }
 
     /**
+     * Check if this is a job-related flow.
+     *
+     * @srs-ref Njaanum Panikkar Module
+     */
+    public function isJobFlow(): bool
+    {
+        return in_array($this, [
+            self::JOB_WORKER_REGISTER,
+            self::JOB_POST,
+            self::JOB_BROWSE,
+            self::JOB_WORKER_MENU,
+            self::JOB_POSTER_MENU,
+            self::JOB_APPLICATIONS,
+            self::JOB_EXECUTION,
+        ]);
+    }
+
+    /**
      * Check if this flow is available to all users.
      */
     public function isUniversal(): bool
@@ -217,6 +288,10 @@ enum FlowType: string
             self::FISH_BROWSE,
             self::FISH_SUBSCRIBE,
             self::FISH_SELLER_REGISTER,
+            // Job universal flows
+            self::JOB_WORKER_REGISTER,
+            self::JOB_BROWSE,
+            self::JOB_POST,
         ]);
     }
 
@@ -245,6 +320,14 @@ enum FlowType: string
             self::FISH_BROWSE => 'show_nearby',
             self::FISH_MANAGE_SUBSCRIPTION => 'show_subscription',
             self::FISH_SELLER_MENU => 'show_menu',
+            // Job flows
+            self::JOB_WORKER_REGISTER => JobWorkerRegistrationStep::ASK_NAME->value,
+            self::JOB_POST => JobPostingStep::SELECT_CATEGORY->value,
+            self::JOB_BROWSE => 'show_nearby',
+            self::JOB_WORKER_MENU => 'show_menu',
+            self::JOB_POSTER_MENU => 'show_menu',
+            self::JOB_APPLICATIONS => 'show_applications',
+            self::JOB_EXECUTION => JobExecutionStep::ARRIVAL_PHOTO->value,
         };
     }
 
@@ -273,6 +356,14 @@ enum FlowType: string
             self::FISH_BROWSE,
             self::FISH_MANAGE_SUBSCRIPTION,
             self::FISH_SELLER_MENU => null,
+            // Job flows - return null as they use their own step enums
+            self::JOB_WORKER_REGISTER,
+            self::JOB_POST,
+            self::JOB_BROWSE,
+            self::JOB_WORKER_MENU,
+            self::JOB_POSTER_MENU,
+            self::JOB_APPLICATIONS,
+            self::JOB_EXECUTION => null,
         };
     }
 
@@ -357,6 +448,38 @@ enum FlowType: string
                 'title' => '🐟 Seller Dashboard',
                 'description' => 'View your fish seller dashboard',
             ],
+            // Job menu items - for workers
+            self::JOB_WORKER_REGISTER => [
+                'id' => 'menu_job_worker_register',
+                'title' => '👷 Become Worker',
+                'description' => 'Register to do tasks for others',
+            ],
+            self::JOB_BROWSE => [
+                'id' => 'menu_job_browse',
+                'title' => '🔍 Browse Tasks',
+                'description' => 'Find tasks near you',
+            ],
+            self::JOB_WORKER_MENU => [
+                'id' => 'menu_job_worker_dashboard',
+                'title' => '👷 Worker Dashboard',
+                'description' => 'View your worker dashboard',
+            ],
+            // Job menu items - for task posters
+            self::JOB_POST => [
+                'id' => 'menu_job_post',
+                'title' => '📋 Post Task',
+                'description' => 'Post a task for workers',
+            ],
+            self::JOB_POSTER_MENU => [
+                'id' => 'menu_job_poster_dashboard',
+                'title' => '📋 My Tasks',
+                'description' => 'View your posted tasks',
+            ],
+            self::JOB_APPLICATIONS => [
+                'id' => 'menu_job_applications',
+                'title' => '📝 Applications',
+                'description' => 'View worker applications',
+            ],
             default => null,
         };
     }
@@ -403,6 +526,14 @@ enum FlowType: string
             self::FISH_BROWSE => 30,
             self::FISH_MANAGE_SUBSCRIPTION => 15,
             self::FISH_SELLER_MENU => 15,
+            // Job flows
+            self::JOB_WORKER_REGISTER => 30,
+            self::JOB_POST => 30,
+            self::JOB_BROWSE => 30,
+            self::JOB_WORKER_MENU => 15,
+            self::JOB_POSTER_MENU => 15,
+            self::JOB_APPLICATIONS => 30,
+            self::JOB_EXECUTION => 60,
             default => config('nearbuy.session.timeout_minutes', 30),
         };
     }
@@ -432,6 +563,14 @@ enum FlowType: string
             self::FISH_BROWSE => 3,
             self::FISH_MANAGE_SUBSCRIPTION => 3,
             self::FISH_SELLER_MENU => 1,
+            // Job flows
+            self::JOB_WORKER_REGISTER => 7,
+            self::JOB_POST => 12,
+            self::JOB_BROWSE => 3,
+            self::JOB_WORKER_MENU => 1,
+            self::JOB_POSTER_MENU => 1,
+            self::JOB_APPLICATIONS => 3,
+            self::JOB_EXECUTION => 5,
             default => 1,
         };
     }
@@ -461,6 +600,14 @@ enum FlowType: string
             self::FISH_BROWSE => 'Browse fresh fish nearby',
             self::FISH_MANAGE_SUBSCRIPTION => 'Manage your fish alert preferences',
             self::FISH_SELLER_MENU => 'Fish seller dashboard and options',
+            // Job flows
+            self::JOB_WORKER_REGISTER => 'Register to become a job worker',
+            self::JOB_POST => 'Post a task for workers',
+            self::JOB_BROWSE => 'Browse available tasks nearby',
+            self::JOB_WORKER_MENU => 'Worker dashboard and options',
+            self::JOB_POSTER_MENU => 'View and manage your posted tasks',
+            self::JOB_APPLICATIONS => 'View and manage worker applications',
+            self::JOB_EXECUTION => 'Track and complete assigned tasks',
         };
     }
 
@@ -474,6 +621,7 @@ enum FlowType: string
             self::MAIN_MENU,
             self::AGREEMENT_CONFIRM, // Triggered by incoming confirmation
             self::PRODUCT_RESPOND,   // Triggered by incoming request
+            self::JOB_EXECUTION,     // Triggered by job assignment
         ]);
     }
 
@@ -485,6 +633,8 @@ enum FlowType: string
         return in_array($this, [
             self::AGREEMENT_CONFIRM,
             self::PRODUCT_RESPOND,
+            self::JOB_EXECUTION,
+            self::JOB_APPLICATIONS,
         ]);
     }
 
@@ -499,7 +649,7 @@ enum FlowType: string
     /**
      * Get flows available for a user type.
      *
-     * @param string $userType 'customer', 'shop', or 'fish_seller'
+     * @param string $userType 'customer', 'shop', 'fish_seller', or 'job_worker'
      * @return array<self>
      */
     public static function forUserType(string $userType): array
@@ -517,6 +667,9 @@ enum FlowType: string
             if ($userType === 'fish_seller' && $flow->isFishSellerOnly()) {
                 return true;
             }
+            if ($userType === 'job_worker' && $flow->isJobWorkerOnly()) {
+                return true;
+            }
             return false;
         });
     }
@@ -524,7 +677,7 @@ enum FlowType: string
     /**
      * Get menu items for a user type.
      *
-     * @param string $userType 'customer', 'shop', or 'fish_seller'
+     * @param string $userType 'customer', 'shop', 'fish_seller', or 'job_worker'
      * @return array<array{id: string, title: string, description: string}>
      */
     public static function menuItemsForUserType(string $userType): array
@@ -548,6 +701,8 @@ enum FlowType: string
             self::PRODUCT_SEARCH->menuItem(),
             self::FISH_BROWSE->menuItem(),
             self::FISH_SUBSCRIBE->menuItem(),
+            self::JOB_BROWSE->menuItem(),
+            self::JOB_POST->menuItem(),
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
             self::SETTINGS->menuItem(),
@@ -567,6 +722,8 @@ enum FlowType: string
             self::OFFERS_BROWSE->menuItem(),
             self::PRODUCT_SEARCH->menuItem(),
             self::FISH_BROWSE->menuItem(),
+            self::JOB_BROWSE->menuItem(),
+            self::JOB_POST->menuItem(),
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
             self::SETTINGS->menuItem(),
@@ -584,6 +741,27 @@ enum FlowType: string
             self::FISH_POST_CATCH->menuItem(),
             self::FISH_STOCK_UPDATE->menuItem(),
             self::FISH_SELLER_MENU->menuItem(),
+            self::FISH_BROWSE->menuItem(),
+            self::JOB_BROWSE->menuItem(),
+            self::JOB_POST->menuItem(),
+            self::AGREEMENT_CREATE->menuItem(),
+            self::AGREEMENT_LIST->menuItem(),
+            self::SETTINGS->menuItem(),
+        ];
+    }
+
+    /**
+     * Get job worker menu items.
+     *
+     * @srs-ref Njaanum Panikkar Module - Section 3.2
+     * @return array<array{id: string, title: string, description: string}>
+     */
+    public static function jobWorkerMenuItems(): array
+    {
+        return [
+            self::JOB_BROWSE->menuItem(),
+            self::JOB_WORKER_MENU->menuItem(),
+            self::JOB_POST->menuItem(),
             self::FISH_BROWSE->menuItem(),
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
@@ -655,6 +833,24 @@ enum FlowType: string
             self::FISH_BROWSE,
             self::FISH_MANAGE_SUBSCRIPTION,
             self::FISH_SELLER_MENU,
+        ];
+    }
+
+    /**
+     * Get all job-related flows.
+     *
+     * @srs-ref Njaanum Panikkar Module
+     */
+    public static function jobFlows(): array
+    {
+        return [
+            self::JOB_WORKER_REGISTER,
+            self::JOB_POST,
+            self::JOB_BROWSE,
+            self::JOB_WORKER_MENU,
+            self::JOB_POSTER_MENU,
+            self::JOB_APPLICATIONS,
+            self::JOB_EXECUTION,
         ];
     }
 }
