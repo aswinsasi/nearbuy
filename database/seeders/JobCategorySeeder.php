@@ -1,0 +1,313 @@
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+/**
+ * Seed job_categories table with initial job types.
+ *
+ * @srs-ref Section 3.1 - Job Categories Master Data
+ * @module Njaanum Panikkar (Basic Jobs Marketplace)
+ */
+class JobCategorySeeder extends Seeder
+{
+    /**
+     * Run the database seeds.
+     */
+    public function run(): void
+    {
+        $categories = [
+            // =====================================================
+            // TIER 1 - Zero Skills Required
+            // =====================================================
+            [
+                'name_en' => 'Queue Standing',
+                'name_ml' => 'ക്യൂ നിൽക്കൽ',
+                'slug' => 'queue-standing',
+                'tier' => 1,
+                'icon' => '🧍',
+                'typical_pay_min' => 100.00,
+                'typical_pay_max' => 200.00,
+                'typical_duration_hours' => 2.0,
+                'requires_vehicle' => false,
+                'description' => 'Stand in queue at government offices, banks, or hospitals on behalf of someone',
+                'sort_order' => 1,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Parcel Pickup/Delivery',
+                'name_ml' => 'പാഴ്സൽ എടുക്കൽ',
+                'slug' => 'parcel-pickup-delivery',
+                'tier' => 1,
+                'icon' => '📦',
+                'typical_pay_min' => 50.00,
+                'typical_pay_max' => 150.00,
+                'typical_duration_hours' => 0.75,
+                'requires_vehicle' => false,
+                'description' => 'Collect or deliver parcels, documents, or packages within the locality',
+                'sort_order' => 2,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Grocery Shopping',
+                'name_ml' => 'സാധനം വാങ്ങൽ',
+                'slug' => 'grocery-shopping',
+                'tier' => 1,
+                'icon' => '🛒',
+                'typical_pay_min' => 80.00,
+                'typical_pay_max' => 150.00,
+                'typical_duration_hours' => 1.5,
+                'requires_vehicle' => false,
+                'description' => 'Shop for groceries or household items from local stores',
+                'sort_order' => 3,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Bill Payment',
+                'name_ml' => 'ബിൽ അടയ്ക്കൽ',
+                'slug' => 'bill-payment',
+                'tier' => 1,
+                'icon' => '💵',
+                'typical_pay_min' => 50.00,
+                'typical_pay_max' => 100.00,
+                'typical_duration_hours' => 1.0,
+                'requires_vehicle' => false,
+                'description' => 'Pay electricity, water, phone bills, or other utility payments',
+                'sort_order' => 4,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Moving Help',
+                'name_ml' => 'സാധനം എടുക്കാൻ',
+                'slug' => 'moving-help',
+                'tier' => 1,
+                'icon' => '📦',
+                'typical_pay_min' => 200.00,
+                'typical_pay_max' => 500.00,
+                'typical_duration_hours' => 3.0,
+                'requires_vehicle' => false,
+                'description' => 'Help with loading, unloading, or carrying items during house shifting',
+                'sort_order' => 5,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Event Helper',
+                'name_ml' => 'ചടങ്ങിൽ സഹായം',
+                'slug' => 'event-helper',
+                'tier' => 1,
+                'icon' => '🎉',
+                'typical_pay_min' => 300.00,
+                'typical_pay_max' => 500.00,
+                'typical_duration_hours' => 6.0,
+                'requires_vehicle' => false,
+                'description' => 'Assist at weddings, functions, or events with setup, serving, or cleanup',
+                'sort_order' => 6,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Pet Walking',
+                'name_ml' => 'നായയെ നടത്തൽ',
+                'slug' => 'pet-walking',
+                'tier' => 1,
+                'icon' => '🐕',
+                'typical_pay_min' => 100.00,
+                'typical_pay_max' => 200.00,
+                'typical_duration_hours' => 1.0,
+                'requires_vehicle' => false,
+                'description' => 'Walk dogs or care for pets temporarily',
+                'sort_order' => 7,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Garden Cleaning',
+                'name_ml' => 'തോട്ടം വൃത്തിയാക്കൽ',
+                'slug' => 'garden-cleaning',
+                'tier' => 1,
+                'icon' => '🌳',
+                'typical_pay_min' => 200.00,
+                'typical_pay_max' => 400.00,
+                'typical_duration_hours' => 2.5,
+                'requires_vehicle' => false,
+                'description' => 'Clean gardens, remove weeds, trim plants, or clear leaves',
+                'sort_order' => 8,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'House Cleaning',
+                'name_ml' => 'വീട് വൃത്തിയാക്കൽ',
+                'slug' => 'house-cleaning',
+                'tier' => 1,
+                'icon' => '🧹',
+                'typical_pay_min' => 200.00,
+                'typical_pay_max' => 500.00,
+                'typical_duration_hours' => 3.0,
+                'requires_vehicle' => false,
+                'description' => 'General house cleaning, sweeping, mopping, or dusting',
+                'sort_order' => 9,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Elderly Companion',
+                'name_ml' => 'വയോധികർക്ക് കൂട്ട്',
+                'slug' => 'elderly-companion',
+                'tier' => 1,
+                'icon' => '👴',
+                'typical_pay_min' => 150.00,
+                'typical_pay_max' => 300.00,
+                'typical_duration_hours' => 3.0,
+                'requires_vehicle' => false,
+                'description' => 'Accompany elderly to hospital, temple, or provide companionship',
+                'sort_order' => 10,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            
+            // =====================================================
+            // TIER 2 - Basic Skills Required
+            // =====================================================
+            [
+                'name_en' => 'Food Delivery',
+                'name_ml' => 'ഭക്ഷണം എത്തിക്കൽ',
+                'slug' => 'food-delivery',
+                'tier' => 2,
+                'icon' => '🍔',
+                'typical_pay_min' => 50.00,
+                'typical_pay_max' => 100.00,
+                'typical_duration_hours' => 0.5,
+                'requires_vehicle' => true,
+                'description' => 'Deliver food from restaurants or homes (requires two-wheeler)',
+                'sort_order' => 11,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Document Work',
+                'name_ml' => 'ഡോക്യുമെന്റ് പണി',
+                'slug' => 'document-work',
+                'tier' => 2,
+                'icon' => '📄',
+                'typical_pay_min' => 50.00,
+                'typical_pay_max' => 100.00,
+                'typical_duration_hours' => 1.0,
+                'requires_vehicle' => false,
+                'description' => 'Help with form filling, photocopying, or basic document preparation',
+                'sort_order' => 12,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Computer Typing',
+                'name_ml' => 'ടൈപ്പിംഗ്',
+                'slug' => 'computer-typing',
+                'tier' => 2,
+                'icon' => '⌨️',
+                'typical_pay_min' => 100.00,
+                'typical_pay_max' => 300.00,
+                'typical_duration_hours' => 2.0,
+                'requires_vehicle' => false,
+                'description' => 'Type documents, data entry, or create simple spreadsheets',
+                'sort_order' => 13,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Translation Help',
+                'name_ml' => 'തർജ്ജമ',
+                'slug' => 'translation-help',
+                'tier' => 2,
+                'icon' => '🗣️',
+                'typical_pay_min' => 200.00,
+                'typical_pay_max' => 500.00,
+                'typical_duration_hours' => 2.0,
+                'requires_vehicle' => false,
+                'description' => 'Translate documents between Malayalam, English, Hindi, or other languages',
+                'sort_order' => 14,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Basic Photography',
+                'name_ml' => 'ഫോട്ടോ എടുക്കൽ',
+                'slug' => 'basic-photography',
+                'tier' => 2,
+                'icon' => '📷',
+                'typical_pay_min' => 200.00,
+                'typical_pay_max' => 500.00,
+                'typical_duration_hours' => 2.0,
+                'requires_vehicle' => false,
+                'description' => 'Take photos for events, products, or documentation using smartphone',
+                'sort_order' => 15,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Vehicle Pickup/Drop',
+                'name_ml' => 'വാഹനം കൊണ്ടുവരൽ',
+                'slug' => 'vehicle-pickup-drop',
+                'tier' => 2,
+                'icon' => '🚗',
+                'typical_pay_min' => 150.00,
+                'typical_pay_max' => 400.00,
+                'typical_duration_hours' => 1.0,
+                'requires_vehicle' => false,
+                'description' => 'Pick up or drop vehicle at service center (requires valid license)',
+                'sort_order' => 16,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Medicine Pickup',
+                'name_ml' => 'മരുന്ന് വാങ്ങൽ',
+                'slug' => 'medicine-pickup',
+                'tier' => 2,
+                'icon' => '💊',
+                'typical_pay_min' => 50.00,
+                'typical_pay_max' => 150.00,
+                'typical_duration_hours' => 1.0,
+                'requires_vehicle' => false,
+                'description' => 'Collect prescribed medicines from pharmacy',
+                'sort_order' => 17,
+                'is_popular' => true,
+                'is_active' => true,
+            ],
+            [
+                'name_en' => 'Tutoring Help',
+                'name_ml' => 'ട്യൂഷൻ സഹായം',
+                'slug' => 'tutoring-help',
+                'tier' => 2,
+                'icon' => '📚',
+                'typical_pay_min' => 200.00,
+                'typical_pay_max' => 500.00,
+                'typical_duration_hours' => 2.0,
+                'requires_vehicle' => false,
+                'description' => 'Help school children with homework or basic subjects',
+                'sort_order' => 18,
+                'is_popular' => false,
+                'is_active' => true,
+            ],
+        ];
+
+        $now = now();
+
+        foreach ($categories as $category) {
+            $category['created_at'] = $now;
+            $category['updated_at'] = $now;
+            
+            DB::table('job_categories')->insert($category);
+        }
+
+        $this->command->info('Job categories seeded successfully! (' . count($categories) . ' categories)');
+    }
+}
