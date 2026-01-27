@@ -542,7 +542,7 @@ class JobSelectionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $applications = $this->applicationService->getPendingApplications($job);
+        $applications = $this->applicationService->getPendingApplications($job)->values();
 
         if ($applications->isEmpty()) {
             $this->sendTextWithMenu(
@@ -553,13 +553,24 @@ class JobSelectionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        // Find next application
-        $currentIndex = $applications->search(fn($app) => $app->id === $currentAppId);
-        $nextIndex = ($currentIndex !== false && $currentIndex < $applications->count() - 1)
+        // Find next application index
+        $currentIndex = null;
+        foreach ($applications as $index => $app) {
+            if ($app->id === $currentAppId) {
+                $currentIndex = (int) $index;
+                break;
+            }
+        }
+
+        $nextIndex = ($currentIndex !== null && $currentIndex < $applications->count() - 1)
             ? $currentIndex + 1
             : 0;
 
         $nextApplication = $applications->get($nextIndex);
+
+        if (!$nextApplication) {
+            $nextApplication = $applications->first();
+        }
 
         $this->setTemp($session, 'current_application_id', $nextApplication->id);
         $this->setTemp($session, 'current_app_index', $nextIndex + 1);
@@ -578,7 +589,7 @@ class JobSelectionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $applications = $this->applicationService->getPendingApplications($job);
+        $applications = $this->applicationService->getPendingApplications($job)->values();
 
         if ($applications->isEmpty()) {
             $this->sendTextWithMenu(
@@ -589,13 +600,24 @@ class JobSelectionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        // Find previous application
-        $currentIndex = $applications->search(fn($app) => $app->id === $currentAppId);
-        $prevIndex = ($currentIndex !== false && $currentIndex > 0)
+        // Find previous application index
+        $currentIndex = null;
+        foreach ($applications as $index => $app) {
+            if ($app->id === $currentAppId) {
+                $currentIndex = (int) $index;
+                break;
+            }
+        }
+
+        $prevIndex = ($currentIndex !== null && $currentIndex > 0)
             ? $currentIndex - 1
             : $applications->count() - 1;
 
         $prevApplication = $applications->get($prevIndex);
+
+        if (!$prevApplication) {
+            $prevApplication = $applications->last();
+        }
 
         $this->setTemp($session, 'current_application_id', $prevApplication->id);
         $this->setTemp($session, 'current_app_index', $prevIndex + 1);
