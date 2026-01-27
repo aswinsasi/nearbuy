@@ -430,4 +430,95 @@ class User extends Authenticatable
             ['type' => UserType::CUSTOMER]
         );
     }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Njaanum Panikkar Relationships
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get the job worker profile for this user.
+     *
+     * @srs-ref Njaanum Panikkar Module
+     */
+    public function jobWorker(): HasOne
+    {
+        return $this->hasOne(JobWorker::class);
+    }
+
+    /**
+     * Get job posts created by this user.
+     *
+     * @srs-ref Njaanum Panikkar Module
+     */
+    public function jobPosts(): HasMany
+    {
+        return $this->hasMany(JobPost::class, 'poster_user_id');
+    }
+
+    /**
+     * Get active job posts by this user.
+     */
+    public function activeJobPosts(): HasMany
+    {
+        return $this->jobPosts()->whereIn('status', ['open', 'assigned', 'in_progress']);
+    }
+
+    // ============================================================================
+    // ADD THESE HELPER METHODS inside the User class
+    // ============================================================================
+
+    /**
+     * Check if user is a job worker (has job worker PROFILE).
+     *
+     * @srs-ref Njaanum Panikkar Module
+     */
+    public function isJobWorker(): bool
+    {
+        return $this->jobWorker !== null;
+    }
+
+    /**
+     * Check if user can register as a job worker.
+     *
+     * Any registered user who doesn't already have a job worker profile can register.
+     */
+    public function canRegisterAsJobWorker(): bool
+    {
+        return $this->isRegistered() && $this->jobWorker === null;
+    }
+
+    /**
+     * Check if user can post jobs.
+     *
+     * Any registered user can post jobs.
+     */
+    public function canPostJobs(): bool
+    {
+        return $this->isRegistered();
+    }
+
+    /**
+     * Check if user has active job posts.
+     */
+    public function hasActiveJobPosts(): bool
+    {
+        return $this->activeJobPosts()->exists();
+    }
+
+    // ============================================================================
+    // ADD THIS SCOPE inside the User class
+    // ============================================================================
+
+    /**
+     * Scope to filter users who have a job worker profile.
+     *
+     * @srs-ref Njaanum Panikkar Module
+     */
+    public function scopeWithJobWorkerProfile(Builder $query): Builder
+    {
+        return $query->whereHas('jobWorker');
+    }
 }
