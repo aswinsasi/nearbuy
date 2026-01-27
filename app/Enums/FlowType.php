@@ -49,6 +49,8 @@ enum FlowType: string
     case JOB_WORKER_MENU = 'job_worker_menu';
     case JOB_POSTER_MENU = 'job_poster_menu';
     case JOB_APPLICATIONS = 'job_applications';
+    case JOB_APPLICATION = 'job_application';
+    case JOB_SELECTION = 'job_selection';
     case JOB_EXECUTION = 'job_execution';
 
     /**
@@ -83,6 +85,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU => 'Worker Dashboard',
             self::JOB_POSTER_MENU => 'Task Poster Menu',
             self::JOB_APPLICATIONS => 'Job Applications',
+            self::JOB_APPLICATION => 'Apply for Job',
+            self::JOB_SELECTION => 'Select Worker',
             self::JOB_EXECUTION => 'Task Execution',
         };
     }
@@ -119,6 +123,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU => '👷',
             self::JOB_POSTER_MENU => '📋',
             self::JOB_APPLICATIONS => '📝',
+            self::JOB_APPLICATION => '✋',
+            self::JOB_SELECTION => '👆',
             self::JOB_EXECUTION => '✅',
         };
     }
@@ -163,6 +169,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU => \App\Services\Flow\Handlers\Jobs\JobWorkerMenuHandler::class,
             self::JOB_POSTER_MENU => \App\Services\Flow\Handlers\Jobs\JobPosterMenuHandler::class,
             self::JOB_APPLICATIONS => \App\Services\Flow\Handlers\Jobs\JobApplicationsFlowHandler::class,
+            self::JOB_APPLICATION => \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler::class,
+            self::JOB_SELECTION => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
             self::JOB_EXECUTION => \App\Services\Flow\Handlers\Jobs\JobExecutionFlowHandler::class,
         };
     }
@@ -269,6 +277,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU,
             self::JOB_POSTER_MENU,
             self::JOB_APPLICATIONS,
+            self::JOB_APPLICATION,
+            self::JOB_SELECTION,
             self::JOB_EXECUTION,
         ]);
     }
@@ -327,6 +337,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU => 'show_menu',
             self::JOB_POSTER_MENU => 'show_menu',
             self::JOB_APPLICATIONS => 'show_applications',
+            self::JOB_APPLICATION => JobApplicationStep::VIEW_DETAILS->value,
+            self::JOB_SELECTION => 'view_applications',
             self::JOB_EXECUTION => JobExecutionStep::ARRIVAL_PHOTO->value,
         };
     }
@@ -363,6 +375,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU,
             self::JOB_POSTER_MENU,
             self::JOB_APPLICATIONS,
+            self::JOB_APPLICATION,
+            self::JOB_SELECTION,
             self::JOB_EXECUTION => null,
         };
     }
@@ -533,6 +547,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU => 15,
             self::JOB_POSTER_MENU => 15,
             self::JOB_APPLICATIONS => 30,
+            self::JOB_APPLICATION => 15,
+            self::JOB_SELECTION => 30,
             self::JOB_EXECUTION => 60,
             default => config('nearbuy.session.timeout_minutes', 30),
         };
@@ -570,6 +586,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU => 1,
             self::JOB_POSTER_MENU => 1,
             self::JOB_APPLICATIONS => 3,
+            self::JOB_APPLICATION => 5,
+            self::JOB_SELECTION => 4,
             self::JOB_EXECUTION => 5,
             default => 1,
         };
@@ -607,6 +625,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU => 'Worker dashboard and options',
             self::JOB_POSTER_MENU => 'View and manage your posted tasks',
             self::JOB_APPLICATIONS => 'View and manage worker applications',
+            self::JOB_APPLICATION => 'Apply for a job as a worker',
+            self::JOB_SELECTION => 'Select a worker for your task',
             self::JOB_EXECUTION => 'Track and complete assigned tasks',
         };
     }
@@ -635,6 +655,8 @@ enum FlowType: string
             self::PRODUCT_RESPOND,
             self::JOB_EXECUTION,
             self::JOB_APPLICATIONS,
+            self::JOB_APPLICATION,
+            self::JOB_SELECTION,
         ]);
     }
 
@@ -850,6 +872,8 @@ enum FlowType: string
             self::JOB_WORKER_MENU,
             self::JOB_POSTER_MENU,
             self::JOB_APPLICATIONS,
+            self::JOB_APPLICATION,
+            self::JOB_SELECTION,
             self::JOB_EXECUTION,
         ];
     }
