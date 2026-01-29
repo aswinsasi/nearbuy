@@ -17,7 +17,7 @@ class AgreementController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Agreement::with(['creator']);
+        $query = Agreement::with(['fromUser']);
 
         // Filter by status
         if ($request->filled('status')) {
@@ -47,7 +47,7 @@ class AgreementController extends Controller
                 $q->where('agreement_number', 'like', "%{$search}%")
                     ->orWhere('to_name', 'like', "%{$search}%")
                     ->orWhere('to_phone', 'like', "%{$search}%")
-                    ->orWhereHas('creator', function ($q) use ($search) {
+                    ->orWhereHas('fromUser', function ($q) use ($search) {
                         $q->where('name', 'like', "%{$search}%")
                             ->orWhere('phone', 'like', "%{$search}%");
                     });
@@ -72,7 +72,7 @@ class AgreementController extends Controller
      */
     public function show(Agreement $agreement)
     {
-        $agreement->load(['creator', 'counterpartyUser']);
+        $agreement->load(['fromUser', 'toUser']);
 
         return view('admin.agreements.show', compact('agreement'));
     }

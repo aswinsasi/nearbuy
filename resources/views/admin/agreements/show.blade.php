@@ -42,7 +42,7 @@
             <dl class="space-y-4">
                 <div>
                     <dt class="text-sm text-gray-500">Purpose</dt>
-                    <dd class="text-sm font-medium text-gray-800">{{ ucfirst($agreement->purpose->value ?? 'Other') }}</dd>
+                    <dd class="text-sm font-medium text-gray-800">{{ ucfirst($agreement->purpose_type?->value ?? 'Other') }}</dd>
                 </div>
                 @if($agreement->description)
                 <div>
@@ -122,21 +122,21 @@
                 <div class="p-4 border border-gray-200 rounded-lg">
                     <div class="flex items-center mb-3">
                         <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                            <span class="text-blue-600 font-medium">{{ substr($agreement->creator->name ?? 'N', 0, 1) }}</span>
+                            <span class="text-blue-600 font-medium">{{ substr($agreement->fromUser->name ?? 'N', 0, 1) }}</span>
                         </div>
                         <div class="ml-3">
-                            <p class="font-medium text-gray-800">{{ $agreement->creator->name ?? 'Unknown' }}</p>
+                            <p class="font-medium text-gray-800">{{ $agreement->fromUser->name ?? 'Unknown' }}</p>
                             <p class="text-xs text-gray-500">
-                                {{ $agreement->direction === 'giving' ? '💸 Creditor (Giving)' : '💰 Debtor (Receiving)' }}
+                                {{ $agreement->direction?->value === 'giving' ? '💸 Creditor (Giving)' : '💰 Debtor (Receiving)' }}
                             </p>
                         </div>
                     </div>
                     <div class="text-sm text-gray-500">
-                        <p>📱 {{ $agreement->creator->phone ?? 'N/A' }}</p>
+                        <p>📱 {{ $agreement->fromUser->phone ?? 'N/A' }}</p>
                         <p class="mt-1">Creator of agreement</p>
                     </div>
-                    @if($agreement->creator)
-                        <a href="{{ route('admin.users.show', $agreement->creator) }}" 
+                    @if($agreement->fromUser)
+                        <a href="{{ route('admin.users.show', $agreement->fromUser) }}" 
                            class="inline-block mt-2 text-sm text-blue-600 hover:text-blue-700">
                             View Profile →
                         </a>
@@ -152,22 +152,22 @@
                         <div class="ml-3">
                             <p class="font-medium text-gray-800">{{ $agreement->to_name }}</p>
                             <p class="text-xs text-gray-500">
-                                {{ $agreement->direction === 'giving' ? '💰 Debtor (Receiving)' : '💸 Creditor (Giving)' }}
+                                {{ $agreement->direction?->value === 'giving' ? '💰 Debtor (Receiving)' : '💸 Creditor (Giving)' }}
                             </p>
                         </div>
                     </div>
                     <div class="text-sm text-gray-500">
                         <p>📱 {{ $agreement->to_phone }}</p>
                         <p class="mt-1">
-                            @if($agreement->counterpartyUser)
+                            @if($agreement->toUser)
                                 <span class="text-green-600">Registered User</span>
                             @else
                                 <span class="text-yellow-600">Not Registered</span>
                             @endif
                         </p>
                     </div>
-                    @if($agreement->counterpartyUser)
-                        <a href="{{ route('admin.users.show', $agreement->counterpartyUser) }}" 
+                    @if($agreement->toUser)
+                        <a href="{{ route('admin.users.show', $agreement->toUser) }}" 
                            class="inline-block mt-2 text-sm text-blue-600 hover:text-blue-700">
                             View Profile →
                         </a>
@@ -192,19 +192,19 @@
                         <div>
                             <p class="font-medium text-gray-800">Agreement Created</p>
                             <p class="text-sm text-gray-500">{{ $agreement->created_at->format('M j, Y H:i') }}</p>
-                            <p class="text-sm text-gray-500">By {{ $agreement->creator->name ?? 'Unknown' }}</p>
+                            <p class="text-sm text-gray-500">By {{ $agreement->fromUser->name ?? 'Unknown' }}</p>
                         </div>
                     </div>
 
                     <!-- Creator Confirmed -->
-                    @if($agreement->creator_confirmed_at)
+                    @if($agreement->from_confirmed_at)
                     <div class="relative flex items-start ml-10">
                         <div class="absolute -left-10 w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
                             <span class="text-green-600">✓</span>
                         </div>
                         <div>
                             <p class="font-medium text-gray-800">Creator Confirmed</p>
-                            <p class="text-sm text-gray-500">{{ $agreement->creator_confirmed_at->format('M j, Y H:i') }}</p>
+                            <p class="text-sm text-gray-500">{{ $agreement->from_confirmed_at->format('M j, Y H:i') }}</p>
                         </div>
                     </div>
                     @endif
@@ -273,7 +273,7 @@
                         </div>
                         <div>
                             <p class="font-medium text-gray-800">Agreement Cancelled</p>
-                            <p class="text-sm text-gray-500">{{ $agreement->cancelled_at?->format('M j, Y H:i') ?? 'N/A' }}</p>
+                            <p class="text-sm text-gray-500">{{ $agreement->updated_at?->format('M j, Y H:i') ?? 'N/A' }}</p>
                         </div>
                     </div>
                     @endif
@@ -282,7 +282,7 @@
         </div>
 
         <!-- Admin Notes -->
-        @if($agreement->admin_notes)
+        @if($agreement->admin_notes ?? false)
         <div class="bg-white rounded-xl shadow-sm p-6">
             <h3 class="font-semibold text-gray-800 mb-4">Admin Notes</h3>
             <p class="text-gray-600">{{ $agreement->admin_notes }}</p>

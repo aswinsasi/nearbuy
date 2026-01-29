@@ -18,8 +18,8 @@
             <select name="category" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
                 <option value="">All Categories</option>
                 @foreach($categories as $category)
-                    <option value="{{ $category }}" {{ request('category') === $category ? 'selected' : '' }}>
-                        {{ ucfirst($category) }}
+                    <option value="{{ $category->value }}" {{ request('category') === $category->value ? 'selected' : '' }}>
+                        {{ ucfirst($category->value) }}
                     </option>
                 @endforeach
             </select>
@@ -80,7 +80,7 @@
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">
                         <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
-                            {{ ucfirst($shop->category) }}
+                            {{ ucfirst($shop->category->value) }}
                         </span>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">

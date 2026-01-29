@@ -113,8 +113,8 @@
                                 'expired' => 'bg-red-100 text-red-700',
                             ];
                         @endphp
-                        <span class="px-2 py-1 text-xs font-medium rounded-full {{ $statusColors[$catch->status] ?? 'bg-gray-100 text-gray-700' }}">
-                            {{ ucfirst(str_replace('_', ' ', $catch->status)) }}
+                        <span class="px-2 py-1 text-xs font-medium rounded-full {{ $statusColors[$catch->status->value] ?? 'bg-gray-100 text-gray-700' }}">
+                            {{ ucfirst(str_replace('_', ' ', $catch->status->value)) }}
                         </span>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -128,7 +128,7 @@
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <a href="{{ route('admin.fish.catches.show', $catch) }}" class="text-blue-600 hover:text-blue-700 mr-3">View</a>
-                        @if($catch->status === 'available')
+                        @if($catch->status->value === 'available')
                             <form method="POST" action="{{ route('admin.fish.catches.update-status', $catch) }}" class="inline">
                                 @csrf
                                 @method('PUT')

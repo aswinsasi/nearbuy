@@ -74,7 +74,7 @@
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">
                         <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
-                            {{ ucfirst($request->category ?? 'All') }}
+                            {{ ucfirst($request->category?->value ?? 'All') }}
                         </span>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">

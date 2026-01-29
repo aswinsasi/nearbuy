@@ -78,12 +78,12 @@ class FishSellerController extends Controller
                 ->count(),
             'today_views' => FishCatch::where('fish_seller_id', $seller->id)
                 ->whereDate('created_at', today())
-                ->sum('views'),
+                ->sum('view_count'),
             'week_catches' => FishCatch::where('fish_seller_id', $seller->id)
                 ->where('created_at', '>=', now()->subWeek())
                 ->count(),
             'total_catches' => FishCatch::where('fish_seller_id', $seller->id)->count(),
-            'total_views' => FishCatch::where('fish_seller_id', $seller->id)->sum('views'),
+            'total_views' => FishCatch::where('fish_seller_id', $seller->id)->sum('view_count'),
             'week_coming' => DB::table('fish_catch_responses')
                 ->whereIn('fish_catch_id', function ($q) use ($seller) {
                     $q->select('id')->from('fish_catches')->where('fish_seller_id', $seller->id);

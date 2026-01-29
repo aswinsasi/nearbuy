@@ -16,7 +16,7 @@
                     <span class="text-2xl text-emerald-600 font-medium">{{ substr($shop->shop_name, 0, 1) }}</span>
                 </div>
                 <h2 class="mt-4 text-xl font-semibold text-gray-800">{{ $shop->shop_name }}</h2>
-                <p class="text-gray-500">{{ ucfirst($shop->category) }}</p>
+                <p class="text-gray-500">{{ ucfirst($shop->category->value) }}</p>
 
                 <div class="mt-4 flex justify-center gap-2">
                     @if($shop->verified)
@@ -56,7 +56,7 @@
                     </div>
                     <div>
                         <dt class="text-sm text-gray-500">Notification Frequency</dt>
-                        <dd class="text-sm font-medium text-gray-800">{{ ucfirst(str_replace('_', ' ', $shop->notification_frequency ?? 'immediate')) }}</dd>
+                        <dd class="text-sm font-medium text-gray-800">{{ ucfirst(str_replace('_', ' ', $shop->notification_frequency?->value ?? 'immediate')) }}</dd>
                     </div>
                     <div>
                         <dt class="text-sm text-gray-500">Registered</dt>
@@ -137,14 +137,20 @@
                                 </div>
                             </div>
                             <div class="text-right">
-                                @if($offer->is_active && $offer->valid_until > now())
+                                @if($offer->is_active && ($offer->valid_until === null || $offer->valid_until > now()))
                                     <span class="px-2 py-1 text-xs rounded-full bg-green-100 text-green-700">Active</span>
-                                @elseif($offer->valid_until < now())
+                                @elseif($offer->valid_until && $offer->valid_until < now())
                                     <span class="px-2 py-1 text-xs rounded-full bg-red-100 text-red-700">Expired</span>
                                 @else
                                     <span class="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700">Inactive</span>
                                 @endif
-                                <p class="text-xs text-gray-400 mt-1">Until {{ $offer->valid_until->format('M j, Y') }}</p>
+                                <p class="text-xs text-gray-400 mt-1">
+                                    @if($offer->valid_until)
+                                        Until {{ $offer->valid_until->format('M j, Y') }}
+                                    @else
+                                        No expiry
+                                    @endif
+                                </p>
                             </div>
                         </div>
                     @endforeach

@@ -26,9 +26,10 @@
                             'fish_shop' => 'bg-green-100 text-green-700',
                             'wholesaler' => 'bg-orange-100 text-orange-700',
                         ];
+                        $sellerTypeValue = $seller->seller_type->value ?? $seller->seller_type;
                     @endphp
-                    <span class="px-3 py-1 text-sm font-medium rounded-full {{ $typeColors[$seller->seller_type] ?? 'bg-gray-100 text-gray-700' }}">
-                        {{ ucfirst(str_replace('_', ' ', $seller->seller_type)) }}
+                    <span class="px-3 py-1 text-sm font-medium rounded-full {{ $typeColors[$sellerTypeValue] ?? 'bg-gray-100 text-gray-700' }}">
+                        {{ ucfirst(str_replace('_', ' ', $sellerTypeValue)) }}
                     </span>
                     @if($seller->is_active)
                         <span class="px-3 py-1 text-sm font-medium rounded-full bg-green-100 text-green-700">Active</span>
@@ -166,9 +167,10 @@
                                         'sold_out' => 'bg-gray-100 text-gray-700',
                                         'expired' => 'bg-red-100 text-red-700',
                                     ];
+                                    $catchStatusValue = $catch->status->value ?? $catch->status;
                                 @endphp
-                                <span class="px-2 py-1 text-xs rounded-full {{ $statusColors[$catch->status] ?? 'bg-gray-100 text-gray-700' }}">
-                                    {{ ucfirst(str_replace('_', ' ', $catch->status)) }}
+                                <span class="px-2 py-1 text-xs rounded-full {{ $statusColors[$catchStatusValue] ?? 'bg-gray-100 text-gray-700' }}">
+                                    {{ ucfirst(str_replace('_', ' ', $catchStatusValue)) }}
                                 </span>
                                 <p class="text-xs text-gray-400 mt-1">{{ $catch->created_at->diffForHumans() }}</p>
                             </div>
@@ -192,11 +194,12 @@
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Seller Type</label>
+                        @php $sellerTypeVal = $seller->seller_type->value ?? $seller->seller_type; @endphp
                         <select name="seller_type" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
-                            <option value="fisherman" {{ $seller->seller_type === 'fisherman' ? 'selected' : '' }}>Fisherman</option>
-                            <option value="harbour_vendor" {{ $seller->seller_type === 'harbour_vendor' ? 'selected' : '' }}>Harbour Vendor</option>
-                            <option value="fish_shop" {{ $seller->seller_type === 'fish_shop' ? 'selected' : '' }}>Fish Shop</option>
-                            <option value="wholesaler" {{ $seller->seller_type === 'wholesaler' ? 'selected' : '' }}>Wholesaler</option>
+                            <option value="fisherman" {{ $sellerTypeVal === 'fisherman' ? 'selected' : '' }}>Fisherman</option>
+                            <option value="harbour_vendor" {{ $sellerTypeVal === 'harbour_vendor' ? 'selected' : '' }}>Harbour Vendor</option>
+                            <option value="fish_shop" {{ $sellerTypeVal === 'fish_shop' ? 'selected' : '' }}>Fish Shop</option>
+                            <option value="wholesaler" {{ $sellerTypeVal === 'wholesaler' ? 'selected' : '' }}>Wholesaler</option>
                         </select>
                     </div>
                     <div class="col-span-2">

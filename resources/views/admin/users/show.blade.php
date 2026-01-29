@@ -93,7 +93,7 @@
                 </div>
                 <div>
                     <dt class="text-sm text-gray-500">Category</dt>
-                    <dd class="text-sm font-medium text-gray-800">{{ ucfirst($user->shop->category) }}</dd>
+                    <dd class="text-sm font-medium text-gray-800">{{ ucfirst($user->shop->category->value) }}</dd>
                 </div>
                 <div>
                     <dt class="text-sm text-gray-500">Status</dt>
@@ -159,7 +159,7 @@
                                 <p class="font-medium text-gray-800">₹{{ number_format($agreement->amount) }}</p>
                                 <p class="text-sm text-gray-500">
                                     {{ $agreement->agreement_number }} •
-                                    with {{ $agreement->creator_id === $user->id ? $agreement->to_name : $agreement->creator->name }}
+                                    with {{ $agreement->from_user_id === $user->id ? $agreement->to_name : $agreement->fromUser->name }}
                                 </p>
                             </div>
                             <div class="text-right">

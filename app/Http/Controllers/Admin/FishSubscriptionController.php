@@ -22,7 +22,6 @@ class FishSubscriptionController extends Controller
     {
         $query = FishSubscription::with([
             'user:id,name,phone',
-            'fishTypes:id,name_en,name_ml',
         ]);
 
         if ($request->has('active') && $request->active !== '') {
@@ -57,7 +56,6 @@ class FishSubscriptionController extends Controller
     {
         $subscription->load([
             'user:id,name,phone',
-            'fishTypes',
             'alerts' => function ($q) {
                 $q->with(['catch.fishType', 'catch.seller'])->latest()->limit(10);
             },

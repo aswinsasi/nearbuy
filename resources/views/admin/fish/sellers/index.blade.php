@@ -85,9 +85,10 @@
                                 'fish_shop' => 'bg-green-100 text-green-700',
                                 'wholesaler' => 'bg-orange-100 text-orange-700',
                             ];
+                            $sellerTypeValue = $seller->seller_type->value ?? $seller->seller_type;
                         @endphp
-                        <span class="px-2 py-1 text-xs font-medium rounded-full {{ $typeColors[$seller->seller_type] ?? 'bg-gray-100 text-gray-700' }}">
-                            {{ ucfirst(str_replace('_', ' ', $seller->seller_type)) }}
+                        <span class="px-2 py-1 text-xs font-medium rounded-full {{ $typeColors[$sellerTypeValue] ?? 'bg-gray-100 text-gray-700' }}">
+                            {{ ucfirst(str_replace('_', ' ', $sellerTypeValue)) }}
                         </span>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">

@@ -110,10 +110,10 @@
                 <tr class="hover:bg-gray-50">
                     <td class="px-6 py-4 whitespace-nowrap">
                         <div class="text-sm font-medium text-gray-900">{{ $agreement->agreement_number }}</div>
-                        <div class="text-sm text-gray-500">{{ ucfirst($agreement->purpose->value ?? 'other') }}</div>
+                        <div class="text-sm text-gray-500">{{ ucfirst($agreement->purpose_type?->value ?? 'other') }}</div>
                     </td>
                     <td class="px-6 py-4">
-                        <div class="text-sm text-gray-900">{{ $agreement->creator->name ?? 'Unknown' }}</div>
+                        <div class="text-sm text-gray-900">{{ $agreement->fromUser->name ?? 'Unknown' }}</div>
                         <div class="text-sm text-gray-500">↔ {{ $agreement->to_name }}</div>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">

@@ -120,11 +120,13 @@ class FishCatchController extends Controller
             'hours' => 'required|integer|min:1|max:24',
         ]);
 
+        $hours = (int) $validated['hours'];
+
         $catch->update([
-            'expires_at' => ($catch->expires_at ?? now())->addHours($validated['hours']),
+            'expires_at' => ($catch->expires_at ?? now())->addHours($hours),
         ]);
 
-        return back()->with('success', "Catch expiry extended by {$validated['hours']} hours");
+        return back()->with('success', "Catch expiry extended by {$hours} hours");
     }
 
     /**

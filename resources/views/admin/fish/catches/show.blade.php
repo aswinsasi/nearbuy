@@ -26,8 +26,8 @@
                             'expired' => 'bg-red-100 text-red-700',
                         ];
                     @endphp
-                    <span class="px-3 py-1 text-sm font-medium rounded-full {{ $statusColors[$catch->status] ?? 'bg-gray-100 text-gray-700' }}">
-                        {{ ucfirst(str_replace('_', ' ', $catch->status)) }}
+                    <span class="px-3 py-1 text-sm font-medium rounded-full {{ $statusColors[$catch->status->value] ?? 'bg-gray-100 text-gray-700' }}">
+                        {{ ucfirst(str_replace('_', ' ', $catch->status->value)) }}
                     </span>
                 </div>
             </div>
@@ -82,10 +82,10 @@
                     @method('PUT')
                     <div class="flex gap-2 mb-2">
                         <select name="status" class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm">
-                            <option value="available" {{ $catch->status === 'available' ? 'selected' : '' }}>Available</option>
-                            <option value="low_stock" {{ $catch->status === 'low_stock' ? 'selected' : '' }}>Low Stock</option>
-                            <option value="sold_out" {{ $catch->status === 'sold_out' ? 'selected' : '' }}>Sold Out</option>
-                            <option value="expired" {{ $catch->status === 'expired' ? 'selected' : '' }}>Expired</option>
+                            <option value="available" {{ $catch->status->value === 'available' ? 'selected' : '' }}>Available</option>
+                            <option value="low_stock" {{ $catch->status->value === 'low_stock' ? 'selected' : '' }}>Low Stock</option>
+                            <option value="sold_out" {{ $catch->status->value === 'sold_out' ? 'selected' : '' }}>Sold Out</option>
+                            <option value="expired" {{ $catch->status->value === 'expired' ? 'selected' : '' }}>Expired</option>
                         </select>
                         <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
                             Update
@@ -93,7 +93,7 @@
                     </div>
                 </form>
 
-                @if($catch->status === 'available' || $catch->status === 'low_stock')
+                @if($catch->status->value === 'available' || $catch->status->value === 'low_stock')
                 <form method="POST" action="{{ route('admin.fish.catches.extend-expiry', $catch) }}">
                     @csrf
                     <div class="flex gap-2">

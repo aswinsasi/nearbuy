@@ -130,8 +130,8 @@
                             <p class="text-xs text-gray-500">{{ $catch->seller->business_name ?? 'Unknown Seller' }}</p>
                         </div>
                     </div>
-                    <span class="px-2 py-1 text-xs rounded-full {{ $catch->status === 'available' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700' }}">
-                        {{ ucfirst($catch->status) }}
+                    <span class="px-2 py-1 text-xs rounded-full {{ $catch->status->value === 'available' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700' }}">
+                        {{ ucfirst($catch->status->value) }}
                     </span>
                 </div>
             @empty
@@ -153,7 +153,7 @@
                         </div>
                         <div class="ml-3">
                             <p class="text-sm font-medium text-gray-800">{{ $seller->business_name }}</p>
-                            <p class="text-xs text-gray-500">{{ ucfirst(str_replace('_', ' ', $seller->seller_type)) }}</p>
+                            <p class="text-xs text-gray-500">{{ ucfirst(str_replace('_', ' ', $seller->seller_type->value ?? $seller->seller_type)) }}</p>
                         </div>
                     </div>
                     @if($seller->verified_at)

@@ -52,7 +52,7 @@
                 </div>
                 <div>
                     <dt class="text-sm text-gray-500">Category</dt>
-                    <dd class="text-sm font-medium text-gray-800">{{ ucfirst($productRequest->category ?? 'All') }}</dd>
+                    <dd class="text-sm font-medium text-gray-800">{{ ucfirst($productRequest->category?->value ?? 'All') }}</dd>
                 </div>
                 <div>
                     <dt class="text-sm text-gray-500">Search Radius</dt>

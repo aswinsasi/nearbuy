@@ -14,6 +14,10 @@ use App\Http\Controllers\Admin\ProductRequestController;
 use App\Http\Controllers\Admin\SettingsController;
 use App\Http\Controllers\Admin\ShopController;
 use App\Http\Controllers\Admin\UserController;
+use App\Http\Controllers\Admin\JobCategoryController;
+use App\Http\Controllers\Admin\JobDashboardController;
+use App\Http\Controllers\Admin\JobPostController;
+use App\Http\Controllers\Admin\JobWorkerController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -133,4 +137,45 @@ Route::middleware('admin.auth')->group(function () {
         // Fish Dashboard
         Route::get('dashboard', [FishDashboardController::class, 'index'])->name('dashboard');
     });
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Jobs Module (Njaanum Panikkar) Routes
+    |--------------------------------------------------------------------------
+    */
+    Route::prefix('jobs')->name('admin.jobs.')->group(function () {
+
+        // Dashboard
+        Route::get('dashboard', [JobDashboardController::class, 'index'])->name('dashboard');
+
+        // Workers
+        Route::get('workers', [JobWorkerController::class, 'index'])->name('workers.index');
+        Route::get('workers/export', [JobWorkerController::class, 'export'])->name('workers.export');
+        Route::get('workers/{worker}', [JobWorkerController::class, 'show'])->name('workers.show');
+        Route::put('workers/{worker}', [JobWorkerController::class, 'update'])->name('workers.update');
+        Route::post('workers/{worker}/verify', [JobWorkerController::class, 'verify'])->name('workers.verify');
+        Route::post('workers/{worker}/unverify', [JobWorkerController::class, 'unverify'])->name('workers.unverify');
+        Route::post('workers/{worker}/toggle-availability', [JobWorkerController::class, 'toggleAvailability'])->name('workers.toggle-availability');
+
+        // Job Posts
+        Route::get('posts', [JobPostController::class, 'index'])->name('posts.index');
+        Route::get('posts/export', [JobPostController::class, 'export'])->name('posts.export');
+        Route::get('posts/stats', [JobPostController::class, 'stats'])->name('posts.stats');
+        Route::get('posts/{job}', [JobPostController::class, 'show'])->name('posts.show');
+        Route::post('posts/{job}/cancel', [JobPostController::class, 'cancel'])->name('posts.cancel');
+        Route::post('posts/{job}/reopen', [JobPostController::class, 'reopen'])->name('posts.reopen');
+        Route::post('posts/{job}/complete', [JobPostController::class, 'complete'])->name('posts.complete');
+        Route::post('posts/{job}/unassign', [JobPostController::class, 'unassign'])->name('posts.unassign');
+
+        // Categories
+        Route::get('categories', [JobCategoryController::class, 'index'])->name('categories.index');
+        Route::post('categories', [JobCategoryController::class, 'store'])->name('categories.store');
+        Route::get('categories/{category}', [JobCategoryController::class, 'show'])->name('categories.show');
+        Route::put('categories/{category}', [JobCategoryController::class, 'update'])->name('categories.update');
+        Route::delete('categories/{category}', [JobCategoryController::class, 'destroy'])->name('categories.destroy');
+        Route::post('categories/{category}/toggle-active', [JobCategoryController::class, 'toggleActive'])->name('categories.toggle-active');
+    });
+
+
 });

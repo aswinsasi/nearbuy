@@ -25,9 +25,9 @@
 
                 <!-- Status Badge -->
                 <div class="absolute top-3 right-3">
-                    @if($offer->is_active && $offer->valid_until > now())
+                    @if($offer->is_active && ($offer->valid_until === null || $offer->valid_until > now()))
                         <span class="px-3 py-1 text-sm font-medium rounded-full bg-green-500 text-white">Active</span>
-                    @elseif($offer->valid_until < now())
+                    @elseif($offer->valid_until && $offer->valid_until < now())
                         <span class="px-3 py-1 text-sm font-medium rounded-full bg-red-500 text-white">Expired</span>
                     @else
                         <span class="px-3 py-1 text-sm font-medium rounded-full bg-gray-500 text-white">Inactive</span>
@@ -63,11 +63,15 @@
                     <div>
                         <dt class="text-sm text-gray-500">Valid Until</dt>
                         <dd class="text-sm font-medium text-gray-800">
-                            {{ $offer->valid_until->format('M j, Y') }}
-                            @if($offer->valid_until < now())
-                                <span class="text-red-500 text-xs">(Expired)</span>
+                            @if($offer->valid_until)
+                                {{ $offer->valid_until->format('M j, Y') }}
+                                @if($offer->valid_until < now())
+                                    <span class="text-red-500 text-xs">(Expired)</span>
+                                @else
+                                    <span class="text-green-500 text-xs">({{ $offer->valid_until->diffForHumans() }})</span>
+                                @endif
                             @else
-                                <span class="text-green-500 text-xs">({{ $offer->valid_until->diffForHumans() }})</span>
+                                <span class="text-gray-500">No expiry date</span>
                             @endif
                         </dd>
                     </div>
@@ -112,7 +116,7 @@
                 </div>
                 <div class="ml-4 flex-1">
                     <h4 class="font-medium text-gray-800">{{ $offer->shop->shop_name ?? 'Unknown Shop' }}</h4>
-                    <p class="text-sm text-gray-500">{{ ucfirst($offer->shop->category ?? 'N/A') }}</p>
+                    <p class="text-sm text-gray-500">{{ ucfirst($offer->shop->category?->value ?? 'N/A') }}</p>
                     <p class="text-sm text-gray-500 mt-1">{{ $offer->shop->address ?? '' }}</p>
                     
                     <div class="mt-3 flex gap-2">
@@ -225,7 +229,7 @@
                 </div>
                 @endif
 
-                @if($offer->valid_until < now())
+                @if($offer->valid_until && $offer->valid_until < now())
                 <div class="flex items-center text-sm">
                     <div class="w-8 h-8 bg-red-100 rounded-full flex items-center justify-center mr-3">
                         <span class="text-red-600">⏰</span>
