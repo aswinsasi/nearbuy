@@ -66,13 +66,17 @@ class JobWorker extends Model
 
     /**
      * The attributes that should be cast.
+     * 
+     * NOTE: job_types and availability are NOT cast here - they use
+     * custom accessors/mutators to handle JSON encoding/decoding
+     * because session context stores them as JSON strings.
      */
     protected $casts = [
         'vehicle_type' => VehicleType::class,
-        'job_types' => 'array',
-        'availability' => 'array',
-        'latitude' => 'decimal:8',
-        'longitude' => 'decimal:8',
+        // 'job_types' => 'array',      // Handled by accessor/mutator
+        // 'availability' => 'array',   // Handled by accessor/mutator
+        'latitude' => 'float',
+        'longitude' => 'float',
         'rating' => 'decimal:1',
         'total_earnings' => 'decimal:2',
         'is_available' => 'boolean',
@@ -92,6 +96,107 @@ class JobWorker extends Model
         'is_available' => true,
         'is_verified' => false,
     ];
+
+    /*
+    |--------------------------------------------------------------------------
+    | Mutators - Ensure proper JSON encoding for array fields
+    |--------------------------------------------------------------------------
+    | These mutators handle the "Array to string conversion" error by
+    | explicitly JSON-encoding arrays before database insert.
+    | Custom accessors below handle decoding on read (since 'array' cast is removed).
+    */
+
+    /**
+     * Set job_types attribute - ensures proper JSON encoding.
+     * Handles arrays, JSON strings, or mixed input from session context.
+     */
+    public function setJobTypesAttribute($value): void
+    {
+        $this->attributes['job_types'] = $this->ensureJsonEncoded($value);
+    }
+
+    /**
+     * Set availability attribute - ensures proper JSON encoding.
+     * Handles arrays, JSON strings, or mixed input from session context.
+     */
+    public function setAvailabilityAttribute($value): void
+    {
+        $this->attributes['availability'] = $this->ensureJsonEncoded($value);
+    }
+
+    /**
+     * Ensure value is properly JSON encoded for database storage.
+     * Handles: PHP arrays, JSON strings, or null.
+     */
+    protected function ensureJsonEncoded(mixed $value): string
+    {
+        // If null or empty, return empty array JSON
+        if ($value === null || $value === '') {
+            return '[]';
+        }
+
+        // If already a string, check if it's valid JSON
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return $value; // Already valid JSON string
+            }
+            // Not valid JSON, wrap in array
+            return json_encode([$value]);
+        }
+
+        // If it's an array, JSON encode it
+        if (is_array($value)) {
+            return json_encode($value);
+        }
+
+        // Fallback: wrap in array and encode
+        return json_encode([$value]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors - Decode JSON strings to arrays when reading
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get job_types attribute - decodes JSON string to PHP array.
+     */
+    public function getJobTypesAttribute($value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Get availability attribute - decodes JSON string to PHP array.
+     */
+    public function getAvailabilityAttribute($value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return [];
+    }
 
     /*
     |--------------------------------------------------------------------------

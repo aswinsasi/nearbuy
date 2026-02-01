@@ -22,7 +22,10 @@ use Illuminate\Support\Collection;
  * BILINGUAL VERSION - English + Malayalam (മലയാളം)
  * Optimized for Kerala market release.
  * 
- * IMPORTANT: WhatsApp List Item Title Limit = 24 characters
+ * IMPORTANT: WhatsApp Interactive Message Limits:
+ * - List Item Title: 24 characters max
+ * - List Button Text: 20 characters max
+ * - Button Title: 20 characters max
  * Keep titles short, put details in description.
  *
  * @srs-ref Section 3 - Jobs Marketplace
@@ -60,7 +63,7 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '👷 ഞാനും പണിക്കാർ',
+            'header' => '👷 Njaanum Panikkar',
             'body' => "👷 *ഞാനും പണിക്കാർ - Njaanum Panikkar*\n\n" .
                 "Got free time? Earn money doing simple tasks!\n" .
                 "ഫ്രീ ടൈം ഉണ്ടോ? ലളിതമായ ജോലികൾ ചെയ്ത് പണം സമ്പാദിക്കൂ!\n\n" .
@@ -69,9 +72,9 @@ class JobMessages
                 "✅ Get paid same day\n\n" .
                 "നമുക്ക് തുടങ്ങാം! 💪",
             'buttons' => [
-                ['id' => 'start_worker_registration', 'title' => '✅ രജിസ്റ്റർ ചെയ്യുക'],
-                ['id' => 'browse_jobs', 'title' => '🔍 ജോലികൾ കാണുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'start_worker_registration', 'title' => '✅ Register'],
+                ['id' => 'browse_jobs', 'title' => '🔍 Browse Jobs'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -83,14 +86,14 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '👤 പേര്',
+            'header' => '👤 Name',
             'body' => "*Step 1/7* 📝\n\n" .
                 "👤 *നിങ്ങളുടെ പേര്*\n\n" .
                 "Please enter your full name\n" .
                 "നിങ്ങളുടെ മുഴുവൻ പേര് എഴുതുക\n\n" .
                 "_ഉദാ: രാജേഷ് കുമാർ_",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -102,7 +105,7 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📸 ഫോട്ടോ',
+            'header' => '📸 Photo',
             'body' => "*Step 2/7* 📝\n\n" .
                 "📸 *പ്രൊഫൈൽ ഫോട്ടോ*\n\n" .
                 "A clear photo helps build trust with task givers.\n" .
@@ -110,8 +113,8 @@ class JobMessages
                 "📎 → Camera/Gallery ടാപ്പ് ചെയ്യുക\n\n" .
                 "_ഫോട്ടോ ഇല്ലെങ്കിൽ Skip ചെയ്യാം_",
             'buttons' => [
-                ['id' => 'skip_worker_photo', 'title' => '⏭️ ഒഴിവാക്കുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'skip_worker_photo', 'title' => '⏭️ Skip'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -123,14 +126,14 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📍 ലൊക്കേഷൻ',
+            'header' => '📍 Location',
             'body' => "*Step 3/7* 📝\n\n" .
                 "📍 *നിങ്ങളുടെ ലൊക്കേഷൻ*\n\n" .
                 "Share your location so we can find jobs near you.\n" .
                 "അടുത്തുള്ള ജോലികൾ കണ്ടെത്താൻ ലൊക്കേഷൻ ഷെയർ ചെയ്യുക.\n\n" .
                 "📎 → *Location* ടാപ്പ് ചെയ്യുക",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -142,16 +145,16 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🚗 വാഹനം',
+            'header' => '🚗 Vehicle',
             'body' => "*Step 4/7* 📝\n\n" .
                 "🚗 *വാഹനം ഉണ്ടോ?*\n\n" .
                 "Do you have a vehicle for transportation?\n" .
                 "യാത്രയ്ക്ക് വാഹനം ഉണ്ടോ?\n\n" .
                 "_ഡെലിവറി ജോലികൾക്ക് വാഹനം വേണം_",
             'buttons' => [
-                ['id' => 'vehicle_none', 'title' => '🚶 നടപ്പ് മാത്രം'],
-                ['id' => 'vehicle_two_wheeler', 'title' => '🛵 ഇരുചക്രവാഹനം'],
-                ['id' => 'vehicle_four_wheeler', 'title' => '🚗 നാലുചക്ര വാഹനം'],
+                ['id' => 'vehicle_none', 'title' => '🚶 Walking Only'],
+                ['id' => 'vehicle_two_wheeler', 'title' => '🛵 Two Wheeler'],
+                ['id' => 'vehicle_four_wheeler', 'title' => '🚗 Four Wheeler'],
             ],
         ];
     }
@@ -186,13 +189,13 @@ class JobMessages
 
         return [
             'type' => 'list',
-            'header' => '💼 ജോലി തരങ്ങൾ',
+            'header' => '💼 Job Types',
             'body' => "*Step 5/7* 📝\n\n" .
                 "💼 *ഏത് ജോലികൾ ചെയ്യാം?*\n\n" .
                 "Select job types you can do.\n" .
                 "നിങ്ങൾക്ക് ചെയ്യാൻ കഴിയുന്ന ജോലികൾ തിരഞ്ഞെടുക്കുക.\n\n" .
                 "_ഒന്നിലധികം തിരഞ്ഞെടുക്കാം. Done അമർത്തുക._",
-            'button' => 'ജോലി തിരഞ്ഞെടുക്കുക',
+            'button' => 'Select Jobs',
             'sections' => [
                 [
                     'title' => '🟢 Zero Skills',
@@ -213,21 +216,21 @@ class JobMessages
     {
         return [
             'type' => 'list',
-            'header' => '🕐 ലഭ്യത',
+            'header' => '🕐 Availability',
             'body' => "*Step 6/7* 📝\n\n" .
                 "🕐 *എപ്പോൾ ലഭ്യമാണ്?*\n\n" .
                 "When are you available for work?\n" .
                 "ജോലിക്ക് എപ്പോൾ ലഭ്യമാണ്?",
-            'button' => 'സമയം തിരഞ്ഞെടുക്കുക',
+            'button' => 'Select Time',
             'sections' => [
                 [
-                    'title' => 'ലഭ്യമായ സമയം',
+                    'title' => 'Available Time',
                     'rows' => [
-                        ['id' => 'avail_morning', 'title' => '🌅 രാവിലെ', 'description' => 'Morning - 6:00 AM - 12:00 PM'],
-                        ['id' => 'avail_afternoon', 'title' => '☀️ ഉച്ചയ്ക്ക്', 'description' => 'Afternoon - 12:00 PM - 6:00 PM'],
-                        ['id' => 'avail_evening', 'title' => '🌆 വൈകുന്നേരം', 'description' => 'Evening - 6:00 PM - 10:00 PM'],
-                        ['id' => 'avail_flexible', 'title' => '🔄 എപ്പോഴും', 'description' => 'Flexible - Any time'],
-                        ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'],
+                        ['id' => 'avail_morning', 'title' => '🌅 Morning', 'description' => '6:00 AM - 12:00 PM'],
+                        ['id' => 'avail_afternoon', 'title' => '☀️ Afternoon', 'description' => '12:00 PM - 6:00 PM'],
+                        ['id' => 'avail_evening', 'title' => '🌆 Evening', 'description' => '6:00 PM - 10:00 PM'],
+                        ['id' => 'avail_flexible', 'title' => '🔄 Flexible', 'description' => 'Any time'],
+                        ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main Menu'],
                     ],
                 ],
             ],
@@ -242,28 +245,28 @@ class JobMessages
         $name = $workerData['name'] ?? 'Unknown';
         $vehicle = $workerData['vehicle_type'] ?? 'none';
         $vehicleDisplay = match($vehicle) {
-            'two_wheeler' => '🛵 ഇരുചക്രവാഹനം',
-            'four_wheeler' => '🚗 നാലുചക്ര വാഹനം',
-            default => '🚶 നടപ്പ് മാത്രം',
+            'two_wheeler' => '🛵 Two Wheeler',
+            'four_wheeler' => '🚗 Four Wheeler',
+            default => '🚶 Walking Only',
         };
         $jobCount = count($workerData['job_types'] ?? []);
         $hasPhoto = !empty($workerData['photo_url']) ? '✅' : '❌';
 
         return [
             'type' => 'buttons',
-            'header' => '✅ സ്ഥിരീകരിക്കുക',
+            'header' => '✅ Confirm',
             'body' => "*Step 7/7* 📝\n\n" .
-                "📋 *രജിസ്ട്രേഷൻ വിവരങ്ങൾ*\n\n" .
-                "👤 പേര്: *{$name}*\n" .
-                "📸 ഫോട്ടോ: {$hasPhoto}\n" .
-                "📍 ലൊക്കേഷൻ: ✅\n" .
-                "🚗 വാഹനം: {$vehicleDisplay}\n" .
-                "💼 ജോലികൾ: {$jobCount} types\n\n" .
-                "എല്ലാം ശരിയാണോ?",
+                "📋 *Registration Details*\n\n" .
+                "👤 Name: *{$name}*\n" .
+                "📸 Photo: {$hasPhoto}\n" .
+                "📍 Location: ✅\n" .
+                "🚗 Vehicle: {$vehicleDisplay}\n" .
+                "💼 Jobs: {$jobCount} types\n\n" .
+                "All correct?",
             'buttons' => [
-                ['id' => 'confirm_worker_reg', 'title' => '✅ സ്ഥിരീകരിക്കുക'],
-                ['id' => 'edit_worker_reg', 'title' => '✏️ എഡിറ്റ്'],
-                ['id' => 'cancel_worker_reg', 'title' => '❌ റദ്ദാക്കുക'],
+                ['id' => 'confirm_worker_reg', 'title' => '✅ Confirm'],
+                ['id' => 'edit_worker_reg', 'title' => '✏️ Edit'],
+                ['id' => 'cancel_worker_reg', 'title' => '❌ Cancel'],
             ],
         ];
     }
@@ -275,17 +278,18 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🎉 രജിസ്ട്രേഷൻ പൂർത്തി!',
-            'body' => "🎉 *സ്വാഗതം, {$worker->name}!*\n\n" .
+            'header' => '🎉 Registered!',
+            'body' => "🎉 *Welcome, {$worker->name}!*\n\n" .
+                "You are now registered as a worker!\n" .
                 "നിങ്ങൾ ഇപ്പോൾ ഒരു പണിക്കാരനായി രജിസ്റ്റർ ചെയ്തു!\n\n" .
-                "✅ അടുത്തുള്ള ജോലികൾക്ക് അലേർട്ട് ലഭിക്കും\n" .
-                "✅ നിങ്ങൾക്ക് ഇഷ്ടമുള്ള ജോലിക്ക് അപേക്ഷിക്കാം\n" .
-                "✅ പണി കഴിഞ്ഞാൽ ഉടൻ പേയ്മെന്റ്\n\n" .
-                "ഇപ്പോൾ ലഭ്യമായ ജോലികൾ കാണാം! 💼",
+                "✅ Get alerts for nearby jobs\n" .
+                "✅ Apply to jobs you like\n" .
+                "✅ Get paid after completion\n\n" .
+                "Browse available jobs now! 💼",
             'buttons' => [
-                ['id' => 'browse_jobs', 'title' => '🔍 ജോലികൾ കാണുക'],
-                ['id' => 'worker_profile', 'title' => '👤 എന്റെ പ്രൊഫൈൽ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'browse_jobs', 'title' => '🔍 Browse Jobs'],
+                ['id' => 'worker_profile', 'title' => '👤 My Profile'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -303,17 +307,17 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📋 ടാസ്ക് പോസ്റ്റ്',
-            'body' => "📋 *Post a Task - ജോലി പോസ്റ്റ് ചെയ്യുക*\n\n" .
+            'header' => '📋 Post Task',
+            'body' => "📋 *Post a Task*\n\n" .
                 "Need help with something?\n" .
                 "Post a task and nearby workers will apply!\n\n" .
                 "എന്തെങ്കിലും സഹായം വേണോ?\n" .
-                "ഒരു ജോലി പോസ്റ്റ് ചെയ്യൂ, അടുത്തുള്ള പണിക്കാർ അപേക്ഷിക്കും!\n\n" .
-                "നമുക്ക് തുടങ്ങാം! 🚀",
+                "ഒരു ജോലി പോസ്റ്റ് ചെയ്യൂ!\n\n" .
+                "Let's start! 🚀",
             'buttons' => [
-                ['id' => 'start_job_posting', 'title' => '📋 ജോലി പോസ്റ്റ് ചെയ്യുക'],
-                ['id' => 'my_posted_jobs', 'title' => '📂 എന്റെ ജോലികൾ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'start_job_posting', 'title' => '📋 Post Task'],
+                ['id' => 'my_posted_jobs', 'title' => '📂 My Tasks'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -345,16 +349,16 @@ class JobMessages
             ];
         })->toArray();
 
-        $tier2Rows[] = ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'];
+        $tier2Rows[] = ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main Menu'];
 
         return [
             'type' => 'list',
-            'header' => '📂 ജോലി തരം',
+            'header' => '📂 Job Type',
             'body' => "*Step 1/10* 📝\n\n" .
-                "📂 *എന്ത് ജോലിയാണ്?*\n\n" .
+                "📂 *What type of task?*\n\n" .
                 "Select the type of task you need help with.\n" .
                 "എന്ത് തരം സഹായമാണ് വേണ്ടത്?",
-            'button' => 'ജോലി തിരഞ്ഞെടുക്കുക',
+            'button' => 'Select Job',
             'sections' => [
                 [
                     'title' => '🟢 Zero Skills Required',
@@ -374,22 +378,22 @@ class JobMessages
     public static function askJobTitle(JobCategory $category): array
     {
         $example = match($category->slug) {
-            'queue_standing' => 'ഉദാ: "RTO-യിൽ RC-ക്ക് ക്യൂ നിൽക്കുക"',
-            'parcel_delivery' => 'ഉദാ: "കറിയറിൽ നിന്ന് പാഴ്സൽ എടുക്കുക"',
-            'grocery_shopping' => 'ഉദാ: "സൂപ്പർ മാർക്കറ്റിൽ നിന്ന് സാധനം വാങ്ങുക"',
-            default => 'ഉദാ: "ചെയ്യേണ്ട കാര്യത്തിന്റെ ചുരുക്കം"',
+            'queue_standing' => 'Ex: "Stand in queue at RTO"',
+            'parcel_delivery' => 'Ex: "Pick up parcel"',
+            'grocery_shopping' => 'Ex: "Buy groceries"',
+            default => 'Ex: "Brief task description"',
         };
 
         return [
             'type' => 'buttons',
-            'header' => '✏️ ജോലി ടൈറ്റിൽ',
+            'header' => '✏️ Job Title',
             'body' => "*Step 2/10* 📝\n\n" .
                 "{$category->icon} *{$category->name_ml}*\n\n" .
                 "Give your task a short title.\n" .
                 "ജോലിക്ക് ഒരു ചെറിയ ടൈറ്റിൽ നൽകുക.\n\n" .
                 "{$example}",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -401,14 +405,14 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📍 സ്ഥലം',
+            'header' => '📍 Location',
             'body' => "*Step 3/10* 📝\n\n" .
-                "📍 *ജോലി സ്ഥലം*\n\n" .
+                "📍 *Job Location*\n\n" .
                 "Where should the worker come?\n" .
                 "പണിക്കാരൻ എവിടെ വരണം?\n\n" .
-                "_ഉദാ: കളക്ടറേറ്റ്, എറണാകുളം_",
+                "_Ex: Collectorate, Ernakulam_",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -420,16 +424,16 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '🗺️ ലൊക്കേഷൻ',
+            'header' => '🗺️ Location',
             'body' => "*Step 4/10* 📝\n\n" .
-                "🗺️ *കൃത്യമായ ലൊക്കേഷൻ*\n\n" .
+                "🗺️ *Exact Location*\n\n" .
                 "Share the exact location for the task.\n" .
                 "ജോലി സ്ഥലത്തിന്റെ കൃത്യമായ ലൊക്കേഷൻ ഷെയർ ചെയ്യുക.\n\n" .
-                "📎 → *Location* ടാപ്പ് ചെയ്യുക\n\n" .
-                "_ഇത് ഒഴിവാക്കാം, പക്ഷേ workers-ന് ദിശ കാണാൻ സഹായിക്കും_",
+                "📎 → *Location* tap\n\n" .
+                "_Optional but helps workers find the place_",
             'buttons' => [
-                ['id' => 'skip_job_coords', 'title' => '⏭️ ഒഴിവാക്കുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'skip_job_coords', 'title' => '⏭️ Skip'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -444,15 +448,15 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '📅 തീയതി',
+            'header' => '📅 Date',
             'body' => "*Step 5/10* 📝\n\n" .
-                "📅 *എന്ന് വേണം?*\n\n" .
+                "📅 *When needed?*\n\n" .
                 "When do you need this done?\n" .
                 "ഏത് ദിവസം ചെയ്യണം?",
             'buttons' => [
-                ['id' => 'job_date_today', 'title' => '📅 ഇന്ന്'],
-                ['id' => 'job_date_tomorrow', 'title' => '📅 നാളെ'],
-                ['id' => 'job_date_pick', 'title' => '📅 മറ്റൊരു ദിവസം'],
+                ['id' => 'job_date_today', 'title' => '📅 Today'],
+                ['id' => 'job_date_tomorrow', 'title' => '📅 Tomorrow'],
+                ['id' => 'job_date_pick', 'title' => '📅 Other Day'],
             ],
         ];
     }
@@ -464,14 +468,14 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '⏰ സമയം',
+            'header' => '⏰ Time',
             'body' => "*Step 6/10* 📝\n\n" .
-                "⏰ *എത്ര മണിക്ക്?*\n\n" .
+                "⏰ *What time?*\n\n" .
                 "What time should the worker arrive?\n" .
                 "പണിക്കാരൻ എത്ര മണിക്ക് എത്തണം?\n\n" .
-                "_ഉദാ: 9:00 AM അല്ലെങ്കിൽ 2:30 PM_",
+                "_Ex: 9:00 AM or 2:30 PM_",
             'buttons' => [
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -483,22 +487,22 @@ class JobMessages
     {
         return [
             'type' => 'list',
-            'header' => '⏱️ സമയദൈർഘ്യം',
+            'header' => '⏱️ Duration',
             'body' => "*Step 7/10* 📝\n\n" .
-                "⏱️ *എത്ര സമയം എടുക്കും?*\n\n" .
+                "⏱️ *How long?*\n\n" .
                 "How long will this task take approximately?\n" .
                 "ഏകദേശം എത്ര സമയം എടുക്കും?",
-            'button' => 'സമയം തിരഞ്ഞെടുക്കുക',
+            'button' => 'Select Duration',
             'sections' => [
                 [
-                    'title' => 'സമയദൈർഘ്യം',
+                    'title' => 'Duration',
                     'rows' => [
-                        ['id' => 'duration_30min', 'title' => '⏱️ 30 മിനിറ്റ്', 'description' => 'Quick task'],
-                        ['id' => 'duration_1hr', 'title' => '⏱️ 1 മണിക്കൂർ', 'description' => 'Short task'],
-                        ['id' => 'duration_2hr', 'title' => '⏱️ 2 മണിക്കൂർ', 'description' => 'Medium task'],
-                        ['id' => 'duration_3hr', 'title' => '⏱️ 3 മണിക്കൂർ', 'description' => 'Longer task'],
-                        ['id' => 'duration_4hr_plus', 'title' => '⏱️ 4+ മണിക്കൂർ', 'description' => 'Half day or more'],
-                        ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'],
+                        ['id' => 'duration_30min', 'title' => '⏱️ 30 minutes', 'description' => 'Quick task'],
+                        ['id' => 'duration_1hr', 'title' => '⏱️ 1 hour', 'description' => 'Short task'],
+                        ['id' => 'duration_2hr', 'title' => '⏱️ 2 hours', 'description' => 'Medium task'],
+                        ['id' => 'duration_3hr', 'title' => '⏱️ 3 hours', 'description' => 'Longer task'],
+                        ['id' => 'duration_4hr_plus', 'title' => '⏱️ 4+ hours', 'description' => 'Half day or more'],
+                        ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main Menu'],
                     ],
                 ],
             ],
@@ -521,18 +525,17 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '💰 പേയ്മെന്റ്',
+            'header' => '💰 Payment',
             'body' => "*Step 8/10* 📝\n\n" .
-                "💰 *എത്ര കൊടുക്കും?*\n\n" .
+                "💰 *How much to pay?*\n\n" .
                 "{$category->icon} *{$category->name_ml}*\n" .
                 "⏱️ {$durationHours} hrs\n\n" .
-                "Suggested pay: *₹{$suggestedMin} - ₹{$suggestedMax}*\n" .
-                "സാധാരണ വില: *₹{$suggestedMin} - ₹{$suggestedMax}*\n\n" .
-                "Use suggested amount or enter your own?",
+                "Suggested: *₹{$suggestedMin} - ₹{$suggestedMax}*\n\n" .
+                "Use suggested or enter your own?",
             'buttons' => [
                 ['id' => 'pay_suggested_min', 'title' => "💰 ₹{$suggestedMin}"],
                 ['id' => 'pay_suggested_max', 'title' => "💰 ₹{$suggestedMax}"],
-                ['id' => 'pay_custom', 'title' => '✏️ മറ്റൊരു തുക'],
+                ['id' => 'pay_custom', 'title' => '✏️ Other Amount'],
             ],
         ];
     }
@@ -544,16 +547,16 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📌 നിർദ്ദേശങ്ങൾ',
+            'header' => '📌 Instructions',
             'body' => "*Step 9/10* 📝\n\n" .
-                "📌 *പ്രത്യേക നിർദ്ദേശങ്ങൾ*\n\n" .
+                "📌 *Special Instructions*\n\n" .
                 "Any special instructions for the worker?\n" .
                 "പണിക്കാരന് പ്രത്യേക നിർദ്ദേശങ്ങൾ ഉണ്ടോ?\n\n" .
-                "_ഉദാ: ഗേറ്റിൽ കാത്തിരിക്കുക, Token നമ്പർ 123_\n\n" .
-                "_ഇല്ലെങ്കിൽ Skip ചെയ്യാം_",
+                "_Ex: Wait at gate, Token #123_\n\n" .
+                "_Skip if none_",
             'buttons' => [
-                ['id' => 'skip_instructions', 'title' => '⏭️ ഒഴിവാക്കുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'skip_instructions', 'title' => '⏭️ Skip'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -573,21 +576,21 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '✅ സ്ഥിരീകരിക്കുക',
+            'header' => '✅ Confirm',
             'body' => "*Step 10/10* 📝\n\n" .
-                "📋 *ജോലി വിവരങ്ങൾ*\n\n" .
+                "📋 *Job Details*\n\n" .
                 "{$category->icon} *{$title}*\n\n" .
-                "📍 സ്ഥലം: {$location}\n" .
-                "📅 തീയതി: {$date}\n" .
-                "⏰ സമയം: {$time}\n" .
-                "⏱️ ദൈർഘ്യം: {$duration} hrs\n" .
-                "💰 പേയ്മെന്റ്: *₹{$pay}*\n" .
-                "📌 നിർദ്ദേശം: {$instructions}\n\n" .
-                "പോസ്റ്റ് ചെയ്യണോ?",
+                "📍 Location: {$location}\n" .
+                "📅 Date: {$date}\n" .
+                "⏰ Time: {$time}\n" .
+                "⏱️ Duration: {$duration} hrs\n" .
+                "💰 Payment: *₹{$pay}*\n" .
+                "📌 Instructions: {$instructions}\n\n" .
+                "Post this job?",
             'buttons' => [
-                ['id' => 'confirm_job_post', 'title' => '✅ പോസ്റ്റ് ചെയ്യുക'],
-                ['id' => 'edit_job_post', 'title' => '✏️ എഡിറ്റ്'],
-                ['id' => 'cancel_job_post', 'title' => '❌ റദ്ദാക്കുക'],
+                ['id' => 'confirm_job_post', 'title' => '✅ Post Job'],
+                ['id' => 'edit_job_post', 'title' => '✏️ Edit'],
+                ['id' => 'cancel_job_post', 'title' => '❌ Cancel'],
             ],
         ];
     }
@@ -598,23 +601,23 @@ class JobMessages
     public static function jobPostedSuccess(JobPost $job, int $workerCount): array
     {
         $notifyMsg = $workerCount > 0
-            ? "📢 *{$workerCount} പണിക്കാർക്ക്* അറിയിപ്പ് അയച്ചു!"
-            : "📢 അടുത്തുള്ള പണിക്കാരെ അന്വേഷിക്കുന്നു...";
+            ? "📢 *{$workerCount} workers* notified!"
+            : "📢 Finding nearby workers...";
 
         return [
             'type' => 'buttons',
-            'header' => '🎉 പോസ്റ്റ് ചെയ്തു!',
-            'body' => "✅ *ജോലി പോസ്റ്റ് ചെയ്തു!*\n\n" .
+            'header' => '🎉 Posted!',
+            'body' => "✅ *Job Posted!*\n\n" .
                 "📋 Job #: *{$job->job_number}*\n\n" .
                 "{$job->category->icon} {$job->title}\n" .
                 "📍 {$job->location_display}\n" .
                 "💰 {$job->pay_display}\n\n" .
                 "{$notifyMsg}\n\n" .
-                "ആരെങ്കിലും അപേക്ഷിക്കുമ്പോൾ അറിയിക്കും! 🔔",
+                "We'll notify you when someone applies! 🔔",
             'buttons' => [
-                ['id' => 'view_job_' . $job->id, 'title' => '👁️ ജോലി കാണുക'],
-                ['id' => 'post_another_job', 'title' => '➕ മറ്റൊന്ന് പോസ്റ്റ്'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'view_job_' . $job->id, 'title' => '👁️ View Job'],
+                ['id' => 'post_another_job', 'title' => '➕ Post Another'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -635,7 +638,7 @@ class JobMessages
             : round($distanceKm, 1) . ' km';
 
         $applicationsText = $job->applications_count > 0
-            ? "\n👥 *{$job->applications_count} പേർ* ഇതിനകം അപേക്ഷിച്ചു!"
+            ? "\n👥 *{$job->applications_count}* already applied!"
             : "";
 
         $instructionsText = $job->special_instructions
@@ -644,21 +647,20 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '👷 പുതിയ ജോലി!',
-            'body' => "👷 *NEW TASK AVAILABLE!*\n" .
-                "*പുതിയ ജോലി ലഭ്യമാണ്!*\n\n" .
+            'header' => '👷 New Job!',
+            'body' => "👷 *NEW TASK AVAILABLE!*\n\n" .
                 "{$job->category->icon} *{$job->title}*\n\n" .
-                "📍 {$job->location_display} ({$distance} അകലെ)\n" .
+                "📍 {$job->location_display} ({$distance} away)\n" .
                 "📅 {$job->formatted_date_time}\n" .
-                "⏱️ ദൈർഘ്യം: {$job->duration_display}\n" .
-                "💰 പേയ്മെന്റ്: *{$job->pay_display}*\n" .
+                "⏱️ Duration: {$job->duration_display}\n" .
+                "💰 Payment: *{$job->pay_display}*\n" .
                 "⭐ Task Giver: {$job->poster->display_name}" .
                 $applicationsText .
                 $instructionsText,
             'buttons' => [
-                ['id' => 'apply_job_' . $job->id, 'title' => '✅ താൽപ്പര്യമുണ്ട്'],
-                ['id' => 'view_job_detail_' . $job->id, 'title' => '👁️ വിശദാംശങ്ങൾ'],
-                ['id' => 'skip_job_' . $job->id, 'title' => '❌ ഒഴിവാക്കുക'],
+                ['id' => 'apply_job_' . $job->id, 'title' => '✅ Interested'],
+                ['id' => 'view_job_detail_' . $job->id, 'title' => '👁️ Details'],
+                ['id' => 'skip_job_' . $job->id, 'title' => '❌ Skip'],
             ],
         ];
     }
@@ -670,16 +672,16 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '✅ അപേക്ഷിച്ചു!',
-            'body' => "✅ *അപേക്ഷ സ്വീകരിച്ചു!*\n\n" .
+            'header' => '✅ Applied!',
+            'body' => "✅ *Application Received!*\n\n" .
                 "{$job->category->icon} {$job->title}\n\n" .
-                "📍 നിങ്ങൾ *#{$position}* സ്ഥാനത്താണ്\n\n" .
-                "Task giver നിങ്ങളെ തിരഞ്ഞെടുക്കുമ്പോൾ അറിയിക്കും! 🔔\n\n" .
-                "_മറ്റ് ജോലികളും കാണാൻ മറക്കരുത്_",
+                "📍 You are *#{$position}* in queue\n\n" .
+                "We'll notify you when selected! 🔔\n\n" .
+                "_Check out other jobs too_",
             'buttons' => [
-                ['id' => 'browse_jobs', 'title' => '🔍 മറ്റ് ജോലികൾ'],
-                ['id' => 'my_applications', 'title' => '📋 എന്റെ അപേക്ഷകൾ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                ['id' => 'my_applications', 'title' => '📋 My Applications'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -691,14 +693,14 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '📋 ജോലി നിറഞ്ഞു',
-            'body' => "📋 *ജോലി മറ്റൊരാൾക്ക് ലഭിച്ചു*\n\n" .
+            'header' => '📋 Job Filled',
+            'body' => "📋 *Job Given to Another Worker*\n\n" .
                 "{$job->category->icon} {$job->title}\n\n" .
-                "ക്ഷമിക്കണം, ഈ ജോലി മറ്റൊരു പണിക്കാരന് നൽകി.\n\n" .
-                "_വേറെ ജോലികൾ ഉടൻ വരും!_",
+                "Sorry, this job was given to another worker.\n\n" .
+                "_More jobs coming soon!_",
             'buttons' => [
-                ['id' => 'browse_jobs', 'title' => '🔍 മറ്റ് ജോലികൾ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -735,9 +737,8 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '👤 പുതിയ അപേക്ഷ!',
-            'body' => "👤 *New Application!*\n" .
-                "*പുതിയ അപേക്ഷ ലഭിച്ചു!*\n\n" .
+            'header' => '👤 New Application!',
+            'body' => "👤 *New Application!*\n\n" .
                 "📋 For: {$job->title}\n\n" .
                 "👤 *{$worker->name}*\n" .
                 "{$ratingText}\n" .
@@ -746,9 +747,9 @@ class JobMessages
                 $proposedText .
                 $messageText,
             'buttons' => [
-                ['id' => 'select_worker_' . $application->id, 'title' => '✅ തിരഞ്ഞെടുക്കുക'],
-                ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 എല്ലാവരും കാണുക'],
-                ['id' => 'reject_app_' . $application->id, 'title' => '❌ നിരസിക്കുക'],
+                ['id' => 'select_worker_' . $application->id, 'title' => '✅ Select'],
+                ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 View All'],
+                ['id' => 'reject_app_' . $application->id, 'title' => '❌ Reject'],
             ],
         ];
     }
@@ -761,14 +762,13 @@ class JobMessages
         if ($applications->isEmpty()) {
             return [
                 'type' => 'buttons',
-                'header' => '📋 അപേക്ഷകൾ',
+                'header' => '📋 Applications',
                 'body' => "📋 *{$job->title}*\n\n" .
-                    "ഇതുവരെ ആരും അപേക്ഷിച്ചിട്ടില്ല.\n" .
                     "No applications yet.\n\n" .
-                    "_പണിക്കാർ ഉടൻ അപേക്ഷിക്കും!_",
+                    "_Workers will apply soon!_",
                 'buttons' => [
-                    ['id' => 'view_job_' . $job->id, 'title' => '👁️ ജോലി കാണുക'],
-                    ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                    ['id' => 'view_job_' . $job->id, 'title' => '👁️ View Job'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ],
             ];
         }
@@ -783,18 +783,18 @@ class JobMessages
             ];
         })->toArray();
 
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'];
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main Menu'];
 
         return [
             'type' => 'list',
-            'header' => '👥 അപേക്ഷകൾ',
+            'header' => '👥 Applications',
             'body' => "📋 *{$job->title}*\n\n" .
-                "👥 {$applications->count()} പേർ അപേക്ഷിച്ചു\n\n" .
+                "👥 {$applications->count()} applied\n\n" .
                 "Select a worker to assign the task:",
-            'button' => 'പണിക്കാർ കാണുക',
+            'button' => 'View Workers',
             'sections' => [
                 [
-                    'title' => 'അപേക്ഷകർ',
+                    'title' => 'Applicants',
                     'rows' => $rows,
                 ],
             ],
@@ -808,19 +808,18 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '✅ പണിക്കാരനെ തിരഞ്ഞെടുത്തു!',
-            'body' => "✅ *Worker Selected!*\n" .
-                "*പണിക്കാരനെ തിരഞ്ഞെടുത്തു!*\n\n" .
+            'header' => '✅ Worker Selected!',
+            'body' => "✅ *Worker Selected!*\n\n" .
                 "📋 {$job->title}\n\n" .
                 "👤 *{$worker->name}*\n" .
                 "📞 {$worker->user->formatted_phone}\n" .
                 "{$worker->short_rating}\n\n" .
-                "പണിക്കാരനെ അറിയിച്ചു! 🔔\n\n" .
-                "_ജോലി ദിവസം arrival photo ചോദിക്കും_",
+                "Worker notified! 🔔\n\n" .
+                "_Arrival photo will be requested on job day_",
             'buttons' => [
-                ['id' => 'call_worker_' . $worker->id, 'title' => '📞 വിളിക്കുക'],
-                ['id' => 'view_job_' . $job->id, 'title' => '👁️ ജോലി കാണുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'call_worker_' . $worker->id, 'title' => '📞 Call'],
+                ['id' => 'view_job_' . $job->id, 'title' => '👁️ View Job'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -834,21 +833,19 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '🎉 നിങ്ങളെ തിരഞ്ഞെടുത്തു!',
-            'body' => "🎉 *YOU GOT THE TASK!*\n" .
-                "*നിങ്ങൾക്ക് ജോലി ലഭിച്ചു!*\n\n" .
+            'header' => '🎉 Selected!',
+            'body' => "🎉 *YOU GOT THE TASK!*\n\n" .
                 "{$job->category->icon} *{$job->title}*\n\n" .
                 "📍 {$job->location_display}\n" .
                 "📅 {$job->formatted_date_time}\n" .
                 "💰 *{$job->pay_display}*\n\n" .
                 "📞 Task Giver: *{$poster->display_name}*\n" .
                 "📱 {$poster->formatted_phone}\n\n" .
-                "⏰ *5 മിനിറ്റ് നേരത്തെ എത്തുക!*\n" .
-                "Please arrive 5 minutes early!",
+                "⏰ *Arrive 5 minutes early!*",
             'buttons' => [
-                ['id' => 'call_poster_' . $job->id, 'title' => '📞 വിളിക്കുക'],
-                ['id' => 'get_directions_' . $job->id, 'title' => '📍 ദിശ കാണുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'call_poster_' . $job->id, 'title' => '📞 Call'],
+                ['id' => 'get_directions_' . $job->id, 'title' => '📍 Directions'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -867,15 +864,14 @@ class JobMessages
         return [
             'type' => 'buttons',
             'header' => '📸 Arrival Photo',
-            'body' => "📸 *എത്തിയെന്ന് സ്ഥിരീകരിക്കുക*\n\n" .
+            'body' => "📸 *Confirm Arrival*\n\n" .
                 "{$job->category->icon} {$job->title}\n" .
                 "📍 {$job->location_display}\n\n" .
-                "Please send a photo to confirm you've arrived at the location.\n" .
-                "നിങ്ങൾ സ്ഥലത്ത് എത്തിയതിന്റെ ഫോട്ടോ അയക്കുക.\n\n" .
-                "📎 → Camera ടാപ്പ് ചെയ്യുക",
+                "Please send a photo to confirm you've arrived.\n\n" .
+                "📎 → Camera tap",
             'buttons' => [
-                ['id' => 'skip_arrival_photo_' . $job->id, 'title' => '⏭️ ഒഴിവാക്കുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'skip_arrival_photo_' . $job->id, 'title' => '⏭️ Skip'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -891,18 +887,17 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '📍 പണിക്കാരൻ എത്തി!',
-            'body' => "📍 *Worker Arrived!*\n" .
-                "*പണിക്കാരൻ സ്ഥലത്ത് എത്തി!*\n\n" .
+            'header' => '📍 Worker Arrived!',
+            'body' => "📍 *Worker Arrived!*\n\n" .
                 "{$job->category->icon} {$job->title}\n\n" .
                 "👤 {$worker->name}\n" .
                 "⏰ {$verification->arrival_verified_at->format('h:i A')}\n" .
                 "{$hasPhoto}\n\n" .
-                "_ജോലി പുരോഗമിക്കുന്നു..._",
+                "_Task in progress..._",
             'buttons' => [
-                ['id' => 'call_worker_' . $worker->id, 'title' => '📞 വിളിക്കുക'],
-                ['id' => 'view_job_' . $job->id, 'title' => '👁️ ജോലി കാണുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'call_worker_' . $worker->id, 'title' => '📞 Call'],
+                ['id' => 'view_job_' . $job->id, 'title' => '👁️ View Job'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -914,16 +909,15 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '✅ ജോലി കഴിഞ്ഞോ?',
-            'body' => "✅ *ജോലി പൂർത്തിയായോ?*\n\n" .
+            'header' => '✅ Task Done?',
+            'body' => "✅ *Task Completed?*\n\n" .
                 "{$job->category->icon} {$job->title}\n\n" .
-                "Have you completed the task?\n" .
-                "ജോലി പൂർത്തിയായോ?\n\n" .
-                "_Completion photo അയയ്ക്കാം (optional)_",
+                "Have you completed the task?\n\n" .
+                "_Completion photo optional_",
             'buttons' => [
-                ['id' => 'confirm_complete_' . $job->id, 'title' => '✅ പൂർത്തിയായി'],
-                ['id' => 'send_completion_photo_' . $job->id, 'title' => '📸 ഫോട്ടോ അയക്കുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'confirm_complete_' . $job->id, 'title' => '✅ Completed'],
+                ['id' => 'send_completion_photo_' . $job->id, 'title' => '📸 Send Photo'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -935,16 +929,15 @@ class JobMessages
     {
         return [
             'type' => 'list',
-            'header' => '⭐ റേറ്റിംഗ്',
-            'body' => "⭐ *പണിക്കാരനെ റേറ്റ് ചെയ്യുക*\n\n" .
+            'header' => '⭐ Rating',
+            'body' => "⭐ *Rate the Worker*\n\n" .
                 "{$job->category->icon} {$job->title}\n" .
                 "👤 {$worker->name}\n\n" .
-                "How was the worker?\n" .
-                "പണിക്കാരൻ എങ്ങനെയായിരുന്നു?",
-            'button' => 'റേറ്റിംഗ് തിരഞ്ഞെടുക്കുക',
+                "How was the worker?",
+            'button' => 'Select Rating',
             'sections' => [
                 [
-                    'title' => 'റേറ്റിംഗ്',
+                    'title' => 'Rating',
                     'rows' => [
                         ['id' => 'rate_5_' . $job->id, 'title' => '⭐⭐⭐⭐⭐ Excellent', 'description' => 'Outstanding work!'],
                         ['id' => 'rate_4_' . $job->id, 'title' => '⭐⭐⭐⭐ Very Good', 'description' => 'Great job'],
@@ -964,16 +957,15 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '💰 പേയ്മെന്റ്',
-            'body' => "💰 *പേയ്മെന്റ് സ്ഥിരീകരിക്കുക*\n\n" .
+            'header' => '💰 Payment',
+            'body' => "💰 *Confirm Payment*\n\n" .
                 "{$job->category->icon} {$job->title}\n" .
                 "💵 Amount: *{$job->pay_display}*\n\n" .
-                "How did you pay the worker?\n" .
-                "പണിക്കാരന് എങ്ങനെ പണം കൊടുത്തു?",
+                "How did you pay the worker?",
             'buttons' => [
-                ['id' => 'paid_cash_' . $job->id, 'title' => '💵 Cash കൊടുത്തു'],
-                ['id' => 'paid_upi_' . $job->id, 'title' => '📱 UPI ചെയ്തു'],
-                ['id' => 'paid_other_' . $job->id, 'title' => '💳 മറ്റ് വഴി'],
+                ['id' => 'paid_cash_' . $job->id, 'title' => '💵 Cash'],
+                ['id' => 'paid_upi_' . $job->id, 'title' => '📱 UPI'],
+                ['id' => 'paid_other_' . $job->id, 'title' => '💳 Other'],
             ],
         ];
     }
@@ -995,36 +987,34 @@ class JobMessages
 
             return [
                 'type' => 'buttons',
-                'header' => '🎉 ജോലി പൂർത്തിയായി!',
-                'body' => "🎉 *Task Completed!*\n" .
-                    "*ജോലി വിജയകരമായി പൂർത്തിയായി!*\n\n" .
+                'header' => '🎉 Completed!',
+                'body' => "🎉 *Task Completed!*\n\n" .
                     "{$job->category->icon} {$job->title}\n\n" .
                     "💰 Earned: *{$job->pay_display}*" .
                     $ratingText . "\n\n" .
-                    "നന്ദി! 🙏\n" .
-                    "_മറ്റ് ജോലികൾ കാണൂ!_",
+                    "Thank you! 🙏\n" .
+                    "_Check out more jobs!_",
                 'buttons' => [
-                    ['id' => 'browse_jobs', 'title' => '🔍 മറ്റ് ജോലികൾ'],
-                    ['id' => 'my_earnings', 'title' => '💰 എന്റെ വരുമാനം'],
-                    ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                    ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                    ['id' => 'my_earnings', 'title' => '💰 My Earnings'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ],
             ];
         } else {
             // Message for poster
             return [
                 'type' => 'buttons',
-                'header' => '🎉 ജോലി പൂർത്തിയായി!',
-                'body' => "🎉 *Task Completed!*\n" .
-                    "*ജോലി വിജയകരമായി പൂർത്തിയായി!*\n\n" .
+                'header' => '🎉 Completed!',
+                'body' => "🎉 *Task Completed!*\n\n" .
                     "{$job->category->icon} {$job->title}\n\n" .
                     "👤 Worker: {$worker->name}\n" .
                     "💰 Paid: *{$job->pay_display}*\n" .
                     "✅ Status: Completed\n\n" .
-                    "നന്ദി NearBuy ഉപയോഗിച്ചതിന്! 🙏",
+                    "Thank you for using NearBuy! 🙏",
                 'buttons' => [
-                    ['id' => 'post_another_job', 'title' => '➕ മറ്റൊരു ജോലി'],
-                    ['id' => 'my_posted_jobs', 'title' => '📋 എന്റെ ജോലികൾ'],
-                    ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                    ['id' => 'post_another_job', 'title' => '➕ Post Another'],
+                    ['id' => 'my_posted_jobs', 'title' => '📋 My Jobs'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ],
             ];
         }
@@ -1041,20 +1031,19 @@ class JobMessages
 
         return [
             'type' => 'buttons',
-            'header' => '💰 വരുമാന സംഗ്രഹം',
-            'body' => "💰 *ഈ ആഴ്ച വരുമാനം*\n" .
-                "*This Week's Earnings*\n\n" .
+            'header' => '💰 Earnings',
+            'body' => "💰 *This Week's Earnings*\n\n" .
                 "💵 Total: *₹" . number_format($totalEarnings) . "*\n" .
                 "📋 Jobs: {$totalJobs}\n" .
                 "📊 Average: ₹{$avgPerJob}/job\n\n" .
-                "📈 *ആകെ വരുമാനം*\n" .
-                "Total All-time: *{$worker->earnings_display}*\n" .
+                "📈 *All-time Earnings*\n" .
+                "Total: *{$worker->earnings_display}*\n" .
                 "✅ Jobs Completed: {$worker->jobs_completed}\n" .
                 "⭐ Rating: {$worker->short_rating}",
             'buttons' => [
-                ['id' => 'browse_jobs', 'title' => '🔍 ജോലികൾ കാണുക'],
-                ['id' => 'my_badges', 'title' => '🏅 എന്റെ ബാഡ്ജുകൾ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'browse_jobs', 'title' => '🔍 Browse Jobs'],
+                ['id' => 'my_badges', 'title' => '🏅 My Badges'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -1072,14 +1061,13 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '😕 പണിക്കാർ ഇല്ല',
-            'body' => "😕 *അടുത്ത് പണിക്കാർ ഇല്ല*\n\n" .
-                "No workers available nearby right now.\n" .
-                "ഇപ്പോൾ അടുത്ത് പണിക്കാർ ലഭ്യമല്ല.\n\n" .
-                "_കുറച്ച് കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക_",
+            'header' => '😕 No Workers',
+            'body' => "😕 *No Workers Nearby*\n\n" .
+                "No workers available nearby right now.\n\n" .
+                "_Try again later_",
             'buttons' => [
-                ['id' => 'retry_post_job', 'title' => '🔄 വീണ്ടും ശ്രമിക്കുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'retry_post_job', 'title' => '🔄 Try Again'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -1091,15 +1079,14 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '😕 ജോലികൾ ഇല്ല',
-            'body' => "😕 *ജോലികൾ ലഭ്യമല്ല*\n\n" .
-                "No tasks available matching your preferences.\n" .
-                "നിങ്ങളുടെ മുൻഗണനകൾക്ക് അനുയോജ്യമായ ജോലികൾ ഇല്ല.\n\n" .
-                "_പുതിയ ജോലികൾ വരുമ്പോൾ അറിയിക്കും!_",
+            'header' => '😕 No Jobs',
+            'body' => "😕 *No Jobs Available*\n\n" .
+                "No tasks available matching your preferences.\n\n" .
+                "_We'll notify you when new jobs come!_",
             'buttons' => [
-                ['id' => 'refresh_jobs', 'title' => '🔄 പുതുക്കുക'],
-                ['id' => 'edit_preferences', 'title' => '⚙️ മുൻഗണനകൾ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'refresh_jobs', 'title' => '🔄 Refresh'],
+                ['id' => 'edit_preferences', 'title' => '⚙️ Preferences'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -1111,13 +1098,12 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'body' => "⏰ *ജോലി കാലഹരണപ്പെട്ടു*\n\n" .
-                "This task has expired or been filled.\n" .
-                "ഈ ജോലി കാലഹരണപ്പെട്ടു അല്ലെങ്കിൽ മറ്റൊരാൾക്ക് ലഭിച്ചു.\n\n" .
-                "_മറ്റ് ജോലികൾ കാണുക_",
+            'body' => "⏰ *Job Expired*\n\n" .
+                "This task has expired or been filled.\n\n" .
+                "_Check other jobs_",
             'buttons' => [
-                ['id' => 'browse_jobs', 'title' => '🔍 മറ്റ് ജോലികൾ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -1129,14 +1115,13 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'body' => "ℹ️ *ഇതിനകം അപേക്ഷിച്ചു*\n\n" .
-                "You've already applied for this task.\n" .
-                "നിങ്ങൾ ഈ ജോലിക്ക് ഇതിനകം അപേക്ഷിച്ചു.\n\n" .
-                "_Task giver-ന്റെ മറുപടി കാത്തിരിക്കുക_",
+            'body' => "ℹ️ *Already Applied*\n\n" .
+                "You've already applied for this task.\n\n" .
+                "_Wait for task giver's response_",
             'buttons' => [
-                ['id' => 'my_applications', 'title' => '📋 എന്റെ അപേക്ഷകൾ'],
-                ['id' => 'browse_jobs', 'title' => '🔍 മറ്റ് ജോലികൾ'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'my_applications', 'title' => '📋 My Applications'],
+                ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -1148,17 +1133,16 @@ class JobMessages
     {
         return [
             'type' => 'buttons',
-            'header' => '⚠️ സജീവ ജോലി ഉണ്ട്',
-            'body' => "⚠️ *സജീവ ജോലി ഉണ്ട്*\n\n" .
-                "You currently have an active task.\n" .
-                "നിങ്ങൾക്ക് ഇപ്പോൾ ഒരു സജീവ ജോലി ഉണ്ട്.\n\n" .
+            'header' => '⚠️ Active Job',
+            'body' => "⚠️ *You Have an Active Job*\n\n" .
+                "You currently have an active task.\n\n" .
                 "{$activeJob->category->icon} {$activeJob->title}\n" .
                 "📍 {$activeJob->location_display}\n\n" .
-                "_ആദ്യം ഇത് പൂർത്തിയാക്കുക_",
+                "_Complete this first_",
             'buttons' => [
-                ['id' => 'view_active_job_' . $activeJob->id, 'title' => '👁️ സജീവ ജോലി'],
-                ['id' => 'complete_job_' . $activeJob->id, 'title' => '✅ പൂർത്തിയാക്കുക'],
-                ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                ['id' => 'view_active_job_' . $activeJob->id, 'title' => '👁️ View Job'],
+                ['id' => 'complete_job_' . $activeJob->id, 'title' => '✅ Complete'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ],
         ];
     }
@@ -1179,23 +1163,23 @@ class JobMessages
 
         return [
             'type' => 'list',
-            'header' => '👷 പണിക്കാർ മെനു',
-            'body' => "സ്വാഗതം, *{$worker->name}*! 👋\n\n" .
-                "⭐ റേറ്റിംഗ്: {$worker->short_rating}\n" .
-                "✅ ജോലികൾ: {$worker->jobs_completed}\n" .
-                "💰 വരുമാനം: {$worker->earnings_display}\n\n" .
+            'header' => '👷 Worker Menu',
+            'body' => "Welcome, *{$worker->name}*! 👋\n\n" .
+                "⭐ Rating: {$worker->short_rating}\n" .
+                "✅ Jobs: {$worker->jobs_completed}\n" .
+                "💰 Earnings: {$worker->earnings_display}\n\n" .
                 "📋 Active: {$activeJobsCount} | Pending: {$pendingAppsCount}",
-            'button' => 'തിരഞ്ഞെടുക്കുക',
+            'button' => 'Select',
             'sections' => [
                 [
-                    'title' => 'ജോലി ഓപ്ഷനുകൾ',
+                    'title' => 'Job Options',
                     'rows' => [
-                        ['id' => 'browse_jobs', 'title' => '🔍 ജോലികൾ കാണുക', 'description' => 'Find available tasks nearby'],
-                        ['id' => 'my_active_jobs', 'title' => '📋 സജീവ ജോലികൾ', 'description' => 'Your current assigned tasks'],
-                        ['id' => 'my_applications', 'title' => '📝 എന്റെ അപേക്ഷകൾ', 'description' => 'Pending applications'],
-                        ['id' => 'my_earnings', 'title' => '💰 വരുമാനം', 'description' => 'Earnings & statistics'],
-                        ['id' => 'worker_profile', 'title' => '👤 പ്രൊഫൈൽ', 'description' => 'Edit your profile'],
-                        ['id' => 'main_menu', 'title' => '🏠 മെയിൻ മെനു', 'description' => 'Main Menu'],
+                        ['id' => 'browse_jobs', 'title' => '🔍 Browse Jobs', 'description' => 'Find available tasks nearby'],
+                        ['id' => 'my_active_jobs', 'title' => '📋 Active Jobs', 'description' => 'Your current assigned tasks'],
+                        ['id' => 'my_applications', 'title' => '📝 My Applications', 'description' => 'Pending applications'],
+                        ['id' => 'my_earnings', 'title' => '💰 Earnings', 'description' => 'Earnings & statistics'],
+                        ['id' => 'worker_profile', 'title' => '👤 Profile', 'description' => 'Edit your profile'],
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Main Menu'],
                     ],
                 ],
             ],
@@ -1211,19 +1195,19 @@ class JobMessages
 
         return [
             'type' => 'list',
-            'header' => '📋 ജോലി മെനു',
+            'header' => '📋 Jobs Menu',
             'body' => "👋 *{$user->display_name}*\n\n" .
                 "📋 Active Tasks: {$activeJobsCount}\n\n" .
-                "എന്ത് ചെയ്യണം?",
-            'button' => 'തിരഞ്ഞെടുക്കുക',
+                "What would you like to do?",
+            'button' => 'Select',
             'sections' => [
                 [
-                    'title' => 'ഓപ്ഷനുകൾ',
+                    'title' => 'Options',
                     'rows' => [
-                        ['id' => 'post_job', 'title' => '📋 ജോലി പോസ്റ്റ് ചെയ്യുക', 'description' => 'Post a new task'],
-                        ['id' => 'my_posted_jobs', 'title' => '📂 എന്റെ ജോലികൾ', 'description' => 'View your posted tasks'],
-                        ['id' => 'view_applications', 'title' => '👥 അപേക്ഷകൾ കാണുക', 'description' => 'Review worker applications'],
-                        ['id' => 'main_menu', 'title' => '🏠 മെയിൻ മെനു', 'description' => 'Main Menu'],
+                        ['id' => 'post_job', 'title' => '📋 Post a Task', 'description' => 'Post a new task'],
+                        ['id' => 'my_posted_jobs', 'title' => '📂 My Tasks', 'description' => 'View your posted tasks'],
+                        ['id' => 'view_applications', 'title' => '👥 Applications', 'description' => 'Review worker applications'],
+                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Main Menu'],
                     ],
                 ],
             ],
@@ -1233,7 +1217,7 @@ class JobMessages
     /**
      * Browse jobs results.
      */
-    public static function browseJobsResults(Collection $jobs, string $location = 'അടുത്ത്'): array
+    public static function browseJobsResults(Collection $jobs, string $location = 'nearby'): array
     {
         if ($jobs->isEmpty()) {
             return self::noJobsAvailable();
@@ -1248,17 +1232,17 @@ class JobMessages
             ];
         })->toArray();
 
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 മെനു', 'description' => 'Main Menu'];
+        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main Menu'];
 
         return [
             'type' => 'list',
-            'header' => '💼 ലഭ്യമായ ജോലികൾ',
-            'body' => "💼 *{$jobs->count()} ജോലികൾ* {$location}-ൽ ലഭ്യമാണ്\n\n" .
+            'header' => '💼 Available Jobs',
+            'body' => "💼 *{$jobs->count()} jobs* available {$location}\n\n" .
                 "Select a task to view details and apply:",
-            'button' => 'ജോലികൾ കാണുക',
+            'button' => 'View Jobs',
             'sections' => [
                 [
-                    'title' => 'ലഭ്യമായ ജോലികൾ',
+                    'title' => 'Available Jobs',
                     'rows' => $rows,
                 ],
             ],

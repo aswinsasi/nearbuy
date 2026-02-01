@@ -11,12 +11,13 @@ use App\Services\WhatsApp\Messages\MessageTemplates;
  *
  * CRITICAL: WhatsApp list messages have a hard limit of 10 items total across all sections.
  *
- * IMPORTANT: Fish seller options (Post Catch, Update Stock) should be shown to ANY user
- * who has a fishSeller profile, not just users with type=FISH_SELLER.
- * A SHOP or CUSTOMER user can also have a fishSeller profile.
+ * IMPORTANT: Fish seller and Job worker options should be shown to ANY user
+ * who has a fishSeller or jobWorker profile, not just users with specific types.
+ * A SHOP or CUSTOMER user can also have fishSeller and/or jobWorker profiles.
  *
  * @srs-ref Section 6.2 - Unified Menu Structure
  * @srs-ref Section 2.2 - Any user can become a fish seller
+ * @srs-ref Section 3 - Jobs Marketplace Module (Njaanum Panikkar)
  * @srs-ref PM-015 - Subscription modification
  */
 class MainMenuTemplate
@@ -27,34 +28,33 @@ class MainMenuTemplate
     public const CUSTOMER_MENU = [
         [
             'id' => 'browse_offers',
-            'title' => '🛍️ Browse Offers',
-            'description' => 'See deals from nearby shops',
+            'title' => '🛍️ Shop Offers',
+            'description' => 'Browse nearby deals',
+        ],
+        [
+            'id' => 'search_product',
+            'title' => '🔍 Find Product',
+            'description' => 'Search for items',
         ],
         [
             'id' => 'fish_browse',
             'title' => '🐟 Fresh Fish',
-            'description' => 'Browse nearby fresh fish',
+            'description' => 'Pacha Meen alerts',
         ],
         [
-            'id' => 'search_product',
-            'title' => '🔍 Search Product',
-            'description' => 'Find what you need locally',
+            'id' => 'job_browse',
+            'title' => '👷 Jobs',
+            'description' => 'Post or find work',
         ],
         [
             'id' => 'my_requests',
             'title' => '📬 My Requests',
             'description' => 'Check responses from shops',
         ],
-        // Fish alerts - DYNAMIC: replaced with subscribe OR manage
-        [
-            'id' => 'fish_subscribe',
-            'title' => '🔔 Fish Alerts',
-            'description' => 'Get notified when fish arrives',
-        ],
         [
             'id' => 'create_agreement',
-            'title' => '📝 New Agreement',
-            'description' => 'Record money transactions',
+            'title' => '📝 Agreements',
+            'description' => 'Digital contracts',
         ],
         [
             'id' => 'my_agreements',
@@ -92,11 +92,10 @@ class MainMenuTemplate
             'title' => '🐟 Fresh Fish',
             'description' => 'Browse nearby fresh fish',
         ],
-        // Fish alerts - DYNAMIC: replaced with subscribe OR manage
         [
-            'id' => 'fish_subscribe',
-            'title' => '🔔 Fish Alerts',
-            'description' => 'Get notified when fish arrives',
+            'id' => 'job_browse',
+            'title' => '👷 Jobs',
+            'description' => 'Post or find work',
         ],
         [
             'id' => 'create_agreement',
@@ -140,9 +139,9 @@ class MainMenuTemplate
             'description' => 'View sales & performance',
         ],
         [
-            'id' => 'fish_browse',
-            'title' => '🐟 Browse Fish',
-            'description' => 'See other sellers nearby',
+            'id' => 'job_browse',
+            'title' => '👷 Jobs',
+            'description' => 'Post or find work',
         ],
         [
             'id' => 'create_agreement',
@@ -162,7 +161,55 @@ class MainMenuTemplate
     ];
 
     /**
-     * Unregistered user menu - 4 items.
+     * Job worker menu options (for users with type=JOB_WORKER or jobWorker profile) - 8 items.
+     *
+     * @srs-ref Section 3 - Jobs Marketplace Module
+     */
+    public const JOB_WORKER_MENU = [
+        [
+            'id' => 'job_browse',
+            'title' => '🔍 Find Work',
+            'description' => 'Browse available tasks',
+        ],
+        [
+            'id' => 'job_worker_menu',
+            'title' => '👷 My Jobs',
+            'description' => 'View assigned tasks',
+        ],
+        [
+            'id' => 'job_post',
+            'title' => '📋 Post Task',
+            'description' => 'Need help? Post a task',
+        ],
+        [
+            'id' => 'job_poster_menu',
+            'title' => '📊 My Posted Tasks',
+            'description' => 'Manage tasks you posted',
+        ],
+        [
+            'id' => 'fish_browse',
+            'title' => '🐟 Fresh Fish',
+            'description' => 'Browse nearby fresh fish',
+        ],
+        [
+            'id' => 'create_agreement',
+            'title' => '📝 New Agreement',
+            'description' => 'Record transactions',
+        ],
+        [
+            'id' => 'my_agreements',
+            'title' => '📋 My Agreements',
+            'description' => 'View agreements',
+        ],
+        [
+            'id' => 'settings',
+            'title' => '⚙️ Settings',
+            'description' => 'Update your profile',
+        ],
+    ];
+
+    /**
+     * Unregistered user menu - 5 items.
      */
     public const UNREGISTERED_MENU = [
         [
@@ -172,13 +219,18 @@ class MainMenuTemplate
         ],
         [
             'id' => 'browse_offers',
-            'title' => '🛍️ Browse Offers',
-            'description' => 'See what\'s available nearby',
+            'title' => '🛍️ Shop Offers',
+            'description' => 'Browse nearby deals',
         ],
         [
             'id' => 'fish_browse',
             'title' => '🐟 Fresh Fish',
-            'description' => 'Browse nearby fresh fish',
+            'description' => 'Pacha Meen alerts',
+        ],
+        [
+            'id' => 'job_browse',
+            'title' => '👷 Jobs',
+            'description' => 'Post or find work',
         ],
         [
             'id' => 'about',
@@ -192,10 +244,13 @@ class MainMenuTemplate
      *
      * CRITICAL LOGIC:
      * 1. If user has type=FISH_SELLER → show FISH_SELLER_MENU
-     * 2. If user has fishSeller profile (but type=SHOP or CUSTOMER) → show their menu WITH fish seller options
-     * 3. Otherwise → show normal menu based on type
+     * 2. If user has type=JOB_WORKER → show JOB_WORKER_MENU
+     * 3. If user has fishSeller profile (but type=SHOP or CUSTOMER) → show their menu WITH fish seller options
+     * 4. If user has jobWorker profile (but type=SHOP or CUSTOMER) → show their menu WITH job worker options
+     * 5. Otherwise → show normal menu based on type
      *
      * @srs-ref Section 2.2: Any user can become a fish seller
+     * @srs-ref Section 3: Any user can become a job worker
      */
     public static function getMenuForUser(?User $user): array
     {
@@ -205,14 +260,19 @@ class MainMenuTemplate
 
         // Users with PRIMARY type FISH_SELLER get dedicated fish seller menu
         if ($user->type === UserType::FISH_SELLER) {
-            return self::FISH_SELLER_MENU;
+            return self::addJobWorkerOptionsIfNeeded($user, self::FISH_SELLER_MENU);
         }
 
         // Check if user has fish seller profile (can sell fish)
         $isFishSeller = $user->fishSeller !== null;
         
+        // Check if user has job worker profile (can do tasks)
+        $isJobWorker = $user->jobWorker !== null;
+        
         // Check subscription status for alerts option
-        $hasSubscription = $user->activeFishSubscriptions()->exists();
+        $hasSubscription = method_exists($user, 'activeFishSubscriptions') 
+            ? $user->activeFishSubscriptions()->exists() 
+            : false;
 
         // Get base menu based on user type
         $baseMenu = $user->type === UserType::SHOP ? self::SHOP_MENU : self::CUSTOMER_MENU;
@@ -232,10 +292,14 @@ class MainMenuTemplate
                 'title' => '📦 Update Stock',
                 'description' => 'Change availability',
             ];
+        }
+
+        // If user is a job worker, add job worker options near the top
+        if ($isJobWorker) {
             $adjustedMenu[] = [
-                'id' => 'fish_my_catches',
-                'title' => '📋 My Catches',
-                'description' => 'View active fish postings',
+                'id' => 'job_worker_menu',
+                'title' => '👷 My Jobs',
+                'description' => 'View assigned tasks',
             ];
         }
 
@@ -243,6 +307,16 @@ class MainMenuTemplate
         foreach ($baseMenu as $item) {
             // Skip fish_browse if user is fish seller (they have their own fish options)
             if ($isFishSeller && $item['id'] === 'fish_browse') {
+                continue;
+            }
+
+            // Replace job_browse with worker dashboard if user is a worker
+            if ($isJobWorker && $item['id'] === 'job_browse') {
+                $adjustedMenu[] = [
+                    'id' => 'job_browse',
+                    'title' => '🔍 Find More Work',
+                    'description' => 'Browse available tasks',
+                ];
                 continue;
             }
 
@@ -270,17 +344,82 @@ class MainMenuTemplate
 
         // Add "Sell Fish" option ONLY if user is NOT already a fish seller and we have room
         if (!$isFishSeller && count($adjustedMenu) < 10) {
-            // Insert before last item (settings/shop_profile)
-            $lastIndex = count($adjustedMenu) - 1;
-            array_splice($adjustedMenu, $lastIndex, 0, [[
+            // Find a good position (before settings)
+            $settingsIndex = array_search('settings', array_column($adjustedMenu, 'id'));
+            $shopProfileIndex = array_search('shop_profile', array_column($adjustedMenu, 'id'));
+            $insertIndex = $settingsIndex !== false ? $settingsIndex : ($shopProfileIndex !== false ? $shopProfileIndex : count($adjustedMenu));
+            
+            array_splice($adjustedMenu, $insertIndex, 0, [[
                 'id' => 'fish_seller_register',
                 'title' => '🎣 Sell Fish',
                 'description' => 'Register to sell fresh fish',
             ]]);
         }
 
+        // Add "Become Worker" option ONLY if user is NOT already a job worker and we have room
+        if (!$isJobWorker && count($adjustedMenu) < 10) {
+            // Find a good position (before settings)
+            $settingsIndex = array_search('settings', array_column($adjustedMenu, 'id'));
+            $shopProfileIndex = array_search('shop_profile', array_column($adjustedMenu, 'id'));
+            $insertIndex = $settingsIndex !== false ? $settingsIndex : ($shopProfileIndex !== false ? $shopProfileIndex : count($adjustedMenu));
+            
+            array_splice($adjustedMenu, $insertIndex, 0, [[
+                'id' => 'job_worker_register',
+                'title' => '👷 Become Worker',
+                'description' => 'Register to do tasks',
+            ]]);
+        }
+
         // STRICT ENFORCEMENT: Never exceed 10 items
         return array_slice($adjustedMenu, 0, 10);
+    }
+
+    /**
+     * Add fish seller options to a menu if user has fish seller profile.
+     */
+    private static function addFishSellerOptionsIfNeeded(?User $user, array $menu): array
+    {
+        if (!$user || $user->fishSeller === null) {
+            return array_slice($menu, 0, 10);
+        }
+
+        // Add fish seller options at a reasonable position
+        $fishOptions = [
+            [
+                'id' => 'fish_post_catch',
+                'title' => '🎣 Post Catch',
+                'description' => 'Add fresh fish posting',
+            ],
+        ];
+
+        // Insert after main job options
+        array_splice($menu, 4, 0, $fishOptions);
+
+        return array_slice($menu, 0, 10);
+    }
+
+    /**
+     * Add job worker options to a menu if user has job worker profile.
+     */
+    private static function addJobWorkerOptionsIfNeeded(?User $user, array $menu): array
+    {
+        if (!$user || $user->jobWorker === null) {
+            return array_slice($menu, 0, 10);
+        }
+
+        // Add job worker options at a reasonable position
+        $jobOptions = [
+            [
+                'id' => 'job_worker_menu',
+                'title' => '👷 My Jobs',
+                'description' => 'View assigned tasks',
+            ],
+        ];
+
+        // Insert after main fish options
+        array_splice($menu, 4, 0, $jobOptions);
+
+        return array_slice($menu, 0, 10);
     }
 
     /**
@@ -308,23 +447,33 @@ class MainMenuTemplate
         // Fish seller with type=FISH_SELLER
         if ($user->type === UserType::FISH_SELLER) {
             $businessName = $user->fishSeller?->business_name ?? 'Fish Seller';
-            return $greeting . "\n\n🐟 *{$businessName}*\n\n" . self::getFishSellerMenuText();
+            $extra = '';
+            if ($user->jobWorker) {
+                $extra = "\n👷 Also working as: *" . ($user->jobWorker->display_name ?? 'Worker') . "*";
+            }
+            return $greeting . "\n\n🐟 *{$businessName}*{$extra}\n\n" . self::getFishSellerMenuText();
         }
 
-        // Shop owner (may also be fish seller)
+        // Shop owner (may also be fish seller and/or job worker)
         if ($user->type === UserType::SHOP) {
             $shopName = $user->shop?->shop_name ?? 'Your Shop';
             $extra = '';
             if ($user->fishSeller) {
-                $extra = "\n🐟 Also selling as: *{$user->fishSeller->business_name}*";
+                $extra .= "\n🐟 Selling fish as: *{$user->fishSeller->business_name}*";
+            }
+            if ($user->jobWorker) {
+                $extra .= "\n👷 Working as: *" . ($user->jobWorker->display_name ?? 'Worker') . "*";
             }
             return $greeting . "\n\n🏪 *{$shopName}*{$extra}\n\n" . MessageTemplates::MAIN_MENU_SHOP;
         }
 
-        // Customer (may also be fish seller)
+        // Customer (may also be fish seller and/or job worker)
         $extra = '';
         if ($user->fishSeller) {
-            $extra = "\n\n🐟 Selling as: *{$user->fishSeller->business_name}*";
+            $extra .= "\n\n🐟 Selling as: *{$user->fishSeller->business_name}*";
+        }
+        if ($user->jobWorker) {
+            $extra .= "\n👷 Working as: *" . ($user->jobWorker->display_name ?? 'Worker') . "*";
         }
         return $greeting . $extra . "\n\n" . MessageTemplates::MAIN_MENU_CUSTOMER;
     }
@@ -335,6 +484,16 @@ class MainMenuTemplate
     public static function getFishSellerMenuText(): string
     {
         return "Post your fresh catch and notify customers instantly!";
+    }
+
+    /**
+     * Get job worker menu text.
+     *
+     * @srs-ref Section 3 - Jobs Marketplace Module
+     */
+    public static function getJobWorkerMenuText(): string
+    {
+        return "Find tasks nearby and earn money helping others!";
     }
 
     /**
@@ -354,6 +513,22 @@ class MainMenuTemplate
     }
 
     /**
+     * Get time-based greeting.
+     */
+    public static function getTimeBasedGreeting(string $name): string
+    {
+        $hour = (int) now()->format('H');
+        
+        if ($hour < 12) {
+            return "🌅 Good morning, {$name}!";
+        } elseif ($hour < 17) {
+            return "☀️ Good afternoon, {$name}!";
+        } else {
+            return "🌙 Good evening, {$name}!";
+        }
+    }
+
+    /**
      * Build list sections for WhatsApp list message.
      *
      * CRITICAL: Total rows across all sections MUST NOT exceed 10.
@@ -369,9 +544,27 @@ class MainMenuTemplate
             if ($user->type === UserType::FISH_SELLER) {
                 $sectionTitle = '🐟 Fish Seller Menu';
             } elseif ($user->type === UserType::SHOP) {
-                $sectionTitle = $user->fishSeller ? '🏪 Shop & Fish Menu' : '🏪 Shop Menu';
+                $title = '🏪 Shop Menu';
+                if ($user->fishSeller && $user->jobWorker) {
+                    $sectionTitle = '🏪 Shop & More';
+                } elseif ($user->fishSeller) {
+                    $sectionTitle = '🏪 Shop & Fish Menu';
+                } elseif ($user->jobWorker) {
+                    $sectionTitle = '🏪 Shop & Jobs';
+                } else {
+                    $sectionTitle = $title;
+                }
             } else {
-                $sectionTitle = $user->fishSeller ? '🐟 Menu' : '📋 Menu';
+                // CUSTOMER type - check for additional profiles
+                if ($user->fishSeller && $user->jobWorker) {
+                    $sectionTitle = '📋 Menu';
+                } elseif ($user->fishSeller) {
+                    $sectionTitle = '🐟 Menu';
+                } elseif ($user->jobWorker) {
+                    $sectionTitle = '👷 Menu';
+                } else {
+                    $sectionTitle = '📋 Menu';
+                }
             }
         } else {
             $sectionTitle = '🚀 Get Started';
@@ -420,6 +613,15 @@ class MainMenuTemplate
             ];
         }
 
+        // Shop owner who is also a job worker
+        if ($user->type === UserType::SHOP && $user->jobWorker) {
+            return [
+                ['id' => 'job_browse', 'title' => '🔍 Find Work'],
+                ['id' => 'upload_offer', 'title' => '📤 Upload Offer'],
+                ['id' => 'more', 'title' => '📋 More Options'],
+            ];
+        }
+
         // Regular shop owner
         if ($user->type === UserType::SHOP) {
             return [
@@ -438,10 +640,19 @@ class MainMenuTemplate
             ];
         }
 
+        // Customer who is also a job worker
+        if ($user->jobWorker) {
+            return [
+                ['id' => 'job_browse', 'title' => '🔍 Find Work'],
+                ['id' => 'browse_offers', 'title' => '🛍️ Browse'],
+                ['id' => 'more', 'title' => '📋 More Options'],
+            ];
+        }
+
         // Regular customer
         return [
             ['id' => 'browse_offers', 'title' => '🛍️ Browse'],
-            ['id' => 'fish_browse', 'title' => '🐟 Fresh Fish'],
+            ['id' => 'job_browse', 'title' => '👷 Jobs'],
             ['id' => 'more', 'title' => '📋 More Options'],
         ];
     }
@@ -456,6 +667,7 @@ class MainMenuTemplate
             "I can help you:\n" .
             "• 🛍️ Browse offers from nearby shops\n" .
             "• 🐟 Find fresh fish from local sellers\n" .
+            "• 👷 Post tasks or find work\n" .
             "• 🔍 Find products locally\n" .
             "• 📝 Create digital agreements\n\n" .
             "_No app download needed!_\n\n" .
@@ -470,10 +682,12 @@ class MainMenuTemplate
         return "ℹ️ *About NearBuy*\n\n" .
             "NearBuy connects you with local shops and services - all through WhatsApp!\n\n" .
             "✨ *Features:*\n\n" .
-            "🛍️ *Browse Offers*\n" .
-            "See deals from shops near you\n\n" .
+            "🛍️ *Shop Offers*\n" .
+            "Browse deals from shops near you\n\n" .
             "🐟 *Fresh Fish (Pacha Meen)*\n" .
             "Get alerts when fresh fish arrives nearby\n\n" .
+            "👷 *Jobs (Njaanum Panikkar)*\n" .
+            "Post tasks or find work in your area\n\n" .
             "🔍 *Product Search*\n" .
             "Tell us what you need, we'll find it locally\n\n" .
             "📝 *Digital Agreements*\n" .
@@ -494,6 +708,7 @@ class MainMenuTemplate
             "*Quick Commands:*\n" .
             "• Type *browse* - Browse offers\n" .
             "• Type *fish* - Browse fresh fish\n" .
+            "• Type *jobs* - Find work or post tasks\n" .
             "• Type *search* - Search for products\n\n" .
             "_Need help? Contact support_";
     }

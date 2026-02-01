@@ -66,6 +66,42 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping()
             ->appendOutputTo(storage_path('logs/expiry.log'));
 
+        // Expire fish catches - run every 15 minutes
+        $schedule->command('fish:expire-catches')
+            ->everyFifteenMinutes()
+            ->withoutOverlapping()
+            ->appendOutputTo(storage_path('logs/expiry.log'));
+
+        /*
+        |--------------------------------------------------------------------------
+        | Jobs Module Schedules (Njaanum Panikkar)
+        |--------------------------------------------------------------------------
+        */
+
+        // Expire open jobs past their expiration time - run every 5 minutes
+        $schedule->command('jobs:expire --notify')
+            ->everyFiveMinutes()
+            ->withoutOverlapping()
+            ->appendOutputTo(storage_path('logs/jobs.log'));
+
+        // Send job reminders to workers and posters - run every 15 minutes
+        $schedule->command('jobs:send-reminders')
+            ->everyFifteenMinutes()
+            ->withoutOverlapping()
+            ->appendOutputTo(storage_path('logs/jobs.log'));
+
+        // Calculate weekly earnings - run Sunday at midnight
+        $schedule->command('jobs:calculate-earnings --notify')
+            ->weeklyOn(0, '00:00')
+            ->withoutOverlapping()
+            ->appendOutputTo(storage_path('logs/jobs.log'));
+
+        // Check and award badges - run daily at midnight
+        $schedule->command('jobs:check-badges --notify')
+            ->dailyAt('00:00')
+            ->withoutOverlapping()
+            ->appendOutputTo(storage_path('logs/jobs.log'));
+
         /*
         |--------------------------------------------------------------------------
         | Cleanup Schedules

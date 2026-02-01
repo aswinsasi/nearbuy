@@ -6,6 +6,7 @@ namespace App\Enums;
  * Available conversation flow types in NearBuy.
  *
  * @srs-ref Section 7.1 High-Level Architecture - Flow Controllers
+ * @srs-ref Section 3 - Jobs Marketplace Module (Njaanum Panikkar)
  */
 enum FlowType: string
 {
@@ -139,6 +140,9 @@ enum FlowType: string
 
     /**
      * Get the handler class name.
+     *
+     * NOTE: JOB_BROWSE, JOB_WORKER_MENU, JOB_POSTER_MENU, JOB_APPLICATIONS
+     * currently reuse existing handlers as dedicated handlers are not yet implemented.
      */
     public function handlerClass(): string
     {
@@ -163,12 +167,17 @@ enum FlowType: string
             self::FISH_MANAGE_SUBSCRIPTION => \App\Services\Flow\Handlers\Fish\FishManageSubscriptionHandler::class,
             self::FISH_SELLER_MENU => \App\Services\Flow\Handlers\Fish\FishSellerMenuHandler::class,
             // Job flows - in Jobs subdirectory
+            // NOTE: Existing handlers only - some flows reuse handlers
             self::JOB_WORKER_REGISTER => \App\Services\Flow\Handlers\Jobs\JobWorkerRegistrationFlowHandler::class,
             self::JOB_POST => \App\Services\Flow\Handlers\Jobs\JobPostFlowHandler::class,
-            self::JOB_BROWSE => \App\Services\Flow\Handlers\Jobs\JobBrowseFlowHandler::class,
-            self::JOB_WORKER_MENU => \App\Services\Flow\Handlers\Jobs\JobWorkerMenuHandler::class,
-            self::JOB_POSTER_MENU => \App\Services\Flow\Handlers\Jobs\JobPosterMenuHandler::class,
-            self::JOB_APPLICATIONS => \App\Services\Flow\Handlers\Jobs\JobApplicationsFlowHandler::class,
+            // JOB_BROWSE uses JobApplicationFlowHandler to browse and view jobs
+            self::JOB_BROWSE => \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler::class,
+            // JOB_WORKER_MENU uses JobExecutionFlowHandler for worker dashboard
+            self::JOB_WORKER_MENU => \App\Services\Flow\Handlers\Jobs\JobExecutionFlowHandler::class,
+            // JOB_POSTER_MENU uses JobSelectionFlowHandler for poster dashboard
+            self::JOB_POSTER_MENU => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
+            // JOB_APPLICATIONS uses JobSelectionFlowHandler to view applications
+            self::JOB_APPLICATIONS => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
             self::JOB_APPLICATION => \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler::class,
             self::JOB_SELECTION => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
             self::JOB_EXECUTION => \App\Services\Flow\Handlers\Jobs\JobExecutionFlowHandler::class,

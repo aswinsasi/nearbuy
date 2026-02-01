@@ -54,20 +54,71 @@ class JobWorkerService
         $this->validateWorkerData($data);
 
         return DB::transaction(function () use ($user, $data) {
-            $worker = JobWorker::create([
-                'user_id' => $user->id,
-                'name' => trim($data['name']),
-                'photo_url' => $data['photo_url'] ?? null,
-                'latitude' => $data['latitude'],
-                'longitude' => $data['longitude'],
-                'address' => $data['address'] ?? null,
-                'vehicle_type' => $this->parseVehicleType($data['vehicle_type'] ?? 'none'),
-                'job_types' => $data['job_types'] ?? [],
-                'availability' => $data['availability'] ?? ['flexible'],
-                'is_available' => true,
-                'is_verified' => false,
-                'last_active_at' => now(),
-            ]);
+            // Use raw PDO to completely bypass ALL Laravel processing
+            $now = now()->format('Y-m-d H:i:s');
+            
+            // Ensure JSON strings for array fields
+            $jobTypesRaw = $data['job_types'] ?? [];
+            $availabilityRaw = $data['availability'] ?? ['flexible'];
+            
+            $jobTypes = is_array($jobTypesRaw) ? json_encode($jobTypesRaw) : (string)$jobTypesRaw;
+            $availability = is_array($availabilityRaw) ? json_encode($availabilityRaw) : (string)$availabilityRaw;
+            $vehicleType = $this->parseVehicleType($data['vehicle_type'] ?? 'none')->value;
+            
+            // Ensure ALL values are scalars (not arrays)
+            $name = is_array($data['name']) ? json_encode($data['name']) : trim((string)$data['name']);
+            $photoUrl = isset($data['photo_url']) ? (is_array($data['photo_url']) ? null : $data['photo_url']) : null;
+            $latitude = is_array($data['latitude']) ? (float)$data['latitude'][0] : (float)$data['latitude'];
+            $longitude = is_array($data['longitude']) ? (float)$data['longitude'][0] : (float)$data['longitude'];
+            $address = isset($data['address']) ? (is_array($data['address']) ? json_encode($data['address']) : $data['address']) : null;
+            
+            // Build parameters array
+            $params = [
+                (int)$user->id,
+                (string)$name,
+                $photoUrl,
+                (float)$latitude,
+                (float)$longitude,
+                $address,
+                (string)$vehicleType,
+                (string)$jobTypes,
+                (string)$availability,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                $now,
+                $now,
+                $now,
+            ];
+            
+            // CRITICAL: Verify NO arrays in params before executing
+            foreach ($params as $index => $param) {
+                if (is_array($param)) {
+                    Log::error('Array found in PDO params', [
+                        'index' => $index,
+                        'value' => $param,
+                        'all_params' => array_map(fn($p) => ['value' => $p, 'type' => gettype($p)], $params),
+                    ]);
+                    throw new \RuntimeException("Array found at parameter index {$index}. Cannot insert.");
+                }
+            }
+            
+            // Get raw PDO connection and use prepared statement directly
+            $pdo = DB::connection()->getPdo();
+            $stmt = $pdo->prepare(
+                "INSERT INTO job_workers 
+                (user_id, name, photo_url, latitude, longitude, address, vehicle_type, 
+                 job_types, availability, rating, rating_count, jobs_completed, 
+                 total_earnings, is_available, is_verified, last_active_at, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            );
+            
+            $stmt->execute($params);
+
+            $worker = JobWorker::where('user_id', $user->id)->first();
 
             Log::info('Existing user registered as job worker', [
                 'worker_id' => $worker->id,
@@ -108,21 +159,71 @@ class JobWorkerService
                 'registered_at' => now(),
             ]);
 
-            // Create worker profile
-            $worker = JobWorker::create([
-                'user_id' => $user->id,
-                'name' => trim($data['name']),
-                'photo_url' => $data['photo_url'] ?? null,
-                'latitude' => $data['latitude'],
-                'longitude' => $data['longitude'],
-                'address' => $data['address'] ?? null,
-                'vehicle_type' => $this->parseVehicleType($data['vehicle_type'] ?? 'none'),
-                'job_types' => $data['job_types'] ?? [],
-                'availability' => $data['availability'] ?? ['flexible'],
-                'is_available' => true,
-                'is_verified' => false,
-                'last_active_at' => now(),
-            ]);
+            // Create worker profile using raw PDO
+            // to completely bypass Laravel's JSON column handling
+            $now = now()->format('Y-m-d H:i:s');
+            
+            // Ensure JSON strings for array fields
+            $jobTypesRaw = $data['job_types'] ?? [];
+            $availabilityRaw = $data['availability'] ?? ['flexible'];
+            
+            $jobTypes = is_array($jobTypesRaw) ? json_encode($jobTypesRaw) : (string)$jobTypesRaw;
+            $availability = is_array($availabilityRaw) ? json_encode($availabilityRaw) : (string)$availabilityRaw;
+            $vehicleType = $this->parseVehicleType($data['vehicle_type'] ?? 'none')->value;
+            
+            // Ensure ALL values are scalars
+            $name = is_array($data['name']) ? json_encode($data['name']) : trim((string)$data['name']);
+            $photoUrl = isset($data['photo_url']) ? (is_array($data['photo_url']) ? null : $data['photo_url']) : null;
+            $latitude = is_array($data['latitude']) ? (float)$data['latitude'][0] : (float)$data['latitude'];
+            $longitude = is_array($data['longitude']) ? (float)$data['longitude'][0] : (float)$data['longitude'];
+            $address = isset($data['address']) ? (is_array($data['address']) ? json_encode($data['address']) : $data['address']) : null;
+            
+            // Build parameters array
+            $params = [
+                (int)$user->id,
+                (string)$name,
+                $photoUrl,
+                (float)$latitude,
+                (float)$longitude,
+                $address,
+                (string)$vehicleType,
+                (string)$jobTypes,
+                (string)$availability,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                $now,
+                $now,
+                $now,
+            ];
+            
+            // CRITICAL: Verify NO arrays in params before executing
+            foreach ($params as $index => $param) {
+                if (is_array($param)) {
+                    Log::error('Array found in PDO params (createUserAndWorker)', [
+                        'index' => $index,
+                        'value' => $param,
+                    ]);
+                    throw new \RuntimeException("Array found at parameter index {$index}. Cannot insert.");
+                }
+            }
+            
+            // Get raw PDO connection
+            $pdo = DB::connection()->getPdo();
+            $stmt = $pdo->prepare(
+                "INSERT INTO job_workers 
+                (user_id, name, photo_url, latitude, longitude, address, vehicle_type, 
+                 job_types, availability, rating, rating_count, jobs_completed, 
+                 total_earnings, is_available, is_verified, last_active_at, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            );
+            
+            $stmt->execute($params);
+
+            $worker = JobWorker::where('user_id', $user->id)->first();
 
             Log::info('New user and job worker created', [
                 'user_id' => $user->id,
@@ -167,12 +268,14 @@ class JobWorkerService
             $updateData['vehicle_type'] = $this->parseVehicleType($data['vehicle_type']);
         }
 
-        if (isset($data['job_types']) && is_array($data['job_types'])) {
-            $updateData['job_types'] = array_values(array_unique($data['job_types']));
+        if (isset($data['job_types'])) {
+            $jobTypes = $this->decodeToArray($data['job_types']);
+            $updateData['job_types'] = json_encode(array_values(array_unique($jobTypes)));
         }
 
-        if (isset($data['availability']) && is_array($data['availability'])) {
-            $updateData['availability'] = array_values(array_unique($data['availability']));
+        if (isset($data['availability'])) {
+            $availability = $this->decodeToArray($data['availability']);
+            $updateData['availability'] = json_encode(array_values(array_unique($availability)));
         }
 
         if (isset($data['is_available'])) {
@@ -485,14 +588,20 @@ class JobWorkerService
             throw new \InvalidArgumentException('Invalid location coordinates.');
         }
 
-        // Job types validation (optional but should be array if provided)
-        if (isset($data['job_types']) && !is_array($data['job_types'])) {
-            throw new \InvalidArgumentException('Job types must be an array.');
+        // Job types validation (optional but should be array or JSON string if provided)
+        if (isset($data['job_types'])) {
+            $jobTypes = $this->decodeToArray($data['job_types']);
+            if (!is_array($jobTypes)) {
+                throw new \InvalidArgumentException('Job types must be an array.');
+            }
         }
 
-        // Availability validation (optional but should be array if provided)
-        if (isset($data['availability']) && !is_array($data['availability'])) {
-            throw new \InvalidArgumentException('Availability must be an array.');
+        // Availability validation (optional but should be array or JSON string if provided)
+        if (isset($data['availability'])) {
+            $availability = $this->decodeToArray($data['availability']);
+            if (!is_array($availability)) {
+                throw new \InvalidArgumentException('Availability must be an array.');
+            }
         }
     }
 
@@ -554,5 +663,62 @@ class JobWorkerService
             'four_wheeler', 'car', 'auto', 'van' => VehicleType::FOUR_WHEELER,
             default => VehicleType::NONE,
         };
+    }
+
+    /**
+     * Decode value to PHP array (for internal processing).
+     *
+     * Handles JSON strings from session storage, converting them back to
+     * PHP arrays for operations like validation and array manipulation.
+     *
+     * @param mixed $value
+     * @return array PHP array
+     */
+    protected function decodeToArray(mixed $value): array
+    {
+        // If already an array, return as-is
+        if (is_array($value)) {
+            return $value;
+        }
+
+        // If it's a JSON string, decode it
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        // Default to empty array
+        return [];
+    }
+
+    /**
+     * Ensure value is a JSON-encoded string for database storage.
+     *
+     * This bypasses Laravel's array cast which may not properly encode
+     * arrays from session context. Returns a JSON string that can be
+     * directly inserted into MySQL JSON/TEXT columns.
+     *
+     * @param mixed $value
+     * @return string JSON-encoded string for database storage
+     */
+    protected function ensureArray(mixed $value): string
+    {
+        // If already a valid JSON string, return as-is
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return $value;
+            }
+        }
+
+        // If it's an array, JSON encode it
+        if (is_array($value)) {
+            return json_encode($value);
+        }
+
+        // Default to empty array
+        return '[]';
     }
 }

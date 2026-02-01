@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\Log;
  * Handler for the job application flow.
  *
  * Handles workers viewing job details and applying to jobs.
+ * Also handles job browsing when no specific job is selected.
  *
  * Flow Steps (from JobApplicationStep enum):
  * 1. VIEW_DETAILS - Show full job details
@@ -35,6 +36,7 @@ use Illuminate\Support\Facades\Log;
  * - Worker taps "I'm Interested" (apply_job_X) on job notification
  * - Worker taps "View Details" (view_job_detail_X) on job notification
  * - Worker selects job from browse list
+ * - Worker browses jobs from menu (no job ID - shows list)
  *
  * @srs-ref Section 3.4 - Job Applications
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
@@ -68,22 +70,114 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
     /**
      * Start the application flow.
+     *
+     * If no job ID is set, shows available jobs nearby (browse mode).
+     * If job ID is set, starts the application flow for that job.
      */
     public function start(ConversationSession $session): void
     {
         // Check if we have a job ID in temp data
         $jobId = $this->getTemp($session, 'apply_job_id');
 
-        if (!$jobId) {
-            $this->sendTextWithMenu(
-                $session->phone,
-                "❌ No job selected. Please browse available jobs first.\n\nജോലി തിരഞ്ഞെടുത്തിട്ടില്ല."
-            );
-            $this->goToMainMenu($session);
+        if ($jobId) {
+            $this->startWithJob($session, $jobId);
             return;
         }
 
-        $this->startWithJob($session, $jobId);
+        // No job ID - show browse mode (list of nearby jobs)
+        $this->showNearbyJobs($session);
+    }
+
+    /**
+     * Show nearby available jobs for browsing.
+     */
+    protected function showNearbyJobs(ConversationSession $session): void
+    {
+        $user = $this->getUser($session);
+        $worker = $user?->jobWorker;
+
+        // Get worker's location or use default
+        $latitude = $worker?->latitude ?? $user?->latitude ?? null;
+        $longitude = $worker?->longitude ?? $user?->longitude ?? null;
+
+        // Fetch nearby open jobs
+        $query = JobPost::with(['category', 'poster'])
+            ->where('status', JobStatus::OPEN)
+            ->where(function ($q) {
+                $q->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            })
+            ->orderBy('created_at', 'desc')
+            ->limit(10);
+
+        // If we have coordinates, order by distance
+        if ($latitude && $longitude) {
+            $query->selectRaw('*, (
+                6371 * acos(
+                    cos(radians(?)) * cos(radians(latitude)) *
+                    cos(radians(longitude) - radians(?)) +
+                    sin(radians(?)) * sin(radians(latitude))
+                )
+            ) AS distance', [$latitude, $longitude, $latitude])
+                ->orderBy('distance');
+        }
+
+        $jobs = $query->get();
+
+        if ($jobs->isEmpty()) {
+            $this->sendButtons(
+                $session->phone,
+                "📭 *No Jobs Available*\n" .
+                "*ഇപ്പോൾ ജോലികൾ ഇല്ല*\n\n" .
+                "There are no open tasks near you right now.\n" .
+                "നിങ്ങളുടെ അടുത്ത് ഇപ്പോൾ ജോലികൾ ഇല്ല.\n\n" .
+                "Check back later or post your own task!",
+                [
+                    ['id' => 'job_post', 'title' => '📝 Post a Task'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '👷 Jobs'
+            );
+            return;
+        }
+
+        // Build job list
+        $rows = [];
+        foreach ($jobs as $job) {
+            $distanceText = '';
+            if (isset($job->distance)) {
+                $distanceText = $job->distance < 1
+                    ? round($job->distance * 1000) . 'm'
+                    : round($job->distance, 1) . 'km';
+                $distanceText = " • {$distanceText}";
+            }
+
+            $rows[] = [
+                'id' => 'view_job_' . $job->id,
+                'title' => mb_substr($job->category->icon . ' ' . $job->title, 0, 24),
+                'description' => mb_substr($job->pay_display . $distanceText . ' • ' . $job->formatted_date, 0, 72),
+            ];
+        }
+
+        $jobCount = $jobs->count();
+        $message = "🔍 *Available Jobs Nearby*\n" .
+            "*അടുത്തുള്ള ജോലികൾ*\n\n" .
+            "Found *{$jobCount}* tasks near you.\n" .
+            "{$jobCount} ജോലികൾ കണ്ടെത്തി.\n\n" .
+            "Select a job to see details and apply.";
+
+        $this->sendList(
+            $session->phone,
+            $message,
+            '📋 View Jobs',
+            [
+                [
+                    'title' => '📋 Available Tasks',
+                    'rows' => $rows,
+                ],
+            ],
+            '👷 Jobs'
+        );
     }
 
     /**
@@ -136,10 +230,10 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
                 "ജോലിക്ക് അപേക്ഷിക്കാൻ പണിക്കാരനായി രജിസ്റ്റർ ചെയ്യണം.\n\n" .
                 "_It only takes 2 minutes!_",
                 [
-                    ['id' => 'start_worker_registration', 'title' => '✅ രജിസ്റ്റർ ചെയ്യുക'],
-                    ['id' => 'main_menu', 'title' => '🏠 മെനു'],
+                    ['id' => 'start_worker_registration', 'title' => '✅ Register'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ],
-                '👷 Registration Required'
+                '👷 Registration'
             );
             return;
         }
@@ -201,6 +295,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         ]);
 
         match ($step) {
+            'show_nearby' => $this->handleBrowseSelection($message, $session),
             JobApplicationStep::VIEW_DETAILS->value => $this->handleViewDetails($message, $session),
             JobApplicationStep::ENTER_MESSAGE->value => $this->handleEnterMessage($message, $session),
             JobApplicationStep::PROPOSE_AMOUNT->value => $this->handleProposeAmount($message, $session),
@@ -211,6 +306,30 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
     }
 
     /**
+     * Handle browse job selection from list.
+     */
+    protected function handleBrowseSelection(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selectionId = $this->getSelectionId($message);
+
+        // Handle view_job_X selection from list
+        if ($selectionId && preg_match('/^view_job_(\d+)$/', $selectionId, $matches)) {
+            $jobId = (int) $matches[1];
+            $this->startWithJob($session, $jobId, true);
+            return;
+        }
+
+        // Handle job_post button
+        if ($selectionId === 'job_post') {
+            $this->flowRouter->startFlow($session, FlowType::JOB_POST);
+            return;
+        }
+
+        // Re-show job list
+        $this->showNearbyJobs($session);
+    }
+
+    /**
      * Re-prompt the current step.
      */
     protected function promptCurrentStep(ConversationSession $session): void
@@ -218,6 +337,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         $step = $session->current_step;
 
         match ($step) {
+            'show_nearby' => $this->showNearbyJobs($session),
             JobApplicationStep::VIEW_DETAILS->value => $this->promptViewDetails($session),
             JobApplicationStep::ENTER_MESSAGE->value => $this->promptEnterMessage($session),
             JobApplicationStep::PROPOSE_AMOUNT->value => $this->promptProposeAmount($session),
@@ -235,6 +355,12 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
             return false;
         }
 
+        // Handle "Register as Worker" button
+        if ($selectionId === 'start_worker_registration') {
+            $this->flowRouter->startFlow($session, FlowType::JOB_WORKER_REGISTER);
+            return true;
+        }
+
         // Handle "I'm Interested" button (apply_job_X)
         if (preg_match('/^apply_job_(\d+)$/', $selectionId, $matches)) {
             $jobId = (int) $matches[1];
@@ -242,8 +368,8 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
             return true;
         }
 
-        // Handle "View Details" button (view_job_detail_X)
-        if (preg_match('/^view_job_detail_(\d+)$/', $selectionId, $matches)) {
+        // Handle "View Details" button (view_job_detail_X or view_job_X)
+        if (preg_match('/^view_job_(?:detail_)?(\d+)$/', $selectionId, $matches)) {
             $jobId = (int) $matches[1];
             $this->startWithJob($session, $jobId, true);
             return true;
@@ -258,7 +384,341 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
             return true;
         }
 
+        // Handle "View All Applications" button (view_all_apps_X) - for job posters
+        if (preg_match('/^view_all_apps_(\d+)$/', $selectionId, $matches)) {
+            $jobId = (int) $matches[1];
+            $this->showJobApplications($session, $jobId);
+            return true;
+        }
+
+        // Handle "View Applicant" selection (view_applicant_X) - for job posters
+        if (preg_match('/^view_applicant_(\d+)$/', $selectionId, $matches)) {
+            $applicationId = (int) $matches[1];
+            $this->showApplicantDetails($session, $applicationId);
+            return true;
+        }
+
+        // Handle "Accept Applicant" button (accept_app_X)
+        if (preg_match('/^accept_app_(\d+)$/', $selectionId, $matches)) {
+            $applicationId = (int) $matches[1];
+            $this->acceptApplication($session, $applicationId);
+            return true;
+        }
+
+        // Handle "Reject Applicant" button (reject_app_X)
+        if (preg_match('/^reject_app_(\d+)$/', $selectionId, $matches)) {
+            $applicationId = (int) $matches[1];
+            $this->rejectApplication($session, $applicationId);
+            return true;
+        }
+
         return false;
+    }
+
+    /**
+     * Show all applications for a job (for job poster).
+     */
+    protected function showJobApplications(ConversationSession $session, int $jobId): void
+    {
+        $user = $this->getUser($session);
+        $job = JobPost::with(['applications.worker', 'category'])->find($jobId);
+
+        if (!$job) {
+            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
+            return;
+        }
+
+        // Verify user is the poster
+        if ($job->poster_id !== $user?->id) {
+            $this->sendTextWithMenu($session->phone, "❌ You can only view applications for your own jobs.");
+            return;
+        }
+
+        $applications = $job->applications()
+            ->with('worker')
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        if ($applications->isEmpty()) {
+            $this->sendButtons(
+                $session->phone,
+                "📭 *No Applications Yet*\n\n" .
+                "No one has applied to your job yet.\n" .
+                "ഇതുവരെ ആരും അപേക്ഷിച്ചിട്ടില്ല.\n\n" .
+                "Workers nearby will be notified!",
+                [
+                    ['id' => 'my_jobs', 'title' => '📋 My Jobs'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                "📋 {$job->title}"
+            );
+            return;
+        }
+
+        // Build list of applicants
+        $rows = [];
+        foreach ($applications as $index => $app) {
+            $worker = $app->worker;
+            $amount = $app->proposed_amount 
+                ? '₹' . number_format($app->proposed_amount)
+                : '₹' . number_format($job->pay_amount);
+            
+            $status = match($app->status) {
+                'pending' => '🟡',
+                'accepted' => '✅',
+                'rejected' => '❌',
+                'withdrawn' => '⬜',
+                default => '🔵',
+            };
+
+            $rows[] = [
+                'id' => 'view_applicant_' . $app->id,
+                'title' => mb_substr("{$status} {$worker->name}", 0, 24),
+                'description' => mb_substr("{$worker->short_rating} • {$amount}", 0, 72),
+            ];
+        }
+
+        $count = $applications->count();
+        $this->sendList(
+            $session->phone,
+            "👥 *Applications for:*\n{$job->category->icon} *{$job->title}*\n\n" .
+            "You have *{$count}* application(s).\n" .
+            "{$count} അപേക്ഷകൾ ലഭിച്ചു.\n\n" .
+            "Select an applicant to view details and accept/reject.",
+            '👥 View Applicants',
+            [
+                [
+                    'title' => '👥 Applicants',
+                    'rows' => $rows,
+                ],
+            ],
+            "📋 {$job->title}"
+        );
+
+        // Store job context for follow-up actions
+        $this->setTemp($session, 'viewing_job_id', $jobId);
+    }
+
+    /**
+     * Show details of a specific applicant (for job poster).
+     */
+    protected function showApplicantDetails(ConversationSession $session, int $applicationId): void
+    {
+        $user = $this->getUser($session);
+        $application = \App\Models\JobApplication::with(['worker', 'jobPost.category'])->find($applicationId);
+
+        if (!$application) {
+            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
+            return;
+        }
+
+        // Verify user is the poster
+        if ($application->jobPost->poster_id !== $user?->id) {
+            $this->sendTextWithMenu($session->phone, "❌ You can only view applications for your own jobs.");
+            return;
+        }
+
+        $worker = $application->worker;
+        $job = $application->jobPost;
+
+        $amount = $application->proposed_amount 
+            ? '₹' . number_format($application->proposed_amount) . ' (proposed)'
+            : '₹' . number_format($job->pay_amount);
+
+        $messageText = $application->message 
+            ? "\n\n✉️ *Message:*\n_{$application->message}_"
+            : "";
+
+        $vehicleText = $worker->has_vehicle 
+            ? "🚗 {$worker->vehicle_display}"
+            : "🚶 No vehicle";
+
+        $message = "👤 *APPLICANT DETAILS*\n\n" .
+            "👷 *{$worker->name}*\n" .
+            "⭐ {$worker->short_rating}\n" .
+            "✅ {$worker->jobs_completed} jobs completed\n" .
+            "{$vehicleText}\n\n" .
+            "💰 *Amount:* {$amount}" .
+            $messageText . "\n\n" .
+            "📋 *For:* {$job->title}";
+
+        // Send worker photo if available
+        if ($worker->photo_url) {
+            $this->sendImage($session->phone, $worker->photo_url, "📸 {$worker->name}");
+        }
+
+        // Show accept/reject buttons only if pending
+        if ($application->status === 'pending') {
+            $this->sendButtons(
+                $session->phone,
+                $message,
+                [
+                    ['id' => 'accept_app_' . $application->id, 'title' => '✅ Accept'],
+                    ['id' => 'reject_app_' . $application->id, 'title' => '❌ Reject'],
+                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 All Applicants'],
+                ],
+                '👤 Applicant'
+            );
+        } else {
+            $statusText = match($application->status) {
+                'accepted' => '✅ ACCEPTED',
+                'rejected' => '❌ REJECTED',
+                'withdrawn' => '⬜ WITHDRAWN',
+                default => $application->status,
+            };
+
+            $this->sendButtons(
+                $session->phone,
+                $message . "\n\n*Status:* {$statusText}",
+                [
+                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 All Applicants'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '👤 Applicant'
+            );
+        }
+    }
+
+    /**
+     * Accept an application (for job poster).
+     */
+    protected function acceptApplication(ConversationSession $session, int $applicationId): void
+    {
+        $user = $this->getUser($session);
+        $application = \App\Models\JobApplication::with(['worker', 'jobPost'])->find($applicationId);
+
+        if (!$application) {
+            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
+            return;
+        }
+
+        // Verify user is the poster
+        if ($application->jobPost->poster_id !== $user?->id) {
+            $this->sendTextWithMenu($session->phone, "❌ You can only accept applications for your own jobs.");
+            return;
+        }
+
+        if ($application->status !== 'pending') {
+            $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
+            return;
+        }
+
+        try {
+            $this->applicationService->acceptApplication($application);
+
+            $worker = $application->worker;
+            $job = $application->jobPost;
+
+            // Notify poster
+            $this->sendButtons(
+                $session->phone,
+                "✅ *Worker Accepted!*\n\n" .
+                "You've accepted *{$worker->name}* for:\n" .
+                "📋 {$job->title}\n\n" .
+                "The worker has been notified and will contact you soon.\n\n" .
+                "📞 Worker's phone will be shared when they confirm.",
+                [
+                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 View Others'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '✅ Accepted'
+            );
+
+            // Notify worker
+            $workerUser = $worker->user;
+            if ($workerUser?->phone) {
+                $this->sendButtons(
+                    $workerUser->phone,
+                    "🎉 *Good News!*\n\n" .
+                    "Your application for *{$job->title}* has been ACCEPTED!\n\n" .
+                    "📍 {$job->location_display}\n" .
+                    "📅 {$job->formatted_date_time}\n" .
+                    "💰 {$job->pay_display}\n\n" .
+                    "Please contact the task giver to confirm details.",
+                    [
+                        ['id' => 'view_job_' . $job->id, 'title' => '📋 View Job'],
+                        ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                    ],
+                    '🎉 Accepted!'
+                );
+            }
+
+            Log::info('Application accepted', [
+                'application_id' => $applicationId,
+                'job_id' => $job->id,
+                'worker_id' => $worker->id,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to accept application', [
+                'error' => $e->getMessage(),
+                'application_id' => $applicationId,
+            ]);
+
+            $this->sendTextWithMenu($session->phone, "❌ Failed to accept application. Please try again.");
+        }
+    }
+
+    /**
+     * Reject an application (for job poster).
+     */
+    protected function rejectApplication(ConversationSession $session, int $applicationId): void
+    {
+        $user = $this->getUser($session);
+        $application = \App\Models\JobApplication::with(['worker', 'jobPost'])->find($applicationId);
+
+        if (!$application) {
+            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
+            return;
+        }
+
+        // Verify user is the poster
+        if ($application->jobPost->poster_id !== $user?->id) {
+            $this->sendTextWithMenu($session->phone, "❌ You can only reject applications for your own jobs.");
+            return;
+        }
+
+        if ($application->status !== 'pending') {
+            $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
+            return;
+        }
+
+        try {
+            $this->applicationService->rejectApplication($application);
+
+            $worker = $application->worker;
+            $job = $application->jobPost;
+
+            // Notify poster
+            $this->sendButtons(
+                $session->phone,
+                "❌ *Application Rejected*\n\n" .
+                "You've rejected {$worker->name}'s application.\n\n" .
+                "View other applicants or return to menu.",
+                [
+                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 View Others'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '❌ Rejected'
+            );
+
+            // Optionally notify worker (some apps don't notify on rejection)
+            // We'll skip this for now to avoid negative notifications
+
+            Log::info('Application rejected', [
+                'application_id' => $applicationId,
+                'job_id' => $job->id,
+                'worker_id' => $worker->id,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to reject application', [
+                'error' => $e->getMessage(),
+                'application_id' => $applicationId,
+            ]);
+
+            $this->sendTextWithMenu($session->phone, "❌ Failed to reject application. Please try again.");
+        }
     }
 
     /*
@@ -313,11 +773,11 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         $this->showJobDetails($session, $job, $worker);
     }
 
-    protected function showJobDetails(ConversationSession $session, JobPost $job, JobWorker $worker): void
+    protected function showJobDetails(ConversationSession $session, JobPost $job, ?JobWorker $worker): void
     {
         // Calculate distance if both have coordinates
         $distanceKm = 0;
-        if ($job->latitude && $job->longitude && $worker->latitude && $worker->longitude) {
+        if ($job->latitude && $job->longitude && $worker?->latitude && $worker?->longitude) {
             $distanceKm = $job->getDistanceFrom($worker->latitude, $worker->longitude) ?? 0;
         }
 
@@ -722,19 +1182,19 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
         // Handle browse more jobs
         if ($selectionId === 'browse_jobs') {
-            $this->goToFlow($session, FlowType::JOB_BROWSE);
+            $this->flowRouter->startFlow($session, FlowType::JOB_BROWSE);
             return;
         }
 
         // Handle view applications
         if ($selectionId === 'my_applications') {
             // TODO: Go to my applications flow
-            $this->goToMainMenu($session);
+            $this->flowRouter->goToMainMenu($session);
             return;
         }
 
         // Default - go to main menu
-        $this->goToMainMenu($session);
+        $this->flowRouter->goToMainMenu($session);
     }
 
     /*

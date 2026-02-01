@@ -19,6 +19,9 @@ use App\Services\WhatsApp\Messages\MessageTemplates;
  * 3. Quick action buttons for common tasks
  * 4. About and Help information
  * 5. Fish seller support
+ * 6. Job worker support (Njaanum Panikkar)
+ *
+ * @srs-ref Section 3 - Jobs Marketplace Module
  */
 class MainMenuHandler extends AbstractFlowHandler
 {
@@ -84,6 +87,14 @@ class MainMenuHandler extends AbstractFlowHandler
                 'stock', 'update stock' => 'fish_update_stock',
                 'alerts', 'fish alerts' => 'fish_subscribe',
                 'my catches', 'catches' => 'fish_my_catches',
+                // Job-related quick commands
+                'jobs', 'job' => 'job_menu',
+                'work', 'find work' => 'job_browse',
+                'task', 'post task' => 'job_post',
+                'tasks', 'my tasks' => 'job_poster_menu',
+                'worker', 'my jobs' => 'job_worker_menu',
+                'panikkar', 'njaanum' => 'job_menu',
+                'become worker', 'register worker' => 'job_worker_register',
                 default => null,
             };
 

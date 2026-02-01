@@ -24,10 +24,12 @@ use Illuminate\Support\Facades\Log;
  * 4. Better session recovery
  * 5. Global interception of product request response buttons
  * 6. Fish (Pacha Meen) flow support
- * 7. FIXED: isFishSeller() now checks for fish_seller PROFILE, not user type
- * 8. FIXED: main_menu handled in handleMenuSelection()
+ * 7. Jobs (Njaanum Panikkar) flow support
+ * 8. FIXED: isFishSeller() now checks for fish_seller PROFILE, not user type
+ * 9. FIXED: main_menu handled in handleMenuSelection()
  *
  * @srs-ref Section 2.2: Fish sellers are separate registration from customers/shops
+ * @srs-ref Section 3: Jobs Marketplace Module
  */
 class FlowRouter
 {
@@ -68,6 +70,19 @@ class FlowRouter
         'alerts' => 'fish_manage_alerts',
         'unsubscribe' => 'fish_manage_alerts',
         'sell fish' => 'fish_seller_register',
+        // Job-related quick actions
+        'jobs' => 'job_menu',
+        'job' => 'job_menu',
+        'work' => 'job_browse',
+        'task' => 'job_post',
+        'tasks' => 'job_poster_menu',
+        'worker' => 'job_worker_menu',
+        'panikkar' => 'job_menu',
+        'njaanum' => 'job_menu',
+        'find work' => 'job_browse',
+        'post task' => 'job_post',
+        'my tasks' => 'job_poster_menu',
+        'my jobs' => 'job_worker_menu',
     ];
 
     public function __construct(
@@ -112,6 +127,13 @@ class FlowRouter
                 return;
             }
 
+            // =====================================================
+            // Check for job notification response buttons
+            // =====================================================
+            if ($this->handleJobNotificationResponse($message, $session)) {
+                return;
+            }
+
             // Check for quick action commands
             if ($this->handleQuickActions($message, $session)) {
                 return;
@@ -144,6 +166,12 @@ class FlowRouter
                 return;
             }
 
+            // Check if flow is job-worker-only
+            if ($flowType->isJobWorkerOnly() && !$this->isJobWorker($session)) {
+                $this->handleJobWorkerOnly($message, $session);
+                return;
+            }
+
             // Get the handler for this flow
             $handler = $this->resolveHandler($flowType);
 
@@ -167,6 +195,190 @@ class FlowRouter
 
             $this->sendErrorWithMenu($message->from, MessageTemplates::ERROR_GENERIC);
         }
+    }
+
+    /**
+     * Handle job notification response buttons.
+     *
+     * @srs-ref Section 3 - Jobs Marketplace Module
+     */
+    protected function handleJobNotificationResponse(IncomingMessage $message, ConversationSession $session): bool
+    {
+        if (!$message->isInteractive()) {
+            return false;
+        }
+
+        $buttonId = $this->extractSelectionId($message);
+
+        if (!$buttonId) {
+            return false;
+        }
+
+        // Pattern: "job_apply_123" - Apply for job button
+        if (preg_match('/^job_apply_(\d+)$/', $buttonId, $matches)) {
+            $jobId = (int) $matches[1];
+
+            Log::info('Job "Apply" button intercepted', [
+                'button_id' => $buttonId,
+                'job_id' => $jobId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToJobApplicationHandler($session, $jobId, 'apply');
+        }
+
+        // Pattern: "job_view_123" - View job details button
+        if (preg_match('/^job_view_(\d+)$/', $buttonId, $matches)) {
+            $jobId = (int) $matches[1];
+
+            Log::info('Job "View" button intercepted', [
+                'button_id' => $buttonId,
+                'job_id' => $jobId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToJobBrowseHandler($session, $jobId, 'view');
+        }
+
+        // Pattern: "job_accept_app_123" - Accept application button
+        if (preg_match('/^job_accept_app_(\d+)$/', $buttonId, $matches)) {
+            $applicationId = (int) $matches[1];
+
+            Log::info('Job "Accept Application" button intercepted', [
+                'button_id' => $buttonId,
+                'application_id' => $applicationId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToJobSelectionHandler($session, $applicationId, 'accept');
+        }
+
+        // Pattern: "job_reject_app_123" - Reject application button
+        if (preg_match('/^job_reject_app_(\d+)$/', $buttonId, $matches)) {
+            $applicationId = (int) $matches[1];
+
+            Log::info('Job "Reject Application" button intercepted', [
+                'button_id' => $buttonId,
+                'application_id' => $applicationId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToJobSelectionHandler($session, $applicationId, 'reject');
+        }
+
+        // Pattern: "job_start_123" - Start job execution button
+        if (preg_match('/^job_start_(\d+)$/', $buttonId, $matches)) {
+            $jobId = (int) $matches[1];
+
+            Log::info('Job "Start" button intercepted', [
+                'button_id' => $buttonId,
+                'job_id' => $jobId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToJobExecutionHandler($session, $jobId, 'start');
+        }
+
+        // Pattern: "job_complete_123" - Complete job button
+        if (preg_match('/^job_complete_(\d+)$/', $buttonId, $matches)) {
+            $jobId = (int) $matches[1];
+
+            Log::info('Job "Complete" button intercepted', [
+                'button_id' => $buttonId,
+                'job_id' => $jobId,
+                'phone' => $this->maskPhone($message->from),
+            ]);
+
+            return $this->routeToJobExecutionHandler($session, $jobId, 'complete');
+        }
+
+        return false;
+    }
+
+    /**
+     * Route to JobApplicationFlowHandler.
+     */
+    protected function routeToJobApplicationHandler(ConversationSession $session, int $jobId, string $action): bool
+    {
+        $handler = $this->resolveHandler(FlowType::JOB_APPLICATION);
+
+        if ($handler instanceof \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler) {
+            // startWithJob expects (session, jobId, showDetailsFirst) - show details first unless action is 'apply'
+            $showDetailsFirst = $action !== 'apply';
+            $handler->startWithJob($session, $jobId, $showDetailsFirst);
+            return true;
+        }
+
+        Log::error('Could not resolve JobApplicationFlowHandler', [
+            'job_id' => $jobId,
+            'action' => $action,
+        ]);
+        
+        return false;
+    }
+
+    /**
+     * Route to JobApplicationFlowHandler for viewing job details.
+     */
+    protected function routeToJobBrowseHandler(ConversationSession $session, int $jobId, string $action): bool
+    {
+        // Use JobApplicationFlowHandler to view job details since JobBrowseFlowHandler doesn't exist
+        $handler = $this->resolveHandler(FlowType::JOB_APPLICATION);
+
+        if ($handler instanceof \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler) {
+            // startWithJob expects (session, jobId, showDetailsFirst) - always show details when viewing
+            $handler->startWithJob($session, $jobId, true);
+            return true;
+        }
+
+        Log::error('Could not resolve JobApplicationFlowHandler for job view', [
+            'job_id' => $jobId,
+            'action' => $action,
+        ]);
+        
+        return false;
+    }
+
+    /**
+     * Route to JobSelectionFlowHandler.
+     */
+    protected function routeToJobSelectionHandler(ConversationSession $session, int $applicationId, string $action): bool
+    {
+        $handler = $this->resolveHandler(FlowType::JOB_SELECTION);
+
+        if ($handler instanceof \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler) {
+            // Handler uses startWithApplication - it handles accept/reject through its own button flow
+            $handler->startWithApplication($session, $applicationId);
+            return true;
+        }
+
+        Log::error('Could not resolve JobSelectionFlowHandler', [
+            'application_id' => $applicationId,
+            'action' => $action,
+        ]);
+        
+        return false;
+    }
+
+    /**
+     * Route to JobExecutionFlowHandler.
+     */
+    protected function routeToJobExecutionHandler(ConversationSession $session, int $jobId, string $action): bool
+    {
+        $handler = $this->resolveHandler(FlowType::JOB_EXECUTION);
+
+        if ($handler instanceof \App\Services\Flow\Handlers\Jobs\JobExecutionFlowHandler) {
+            // startWithJob only takes (session, jobId) - action is determined by job state internally
+            $handler->startWithJob($session, $jobId);
+            return true;
+        }
+
+        Log::error('Could not resolve JobExecutionFlowHandler', [
+            'job_id' => $jobId,
+            'action' => $action,
+        ]);
+        
+        return false;
     }
 
     /**
@@ -528,6 +740,25 @@ class FlowRouter
     }
 
     /**
+     * Handle job-worker-only feature access by non-worker user.
+     *
+     * @srs-ref Section 3 - Jobs Marketplace Module
+     */
+    protected function handleJobWorkerOnly(IncomingMessage $message, ConversationSession $session): void
+    {
+        $this->whatsApp->sendButtons(
+            $message->from,
+            "👷 *Worker Feature*\n\nThis feature is only available for registered workers.\n\nWould you like to register as a worker? You can find and complete tasks to earn money.",
+            [
+                ['id' => 'job_worker_register', 'title' => '👷 Register as Worker'],
+                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+            ],
+            '👷 Worker Required',
+            MessageTemplates::GLOBAL_FOOTER
+        );
+    }
+
+    /**
      * Check if user is a shop owner.
      */
     protected function isShopOwner(ConversationSession $session): bool
@@ -550,6 +781,22 @@ class FlowRouter
         }
 
         return $user->fishSeller !== null;
+    }
+
+    /**
+     * Check if user is a job worker (has job worker PROFILE).
+     *
+     * @srs-ref Section 3 - Jobs Marketplace Module
+     */
+    protected function isJobWorker(ConversationSession $session): bool
+    {
+        $user = $this->sessionManager->getUser($session);
+        
+        if (!$user) {
+            return false;
+        }
+
+        return $user->jobWorker !== null;
     }
 
     /**
@@ -582,6 +829,62 @@ class FlowRouter
         }
         
         return FlowType::FISH_BROWSE;
+    }
+
+    /**
+     * Route to appropriate job menu based on user's worker profile.
+     *
+     * @srs-ref Section 3 - Jobs Marketplace Module
+     */
+    protected function routeToJobMenu(ConversationSession $session): FlowType
+    {
+        $user = $this->sessionManager->getUser($session);
+        
+        // If user is a registered worker, show worker menu
+        if ($user?->jobWorker !== null) {
+            return FlowType::JOB_WORKER_MENU;
+        }
+        
+        // Otherwise show job post flow (allows posting tasks)
+        // For browsing without being a worker, they'll need to register first
+        return FlowType::JOB_POST;
+    }
+
+    /**
+     * Show the jobs landing menu with options.
+     */
+    protected function showJobsLandingMenu(ConversationSession $session): void
+    {
+        $user = $this->sessionManager->getUser($session);
+        $isWorker = $user?->jobWorker !== null;
+
+        $message = "👷 *Jobs / Njaanum Panikkar*\n" .
+            "*ജോലികൾ / ഞാനും പണിക്കാർ*\n\n";
+
+        if ($isWorker) {
+            $message .= "Welcome back, worker! What would you like to do?";
+        } else {
+            $message .= "Post tasks for workers or become a worker yourself!";
+        }
+
+        $buttons = [];
+
+        if ($isWorker) {
+            $buttons[] = ['id' => 'job_browse', 'title' => '🔍 Find Work'];
+            $buttons[] = ['id' => 'job_worker_menu', 'title' => '👷 My Jobs'];
+        } else {
+            $buttons[] = ['id' => 'job_post', 'title' => '📝 Post a Task'];
+            $buttons[] = ['id' => 'job_worker_register', 'title' => '👷 Become Worker'];
+        }
+
+        $buttons[] = ['id' => 'main_menu', 'title' => '🏠 Menu'];
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            array_slice($buttons, 0, 3),
+            '👷 Jobs'
+        );
     }
 
     /**
@@ -643,6 +946,19 @@ class FlowRouter
             return;
         }
 
+        if ($flowType->isJobWorkerOnly() && !$this->isJobWorker($session)) {
+            $this->handleJobWorkerOnly(
+                new IncomingMessage(
+                    messageId: '',
+                    from: $session->phone,
+                    type: 'text',
+                    timestamp: now()
+                ),
+                $session
+            );
+            return;
+        }
+
         $this->sessionManager->clearTempData($session);
 
         $this->sessionManager->setFlowStep(
@@ -684,6 +1000,21 @@ class FlowRouter
             return;
         }
 
+        // Handle job menu - route to appropriate sub-menu
+        if (in_array($selectionId, ['job_menu', 'menu_job_dashboard', 'job_browse'])) {
+            $user = $this->sessionManager->getUser($session);
+            
+            // If user is a registered worker, go to worker menu flow
+            if ($user?->jobWorker !== null) {
+                $this->startFlow($session, FlowType::JOB_WORKER_MENU);
+                return;
+            }
+            
+            // For non-workers, show the jobs landing menu with options
+            $this->showJobsLandingMenu($session);
+            return;
+        }
+
         $flowType = match ($selectionId) {
             'register' => FlowType::REGISTRATION,
             'browse_offers' => FlowType::OFFERS_BROWSE,
@@ -703,6 +1034,13 @@ class FlowRouter
             'fish_post_catch', 'menu_fish_post' => FlowType::FISH_POST_CATCH,
             'fish_update_stock', 'menu_fish_stock', 'fish_my_catches', 'view_my_catches' => FlowType::FISH_STOCK_UPDATE,
             'fish_seller_menu' => FlowType::FISH_SELLER_MENU,
+            // Job-related menu selections (job_browse handled above for non-workers)
+            'menu_job_browse', 'find_work' => FlowType::JOB_BROWSE,
+            'job_post', 'menu_job_post', 'post_task' => FlowType::JOB_POST,
+            'job_worker_register', 'menu_job_worker_register', 'become_worker' => FlowType::JOB_WORKER_REGISTER,
+            'job_worker_menu', 'menu_job_worker_dashboard', 'worker_dashboard' => FlowType::JOB_WORKER_MENU,
+            'job_poster_menu', 'menu_job_poster_dashboard', 'my_tasks', 'posted_tasks' => FlowType::JOB_POSTER_MENU,
+            'job_applications', 'menu_job_applications', 'view_applications' => FlowType::JOB_APPLICATIONS,
             default => null,
         };
 

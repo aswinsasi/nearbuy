@@ -163,14 +163,14 @@ class JobPostFlowHandler extends AbstractFlowHandler
         // Main menu
         if ($selectionId === 'main_menu') {
             $this->clearTemp($session);
-            $this->goToMainMenu($session);
+            $this->flowRouter->goToMainMenu($session);
             return true;
         }
 
         // My posted jobs
         if ($selectionId === 'my_posted_jobs') {
             $this->clearTemp($session);
-            $this->goToFlow($session, FlowType::JOB_POSTER_MENU);
+            $this->flowRouter->startFlow($session, FlowType::JOB_POSTER_MENU);
             return true;
         }
 
@@ -535,7 +535,10 @@ class JobPostFlowHandler extends AbstractFlowHandler
         if ($text) {
             $time = $this->parseTime($text);
             if ($time) {
-                $this->setTemp($session, 'job_time', $time);
+                // Store MySQL TIME format for database
+                $this->setTemp($session, 'job_time', $time['db']);
+                // Store display format for confirmation screen
+                $this->setTemp($session, 'job_time_display', $time['display']);
                 
                 $this->nextStep($session, JobPostingStep::SELECT_DURATION->value);
                 $this->promptSelectDuration($session);
@@ -562,21 +565,23 @@ class JobPostFlowHandler extends AbstractFlowHandler
 
     /**
      * Parse time from various formats.
+     * 
+     * @return array{db: string, display: string}|null Returns both MySQL TIME format and display format
      */
-    protected function parseTime(string $text): ?string
+    protected function parseTime(string $text): ?array
     {
         $text = trim(strtolower($text));
 
         // Handle general time words
         $timeWords = [
-            'morning' => '9:00 AM',
-            'രാവിലെ' => '9:00 AM',
-            'afternoon' => '2:00 PM',
-            'ഉച്ചയ്ക്ക്' => '12:00 PM',
-            'evening' => '5:00 PM',
-            'വൈകുന്നേരം' => '5:00 PM',
-            'night' => '8:00 PM',
-            'രാത്രി' => '8:00 PM',
+            'morning' => ['db' => '09:00:00', 'display' => '9:00 AM'],
+            'രാവിലെ' => ['db' => '09:00:00', 'display' => '9:00 AM'],
+            'afternoon' => ['db' => '14:00:00', 'display' => '2:00 PM'],
+            'ഉച്ചയ്ക്ക്' => ['db' => '12:00:00', 'display' => '12:00 PM'],
+            'evening' => ['db' => '17:00:00', 'display' => '5:00 PM'],
+            'വൈകുന്നേരം' => ['db' => '17:00:00', 'display' => '5:00 PM'],
+            'night' => ['db' => '20:00:00', 'display' => '8:00 PM'],
+            'രാത്രി' => ['db' => '20:00:00', 'display' => '8:00 PM'],
         ];
 
         if (isset($timeWords[$text])) {
@@ -613,19 +618,23 @@ class JobPostFlowHandler extends AbstractFlowHandler
                 }
             }
 
-            // Adjust hour for 12-hour format
+            // Calculate 24-hour format for database
+            $hour24 = $hour;
             if ($meridiem === 'PM' && $hour < 12) {
-                $hour += 12;
+                $hour24 = $hour + 12;
             } elseif ($meridiem === 'AM' && $hour === 12) {
-                $hour = 0;
+                $hour24 = 0;
             }
 
-            // Format display time
-            $displayHour = $hour % 12;
+            // Format display time (12-hour format)
+            $displayHour = $hour24 % 12;
             if ($displayHour === 0) $displayHour = 12;
-            $displayMeridiem = $hour < 12 ? 'AM' : 'PM';
+            $displayMeridiem = $hour24 < 12 ? 'AM' : 'PM';
 
-            return sprintf('%d:%02d %s', $displayHour, $minute, $displayMeridiem);
+            return [
+                'db' => sprintf('%02d:%02d:00', $hour24, $minute),
+                'display' => sprintf('%d:%02d %s', $displayHour, $minute, $displayMeridiem),
+            ];
         }
 
         return null;
@@ -970,7 +979,7 @@ class JobPostFlowHandler extends AbstractFlowHandler
             'description' => $this->getTemp($session, 'description'),
             'location_name' => $this->getTemp($session, 'location_name'),
             'job_date' => $this->getTemp($session, 'job_date_display'),
-            'job_time' => $this->getTemp($session, 'job_time'),
+            'job_time' => $this->getTemp($session, 'job_time_display') ?? $this->getTemp($session, 'job_time'),
             'duration_hours' => $this->getTemp($session, 'duration_hours'),
             'pay_amount' => $this->getTemp($session, 'pay_amount'),
             'special_instructions' => $this->getTemp($session, 'special_instructions'),
@@ -1046,7 +1055,7 @@ class JobPostFlowHandler extends AbstractFlowHandler
                 'latitude' => $this->getTemp($session, 'latitude'),
                 'longitude' => $this->getTemp($session, 'longitude'),
                 'job_date' => $this->getTemp($session, 'job_date'),
-                'job_time' => $this->getTemp($session, 'job_time'),
+                'job_time' => $this->getTemp($session, 'job_time'), // Now in HH:MM:SS format
                 'duration_hours' => $this->getTemp($session, 'duration_hours'),
                 'pay_amount' => $this->getTemp($session, 'pay_amount'),
                 'special_instructions' => $this->getTemp($session, 'special_instructions'),

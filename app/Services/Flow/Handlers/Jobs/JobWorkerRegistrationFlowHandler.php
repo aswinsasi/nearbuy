@@ -11,6 +11,7 @@ use App\Enums\UserType;
 use App\Models\ConversationSession;
 use App\Models\JobCategory;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
+use App\Services\Flow\FlowRouter;
 use App\Services\Jobs\JobWorkerService;
 use App\Services\Media\MediaService;
 use App\Services\Session\SessionManager;
@@ -55,7 +56,8 @@ class JobWorkerRegistrationFlowHandler extends AbstractFlowHandler
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
         protected JobWorkerService $workerService,
-        protected MediaService $mediaService
+        protected MediaService $mediaService,
+        protected FlowRouter $flowRouter
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -158,6 +160,18 @@ class JobWorkerRegistrationFlowHandler extends AbstractFlowHandler
             $this->nextStep($session, self::STEP_ASK_NAME);
             $response = JobMessages::askWorkerName();
             $this->sendJobMessage($session->phone, $response);
+            return;
+        }
+
+        // Handle "browse jobs" button - route to job browse flow
+        if ($this->getSelectionId($message) === 'browse_jobs') {
+            $this->flowRouter->startFlow($session, FlowType::JOB_BROWSE);
+            return;
+        }
+
+        // Handle "worker profile" button - route to worker menu
+        if ($this->getSelectionId($message) === 'worker_profile') {
+            $this->flowRouter->startFlow($session, FlowType::JOB_WORKER_MENU);
             return;
         }
 

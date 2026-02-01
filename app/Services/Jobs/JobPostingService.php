@@ -163,8 +163,7 @@ class JobPostingService
     public function findMatchingWorkers(JobPost $job, int $radiusKm = self::DEFAULT_RADIUS_KM): Collection
     {
         $query = JobWorker::query()
-            ->where('is_available', true)
-            ->where('is_active', true);
+            ->where('is_available', true);
 
         // Filter by job category
         $categoryId = $job->job_category_id;
@@ -222,7 +221,15 @@ class JobPostingService
      */
     public function notifyMatchingWorkers(JobPost $job): int
     {
-        $workers = $this->findMatchingWorkers($job);
+        try {
+            $workers = $this->findMatchingWorkers($job);
+        } catch (\Exception $e) {
+            Log::warning('Error finding matching workers', [
+                'job_id' => $job->id,
+                'error' => $e->getMessage(),
+            ]);
+            return 0;
+        }
 
         if ($workers->isEmpty()) {
             Log::info('No matching workers found for job', [
