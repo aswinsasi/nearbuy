@@ -6,43 +6,41 @@ namespace App\Services\Flow\Handlers\Jobs;
 
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
+use App\Enums\JobCategory;
 use App\Enums\JobPostingStep;
 use App\Models\ConversationSession;
-use App\Models\JobCategory;
+use App\Models\JobCategory as JobCategoryModel;
 use App\Models\JobPost;
-use App\Models\User;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
 use App\Services\Flow\FlowRouter;
 use App\Services\Jobs\JobPostingService;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\Messages\JobMessages;
-use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Handler for the job posting flow.
+ * Handler for job posting flow.
  *
- * Flow Steps (from JobPostingStep enum):
- * 1. SELECT_CATEGORY - List message with job categories
- * 2. ENTER_TITLE - Free text job title
- * 3. ENTER_DESCRIPTION - Optional description
- * 4. ENTER_LOCATION - Location text description
- * 5. REQUEST_LOCATION_COORDS - WhatsApp location for proximity
- * 6. SELECT_DATE - Today/Tomorrow/Pick date
- * 7. ENTER_TIME - Time input
- * 8. SELECT_DURATION - Duration selection
- * 9. SUGGEST_PAY - Suggested pay with custom option
- * 10. ENTER_PAY - Custom pay amount
- * 11. ENTER_INSTRUCTIONS - Optional special instructions
- * 12. CONFIRM_POST - Review and confirm
- * 13. COMPLETE - Done
+ * Features:
+ * - Multi-step job posting wizard
+ * - Category selection with "Other" option for custom job types
+ * - Location sharing support
+ * - Pay suggestion based on category
+ * - Confirmation before posting
  *
  * @srs-ref Section 3.3 - Job Posting Flow
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
+ * 
+ * UPDATED: Added support for "Other" category with custom text
  */
 class JobPostFlowHandler extends AbstractFlowHandler
 {
+    /**
+     * ID for "Other" category in the list.
+     */
+    protected const OTHER_CATEGORY_ID = 'other';
+
     public function __construct(
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
@@ -79,9 +77,7 @@ class JobPostFlowHandler extends AbstractFlowHandler
 
         $this->clearTemp($session);
         $this->nextStep($session, JobPostingStep::SELECT_CATEGORY->value);
-
-        $response = JobMessages::postJobWelcome();
-        $this->sendJobMessage($session->phone, $response);
+        $this->askCategory($session);
     }
 
     /**
@@ -89,1045 +85,1131 @@ class JobPostFlowHandler extends AbstractFlowHandler
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
-        // Handle common navigation (main menu, cancel, retry)
+        // Handle common navigation
         if ($this->handleCommonNavigation($message, $session)) {
             return;
         }
 
-        // Handle cross-flow navigation buttons
-        $selectionId = $this->getSelectionId($message);
-        if ($this->handleCrossFlowNavigation($selectionId, $session)) {
-            return;
-        }
+         $selectionId = $this->getSelectionId($message);
+            if ($this->handleJobButtons($selectionId, $session)) {
+                return;
+            }
 
-        $step = $session->current_step;
-
+        $step = JobPostingStep::tryFrom($session->current_step);
+        
+        // Debug logging - more detailed
         Log::debug('JobPostFlowHandler', [
-            'step' => $step,
+            'step' => $session->current_step,
             'message_type' => $message->type,
-            'selection_id' => $selectionId,
+            'is_button_reply' => $message->isButtonReply(),
+            'is_list_reply' => $message->isListReply(),
+            'interactive' => $message->interactive ?? null,
+            'selection_id' => $this->getSelectionId($message),
         ]);
 
-        // Route to appropriate handler based on step
-        match ($step) {
-            JobPostingStep::SELECT_CATEGORY->value => $this->handleSelectCategory($message, $session),
-            JobPostingStep::ENTER_TITLE->value => $this->handleEnterTitle($message, $session),
-            JobPostingStep::ENTER_DESCRIPTION->value => $this->handleEnterDescription($message, $session),
-            JobPostingStep::ENTER_LOCATION->value => $this->handleEnterLocation($message, $session),
-            JobPostingStep::REQUEST_LOCATION_COORDS->value => $this->handleLocationCoords($message, $session),
-            JobPostingStep::SELECT_DATE->value => $this->handleSelectDate($message, $session),
-            JobPostingStep::ENTER_TIME->value => $this->handleEnterTime($message, $session),
-            JobPostingStep::SELECT_DURATION->value => $this->handleSelectDuration($message, $session),
-            JobPostingStep::SUGGEST_PAY->value => $this->handleSuggestPay($message, $session),
-            JobPostingStep::ENTER_PAY->value => $this->handleEnterPay($message, $session),
-            JobPostingStep::ENTER_INSTRUCTIONS->value => $this->handleEnterInstructions($message, $session),
-            JobPostingStep::CONFIRM_POST->value => $this->handleConfirmPost($message, $session),
-            JobPostingStep::COMPLETE->value => $this->handleComplete($message, $session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Re-prompt the current step.
-     */
-    protected function promptCurrentStep(ConversationSession $session): void
-    {
-        $step = $session->current_step;
-
-        match ($step) {
-            JobPostingStep::SELECT_CATEGORY->value => $this->promptSelectCategory($session),
-            JobPostingStep::ENTER_TITLE->value => $this->promptEnterTitle($session),
-            JobPostingStep::ENTER_DESCRIPTION->value => $this->promptEnterDescription($session),
-            JobPostingStep::ENTER_LOCATION->value => $this->promptEnterLocation($session),
-            JobPostingStep::REQUEST_LOCATION_COORDS->value => $this->promptLocationCoords($session),
-            JobPostingStep::SELECT_DATE->value => $this->promptSelectDate($session),
-            JobPostingStep::ENTER_TIME->value => $this->promptEnterTime($session),
-            JobPostingStep::SELECT_DURATION->value => $this->promptSelectDuration($session),
-            JobPostingStep::SUGGEST_PAY->value => $this->promptSuggestPay($session),
-            JobPostingStep::ENTER_PAY->value => $this->promptEnterPay($session),
-            JobPostingStep::ENTER_INSTRUCTIONS->value => $this->promptEnterInstructions($session),
-            JobPostingStep::CONFIRM_POST->value => $this->promptConfirmPost($session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Handle cross-flow navigation buttons.
-     */
-    protected function handleCrossFlowNavigation(?string $selectionId, ConversationSession $session): bool
-    {
-        if (!$selectionId) {
-            return false;
-        }
-
-        // Main menu
-        if ($selectionId === 'main_menu') {
-            $this->clearTemp($session);
-            $this->flowRouter->goToMainMenu($session);
-            return true;
-        }
-
-        // My posted jobs
-        if ($selectionId === 'my_posted_jobs') {
-            $this->clearTemp($session);
-            $this->flowRouter->startFlow($session, FlowType::JOB_POSTER_MENU);
-            return true;
-        }
-
-        // Post another job
-        if ($selectionId === 'post_another_job') {
-            $this->clearTemp($session);
+        if (!$step) {
             $this->start($session);
+            return;
+        }
+
+        match ($step) {
+            JobPostingStep::SELECT_CATEGORY => $this->handleCategorySelection($message, $session),
+            JobPostingStep::ENTER_CUSTOM_CATEGORY => $this->handleCustomCategory($message, $session),
+            JobPostingStep::ENTER_TITLE => $this->handleTitle($message, $session),
+            JobPostingStep::ENTER_DESCRIPTION => $this->handleDescription($message, $session),
+            JobPostingStep::ENTER_LOCATION => $this->handleLocation($message, $session),
+            JobPostingStep::REQUEST_LOCATION_COORDS => $this->handleLocationCoords($message, $session),
+            JobPostingStep::SELECT_DATE => $this->handleDate($message, $session),
+            JobPostingStep::ENTER_TIME => $this->handleTime($message, $session),
+            JobPostingStep::ENTER_CUSTOM_TIME => $this->handleCustomTime($message, $session),
+            JobPostingStep::SELECT_DURATION => $this->handleDuration($message, $session),
+            JobPostingStep::SUGGEST_PAY => $this->handlePaySuggestion($message, $session),
+            JobPostingStep::ENTER_PAY => $this->handlePay($message, $session),
+            JobPostingStep::ENTER_INSTRUCTIONS => $this->handleInstructions($message, $session),
+            JobPostingStep::CONFIRM_POST => $this->handleConfirmation($message, $session),
+            JobPostingStep::COMPLETE => $this->goToMainMenu($session),
+            default => $this->start($session),
+        };
+    }
+
+    /**
+     * Handle common navigation commands.
+     */
+    protected function handleCommonNavigation(IncomingMessage $message, ConversationSession $session): bool
+    {
+        $selection = $this->getSelectionId($message);
+
+        if ($selection === 'main_menu' || $selection === 'cancel') {
+            $this->goToMainMenu($session);
+            return true;
+        }
+
+        if ($selection === 'back') {
+            $this->goBack($session);
             return true;
         }
 
         return false;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Step 1: Select Category
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleSelectCategory(IncomingMessage $message, ConversationSession $session): void
+    /**
+     * Go back to previous step.
+     */
+    protected function goBack(ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
-
-        // Handle "Start posting" button from welcome message
-        if ($selectionId === 'start_job_posting') {
-            $this->promptSelectCategory($session);
+        $currentStep = JobPostingStep::tryFrom($session->current_step);
+        
+        if (!$currentStep) {
+            $this->start($session);
             return;
         }
 
-        // Handle category selection (format: post_cat_1, post_cat_2, etc.)
-        if ($selectionId && str_starts_with($selectionId, 'post_cat_')) {
-            $categoryId = (int) str_replace('post_cat_', '', $selectionId);
-            $category = JobCategory::find($categoryId);
+        // Handle special back navigation for custom category
+        if ($currentStep === JobPostingStep::ENTER_TITLE) {
+            $hasCustomCategory = $this->getTemp($session, 'custom_category_text');
+            if ($hasCustomCategory) {
+                $this->nextStep($session, JobPostingStep::ENTER_CUSTOM_CATEGORY->value);
+                $this->askCustomCategory($session);
+                return;
+            }
+        }
 
-            if ($category && $category->is_active) {
-                $this->setTemp($session, 'category_id', $category->id);
-                $this->setTemp($session, 'category_name', $category->display_name);
-                $this->setTemp($session, 'category_slug', $category->slug);
+        $previousStep = $currentStep->previous();
+
+        if ($previousStep) {
+            $this->nextStep($session, $previousStep->value);
+            $this->showStepPrompt($session, $previousStep);
+        } else {
+            $this->start($session);
+        }
+    }
+
+    /**
+     * Show prompt for a specific step.
+     */
+    protected function showStepPrompt(ConversationSession $session, JobPostingStep $step): void
+    {
+        match ($step) {
+            JobPostingStep::SELECT_CATEGORY => $this->askCategory($session),
+            JobPostingStep::ENTER_CUSTOM_CATEGORY => $this->askCustomCategory($session),
+            JobPostingStep::ENTER_TITLE => $this->askTitle($session),
+            JobPostingStep::ENTER_DESCRIPTION => $this->askDescription($session),
+            JobPostingStep::ENTER_LOCATION => $this->askLocation($session),
+            JobPostingStep::REQUEST_LOCATION_COORDS => $this->askLocationCoords($session),
+            JobPostingStep::SELECT_DATE => $this->askDate($session),
+            JobPostingStep::ENTER_TIME => $this->askTime($session),
+            JobPostingStep::ENTER_CUSTOM_TIME => $this->askCustomTime($session),
+            JobPostingStep::SELECT_DURATION => $this->askDuration($session),
+            JobPostingStep::SUGGEST_PAY => $this->suggestPay($session),
+            JobPostingStep::ENTER_PAY => $this->askPay($session),
+            JobPostingStep::ENTER_INSTRUCTIONS => $this->askInstructions($session),
+            JobPostingStep::CONFIRM_POST => $this->showConfirmation($session),
+            default => $this->start($session),
+        };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 1: Category Selection
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ask user to select a category.
+     */
+    protected function askCategory(ConversationSession $session): void
+    {
+        // WhatsApp limit: max 10 TOTAL items across all sections
+        // So we can only show 9 categories + 1 "Other" option
+        $categories = JobCategoryModel::where('is_active', true)
+            ->orderBy('sort_order')
+            ->limit(9)  // Leave room for "Other" option
+            ->get();
+
+        $rows = [];
+        foreach ($categories as $category) {
+            // Truncate description to max 72 characters (WhatsApp limit)
+            $description = $category->description ?? '';
+            if (strlen($description) > 72) {
+                $description = substr($description, 0, 69) . '...';
+            }
+            
+            $rows[] = [
+                'id' => "cat_{$category->id}",
+                'title' => $category->icon . ' ' . $category->name,
+                'description' => $description,
+            ];
+        }
+
+        // Add "Other" option at the end (total becomes 10)
+        $rows[] = [
+            'id' => self::OTHER_CATEGORY_ID,
+            'title' => '🔧 Other / മറ്റുള്ളവ',
+            'description' => 'Specify a custom job type',
+        ];
+
+        $this->whatsApp->sendList(
+            $session->phone,
+            JobMessages::categorySelection(),
+            'Select Category',
+            [['title' => 'Job Types', 'rows' => $rows]],
+            '📋 Post Job'
+        );
+    }
+
+    /**
+     * Handle category selection.
+     */
+    protected function handleCategorySelection(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+
+        if (!$selection) {
+            $this->askCategory($session);
+            return;
+        }
+
+        // Check if "Other" was selected
+        if ($selection === self::OTHER_CATEGORY_ID) {
+            $this->setTemp($session, 'job_category_id', null);
+            $this->nextStep($session, JobPostingStep::ENTER_CUSTOM_CATEGORY->value);
+            $this->askCustomCategory($session);
+            return;
+        }
+
+        // Extract category ID from selection (format: "cat_123")
+        if (preg_match('/^cat_(\d+)$/', $selection, $matches)) {
+            $categoryId = (int) $matches[1];
+            $category = JobCategoryModel::find($categoryId);
+
+            if ($category) {
+                $this->setTemp($session, 'job_category_id', $categoryId);
+                $this->setTemp($session, 'custom_category_text', null); // Clear any custom text
+                
+                // Store pay range for later suggestion
+                $this->setTemp($session, 'suggested_pay_min', $category->min_pay ?? 200);
+                $this->setTemp($session, 'suggested_pay_max', $category->max_pay ?? 500);
+
+                $this->nextStep($session, JobPostingStep::ENTER_TITLE->value);
+                $this->askTitle($session);
+                return;
+            }
+        }
+
+        // Invalid selection
+        $this->sendText($session->phone, "❌ Please select a valid category.");
+        $this->askCategory($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 1b: Custom Category (for "Other" selection)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ask user to enter custom category text.
+     */
+    protected function askCustomCategory(ConversationSession $session): void
+    {
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            JobMessages::customCategoryPrompt(),
+            [
+                ['id' => 'back', 'title' => '⬅️ Back'],
+                ['id' => 'cancel', 'title' => '❌ Cancel'],
+            ],
+            '✏️ Custom Job Type'
+        );
+    }
+
+    /**
+     * Handle custom category input.
+     */
+    protected function handleCustomCategory(IncomingMessage $message, ConversationSession $session): void
+    {
+        // If user selects from a list (old category list), redirect to appropriate handler
+        $selection = $this->getSelectionId($message);
+        
+        // Check if user clicked back or cancel
+        if ($selection === 'back') {
+            $this->nextStep($session, JobPostingStep::SELECT_CATEGORY->value);
+            $this->askCategory($session);
+            return;
+        }
+        
+        if ($selection === 'cancel') {
+            $this->goToMainMenu($session);
+            return;
+        }
+        
+        // If user selected from old category list, handle it
+        if ($selection === self::OTHER_CATEGORY_ID) {
+            // Already in custom category mode, just reprompt
+            $this->askCustomCategory($session);
+            return;
+        }
+        
+        if ($selection && preg_match('/^cat_(\d+)$/', $selection, $matches)) {
+            // User selected a category from old list - process it
+            $categoryId = (int) $matches[1];
+            $category = JobCategoryModel::find($categoryId);
+            
+            if ($category) {
+                $this->setTemp($session, 'job_category_id', $categoryId);
+                $this->setTemp($session, 'custom_category_text', null);
+                $this->setTemp($session, 'suggested_pay_min', $category->min_pay ?? 200);
+                $this->setTemp($session, 'suggested_pay_max', $category->max_pay ?? 500);
                 
                 $this->nextStep($session, JobPostingStep::ENTER_TITLE->value);
-                $this->promptEnterTitle($session);
+                $this->askTitle($session);
                 return;
             }
         }
-
-        // Show category selection
-        $this->promptSelectCategory($session);
-    }
-
-    protected function promptSelectCategory(ConversationSession $session): void
-    {
-        $response = JobMessages::selectJobCategory();
-        $this->sendJobMessage($session->phone, $response);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 2: Enter Title
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleEnterTitle(IncomingMessage $message, ConversationSession $session): void
-    {
-        $text = $this->getTextContent($message);
-
-        if ($text && $this->postingService->isValidTitle($text)) {
-            $this->setTemp($session, 'title', trim($text));
-            
-            $this->nextStep($session, JobPostingStep::ENTER_DESCRIPTION->value);
-            $this->promptEnterDescription($session);
+        
+        // For interactive selections that aren't handled above, reprompt
+        if (!$message->isText()) {
+            $this->askCustomCategory($session);
             return;
         }
 
-        // Invalid title
-        $this->sendButtons(
-            $session->phone,
-            "❌ *Invalid title*\n\nPlease enter a title between 5-100 characters.\n\nദയവായി 5-100 അക്ഷരങ്ങൾക്കിടയിൽ ഒരു ടൈറ്റിൽ നൽകുക.",
-            [
-                ['id' => 'retry', 'title' => '🔄 Try Again'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ]
-        );
-    }
+        $customText = trim($message->text ?? '');
 
-    protected function promptEnterTitle(ConversationSession $session): void
-    {
-        $categoryId = $this->getTemp($session, 'category_id');
-        $category = JobCategory::find($categoryId);
-
-        if ($category) {
-            $response = JobMessages::askJobTitle($category);
-            $this->sendJobMessage($session->phone, $response);
-        } else {
-            // Category lost - restart
-            $this->start($session);
+        // Validate custom category text
+        if (strlen($customText) < 3) {
+            $this->sendText($session->phone, "❌ Job type must be at least 3 characters.");
+            $this->askCustomCategory($session);
+            return;
         }
+
+        if (strlen($customText) > 100) {
+            $this->sendText($session->phone, "❌ Job type must be less than 100 characters.");
+            $this->askCustomCategory($session);
+            return;
+        }
+
+        // Check for invalid characters
+        if (preg_match('/[<>{}\\[\\]]/', $customText)) {
+            $this->sendText($session->phone, JobMessages::customCategoryInvalid());
+            $this->askCustomCategory($session);
+            return;
+        }
+
+        // Store custom category
+        $this->setTemp($session, 'custom_category_text', $customText);
+        $this->setTemp($session, 'job_category_id', null);
+
+        // Set default pay range for custom categories
+        $this->setTemp($session, 'suggested_pay_min', 200);
+        $this->setTemp($session, 'suggested_pay_max', 1000);
+
+        $this->sendText($session->phone, JobMessages::customCategoryConfirmed($customText));
+
+        $this->nextStep($session, JobPostingStep::ENTER_TITLE->value);
+        $this->askTitle($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step 3: Enter Description (Optional)
+    | Step 2: Title
     |--------------------------------------------------------------------------
     */
 
-    protected function handleEnterDescription(IncomingMessage $message, ConversationSession $session): void
+    /**
+     * Ask user for job title.
+     */
+    protected function askTitle(ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
-        $text = $this->getTextContent($message);
+        $message = JobPostingStep::ENTER_TITLE->instruction();
 
-        // Skip description
-        if ($selectionId === 'skip_description' || $this->isSkip($message)) {
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => 'back', 'title' => '⬅️ Back'],
+                ['id' => 'cancel', 'title' => '❌ Cancel'],
+            ],
+            '✏️ Job Title'
+        );
+    }
+
+    /**
+     * Handle title input.
+     */
+    protected function handleTitle(IncomingMessage $message, ConversationSession $session): void
+    {
+        if (!$message->isText()) {
+            $this->sendText($session->phone, "❌ Please type the job title.");
+            return;
+        }
+
+        $title = trim($message->text ?? '');
+
+        if (strlen($title) < 5) {
+            $this->sendText($session->phone, "❌ Title must be at least 5 characters.");
+            return;
+        }
+
+        if (strlen($title) > 100) {
+            $this->sendText($session->phone, "❌ Title must be less than 100 characters.");
+            return;
+        }
+
+        $this->setTemp($session, 'title', $title);
+        $this->nextStep($session, JobPostingStep::ENTER_DESCRIPTION->value);
+        $this->askDescription($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 3: Description
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ask user for job description.
+     */
+    protected function askDescription(ConversationSession $session): void
+    {
+        $message = JobPostingStep::ENTER_DESCRIPTION->instruction();
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => 'skip', 'title' => '⏭️ Skip'],
+                ['id' => 'back', 'title' => '⬅️ Back'],
+            ],
+            '📝 Description'
+        );
+    }
+
+    /**
+     * Handle description input.
+     */
+    protected function handleDescription(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+
+        if ($selection === 'skip') {
             $this->setTemp($session, 'description', null);
             $this->nextStep($session, JobPostingStep::ENTER_LOCATION->value);
-            $this->promptEnterLocation($session);
+            $this->askLocation($session);
             return;
         }
 
-        // Process description text
-        if ($text) {
-            $description = trim($text);
-            if (mb_strlen($description) > 500) {
-                $description = mb_substr($description, 0, 500);
+        if ($message->isText()) {
+            $description = trim($message->text ?? '');
+
+            if (strlen($description) > 500) {
+                $this->sendText($session->phone, "❌ Description must be less than 500 characters.");
+                return;
             }
+
             $this->setTemp($session, 'description', $description);
-            
             $this->nextStep($session, JobPostingStep::ENTER_LOCATION->value);
-            $this->promptEnterLocation($session);
+            $this->askLocation($session);
             return;
         }
 
-        // Re-prompt
-        $this->promptEnterDescription($session);
-    }
-
-    protected function promptEnterDescription(ConversationSession $session): void
-    {
-        $this->sendButtons(
-            $session->phone,
-            "*Step 3/12* 📝\n\n" .
-            "📝 *വിവരണം (Optional)*\n\n" .
-            "Describe what needs to be done.\n" .
-            "ചെയ്യേണ്ട കാര്യം വിവരിക്കുക.\n\n" .
-            "_ഉദാ: Token എടുത്ത് RC-ക്ക് apply ചെയ്യുക, copy അടക്കം_\n\n" .
-            "_ഇല്ലെങ്കിൽ Skip ചെയ്യാം_",
-            [
-                ['id' => 'skip_description', 'title' => '⏭️ Skip'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ]
-        );
+        $this->askDescription($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step 4: Enter Location (Text)
+    | Step 4: Location Name
     |--------------------------------------------------------------------------
     */
 
-    protected function handleEnterLocation(IncomingMessage $message, ConversationSession $session): void
+    /**
+     * Ask user for location name.
+     */
+    protected function askLocation(ConversationSession $session): void
     {
-        $text = $this->getTextContent($message);
+        $message = JobPostingStep::ENTER_LOCATION->instruction();
 
-        if ($text && mb_strlen(trim($text)) >= 3) {
-            $this->setTemp($session, 'location_name', trim($text));
-            
-            $this->nextStep($session, JobPostingStep::REQUEST_LOCATION_COORDS->value);
-            $this->promptLocationCoords($session);
-            return;
-        }
-
-        // Invalid location
-        $this->sendButtons(
+        $this->whatsApp->sendButtons(
             $session->phone,
-            "❌ *Invalid location*\n\nPlease enter a valid location (at least 3 characters).\n\nദയവായി ഒരു ശരിയായ സ്ഥലം നൽകുക.",
+            $message,
             [
-                ['id' => 'retry', 'title' => '🔄 Try Again'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ]
+                ['id' => 'back', 'title' => '⬅️ Back'],
+                ['id' => 'cancel', 'title' => '❌ Cancel'],
+            ],
+            '📍 Location'
         );
     }
 
-    protected function promptEnterLocation(ConversationSession $session): void
+    /**
+     * Handle location name input.
+     */
+    protected function handleLocation(IncomingMessage $message, ConversationSession $session): void
     {
-        $response = JobMessages::askJobLocation();
-        $this->sendJobMessage($session->phone, $response);
+        if (!$message->isText()) {
+            $this->sendText($session->phone, "❌ Please type the location name.");
+            return;
+        }
+
+        $location = trim($message->text ?? '');
+
+        if (strlen($location) < 5) {
+            $this->sendText($session->phone, "❌ Location must be at least 5 characters.");
+            return;
+        }
+
+        $this->setTemp($session, 'location_name', $location);
+        $this->nextStep($session, JobPostingStep::REQUEST_LOCATION_COORDS->value);
+        $this->askLocationCoords($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step 5: Request Location Coordinates (Optional)
+    | Step 5: Location Coordinates
     |--------------------------------------------------------------------------
     */
 
+    /**
+     * Ask user to share location coordinates.
+     */
+    protected function askLocationCoords(ConversationSession $session): void
+    {
+        $message = JobPostingStep::REQUEST_LOCATION_COORDS->instruction();
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => 'skip', 'title' => '⏭️ Skip'],
+                ['id' => 'back', 'title' => '⬅️ Back'],
+            ],
+            '🗺️ Share Location'
+        );
+    }
+
+    /**
+     * Handle location coordinates input.
+     */
     protected function handleLocationCoords(IncomingMessage $message, ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
+        $selection = $this->getSelectionId($message);
 
-        // Skip coordinates
-        if ($selectionId === 'skip_job_coords' || $this->isSkip($message)) {
-            $this->setTemp($session, 'latitude', null);
-            $this->setTemp($session, 'longitude', null);
+        if ($selection === 'skip') {
             $this->nextStep($session, JobPostingStep::SELECT_DATE->value);
-            $this->promptSelectDate($session);
+            $this->askDate($session);
             return;
         }
 
-        // Handle location message
-        $coords = $this->getLocation($message);
-        if ($coords && $this->postingService->isValidCoordinates($coords['latitude'], $coords['longitude'])) {
-            $this->setTemp($session, 'latitude', $coords['latitude']);
-            $this->setTemp($session, 'longitude', $coords['longitude']);
+        if ($message->isLocation()) {
+            // Access location from the message's location property
+            $location = $message->location ?? [];
+            $latitude = $location['latitude'] ?? null;
+            $longitude = $location['longitude'] ?? null;
             
-            // Update location name with address if available
-            if (!empty($coords['address'])) {
-                $this->setTemp($session, 'location_address', $coords['address']);
+            if ($latitude && $longitude) {
+                $this->setTemp($session, 'latitude', $latitude);
+                $this->setTemp($session, 'longitude', $longitude);
+                
+                $this->nextStep($session, JobPostingStep::SELECT_DATE->value);
+                $this->askDate($session);
+                return;
             }
-
-            $this->nextStep($session, JobPostingStep::SELECT_DATE->value);
-            $this->promptSelectDate($session);
-            return;
         }
 
-        // Re-prompt
-        $this->promptLocationCoords($session);
-    }
-
-    protected function promptLocationCoords(ConversationSession $session): void
-    {
-        $response = JobMessages::requestJobLocationCoords();
-        $this->sendJobMessage($session->phone, $response);
+        $this->askLocationCoords($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step 6: Select Date
+    | Step 6: Date Selection
     |--------------------------------------------------------------------------
     */
-
-    protected function handleSelectDate(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-        $text = $this->getTextContent($message);
-
-        $jobDate = null;
-
-        // Handle button selections
-        if ($selectionId === 'job_date_today') {
-            $jobDate = Carbon::today();
-        } elseif ($selectionId === 'job_date_tomorrow') {
-            $jobDate = Carbon::tomorrow();
-        } elseif ($selectionId === 'job_date_pick') {
-            // Ask for custom date input
-            $this->sendButtons(
-                $session->phone,
-                "📅 *തീയതി നൽകുക*\n\nPlease enter the date (DD/MM/YYYY format)\n\nഉദാ: " . now()->addDays(3)->format('d/m/Y'),
-                [
-                    ['id' => 'job_date_today', 'title' => '📅 Today'],
-                    ['id' => 'job_date_tomorrow', 'title' => '📅 Tomorrow'],
-                ]
-            );
-            return;
-        }
-
-        // Handle text date input
-        if (!$jobDate && $text) {
-            $jobDate = $this->parseDate($text);
-        }
-
-        if ($jobDate) {
-            // Validate date is not in the past
-            if ($jobDate->lt(Carbon::today())) {
-                $this->sendButtons(
-                    $session->phone,
-                    "❌ *Past date not allowed*\n\nPlease select today or a future date.\n\nഭൂതകാലം തിരഞ്ഞെടുക്കാനാവില്ല.",
-                    [
-                        ['id' => 'job_date_today', 'title' => '📅 Today'],
-                        ['id' => 'job_date_tomorrow', 'title' => '📅 Tomorrow'],
-                    ]
-                );
-                return;
-            }
-
-            // Validate date is within reasonable range (30 days)
-            if ($jobDate->gt(Carbon::today()->addDays(30))) {
-                $this->sendButtons(
-                    $session->phone,
-                    "❌ *Date too far*\n\nPlease select a date within 30 days.\n\n30 ദിവസത്തിനുള്ളിൽ തീയതി തിരഞ്ഞെടുക്കുക.",
-                    [
-                        ['id' => 'job_date_today', 'title' => '📅 Today'],
-                        ['id' => 'job_date_tomorrow', 'title' => '📅 Tomorrow'],
-                    ]
-                );
-                return;
-            }
-
-            $this->setTemp($session, 'job_date', $jobDate->format('Y-m-d'));
-            $this->setTemp($session, 'job_date_display', $jobDate->format('D, M j'));
-            
-            $this->nextStep($session, JobPostingStep::ENTER_TIME->value);
-            $this->promptEnterTime($session);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptSelectDate($session);
-    }
-
-    protected function promptSelectDate(ConversationSession $session): void
-    {
-        $response = JobMessages::askJobDate();
-        $this->sendJobMessage($session->phone, $response);
-    }
 
     /**
-     * Parse date from various formats.
+     * Ask user to select job date.
      */
-    protected function parseDate(string $text): ?Carbon
+    protected function askDate(ConversationSession $session): void
     {
-        $text = trim(strtolower($text));
+        $message = JobPostingStep::SELECT_DATE->instruction();
 
-        // Handle "today", "tomorrow"
-        if (in_array($text, ['today', 'ഇന്ന്', 'innu'])) {
-            return Carbon::today();
-        }
-        if (in_array($text, ['tomorrow', 'നാളെ', 'naale'])) {
-            return Carbon::tomorrow();
-        }
-
-        // Try various date formats
-        $formats = ['d/m/Y', 'd-m-Y', 'Y-m-d', 'd/m', 'd-m'];
-        foreach ($formats as $format) {
-            try {
-                $date = Carbon::createFromFormat($format, $text);
-                if ($date && $date->isValid()) {
-                    // If year not specified, assume current year
-                    if (!str_contains($format, 'Y')) {
-                        $date->year(now()->year);
-                        // If date is in the past, assume next year
-                        if ($date->lt(Carbon::today())) {
-                            $date->addYear();
-                        }
-                    }
-                    return $date;
-                }
-            } catch (\Exception $e) {
-                continue;
-            }
-        }
-
-        return null;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 7: Enter Time
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleEnterTime(IncomingMessage $message, ConversationSession $session): void
-    {
-        $text = $this->getTextContent($message);
-
-        if ($text) {
-            $time = $this->parseTime($text);
-            if ($time) {
-                // Store MySQL TIME format for database
-                $this->setTemp($session, 'job_time', $time['db']);
-                // Store display format for confirmation screen
-                $this->setTemp($session, 'job_time_display', $time['display']);
-                
-                $this->nextStep($session, JobPostingStep::SELECT_DURATION->value);
-                $this->promptSelectDuration($session);
-                return;
-            }
-        }
-
-        // Invalid time
-        $this->sendButtons(
+        $this->whatsApp->sendButtons(
             $session->phone,
-            "❌ *Invalid time*\n\nPlease enter a valid time.\n\nഉദാ: 9 AM, 2:30 PM, morning, രാവിലെ 10\n\nദയവായി ശരിയായ സമയം നൽകുക.",
+            $message,
             [
-                ['id' => 'retry', 'title' => '🔄 Try Again'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ]
+                ['id' => 'today', 'title' => '📅 Today'],
+                ['id' => 'tomorrow', 'title' => '📅 Tomorrow'],
+                ['id' => 'custom_date', 'title' => '📆 Other Date'],
+            ],
+            '📅 Job Date'
         );
     }
 
-    protected function promptEnterTime(ConversationSession $session): void
-    {
-        $response = JobMessages::askJobTime();
-        $this->sendJobMessage($session->phone, $response);
-    }
-
     /**
-     * Parse time from various formats.
-     * 
-     * @return array{db: string, display: string}|null Returns both MySQL TIME format and display format
+     * Handle date selection.
      */
-    protected function parseTime(string $text): ?array
+    protected function handleDate(IncomingMessage $message, ConversationSession $session): void
     {
-        $text = trim(strtolower($text));
+        $selection = $this->getSelectionId($message);
 
-        // Handle general time words
-        $timeWords = [
-            'morning' => ['db' => '09:00:00', 'display' => '9:00 AM'],
-            'രാവിലെ' => ['db' => '09:00:00', 'display' => '9:00 AM'],
-            'afternoon' => ['db' => '14:00:00', 'display' => '2:00 PM'],
-            'ഉച്ചയ്ക്ക്' => ['db' => '12:00:00', 'display' => '12:00 PM'],
-            'evening' => ['db' => '17:00:00', 'display' => '5:00 PM'],
-            'വൈകുന്നേരം' => ['db' => '17:00:00', 'display' => '5:00 PM'],
-            'night' => ['db' => '20:00:00', 'display' => '8:00 PM'],
-            'രാത്രി' => ['db' => '20:00:00', 'display' => '8:00 PM'],
-        ];
+        $date = match ($selection) {
+            'today' => now()->format('Y-m-d'),
+            'tomorrow' => now()->addDay()->format('Y-m-d'),
+            default => null,
+        };
 
-        if (isset($timeWords[$text])) {
-            return $timeWords[$text];
+        if ($selection === 'custom_date') {
+            $this->sendText($session->phone, "📆 Enter the date (DD/MM/YYYY):");
+            $this->setTemp($session, 'awaiting_custom_date', true);
+            return;
         }
 
-        // Try to parse time with regex
-        // Patterns: "9 AM", "9:30 PM", "09:30", "9", "രാവിലെ 10"
-        if (preg_match('/(\d{1,2})[:\s]?(\d{2})?\s*(am|pm|AM|PM)?/i', $text, $matches)) {
-            $hour = (int) $matches[1];
-            $minute = isset($matches[2]) ? (int) $matches[2] : 0;
-            $meridiem = isset($matches[3]) ? strtoupper($matches[3]) : null;
-
-            // Validate hour
-            if ($hour < 0 || $hour > 23) {
-                return null;
-            }
-
-            // If no meridiem and hour < 12, assume it's based on context
-            if (!$meridiem) {
-                if ($hour >= 1 && $hour <= 6) {
-                    // Could be AM or PM, default to PM for work hours
-                    $meridiem = 'PM';
-                } elseif ($hour >= 7 && $hour <= 11) {
-                    $meridiem = 'AM';
-                } elseif ($hour == 12) {
-                    $meridiem = 'PM';
-                } else {
-                    // 24-hour format
-                    $meridiem = $hour >= 12 ? 'PM' : 'AM';
-                    if ($hour > 12) {
-                        $hour -= 12;
-                    }
-                }
-            }
-
-            // Calculate 24-hour format for database
-            $hour24 = $hour;
-            if ($meridiem === 'PM' && $hour < 12) {
-                $hour24 = $hour + 12;
-            } elseif ($meridiem === 'AM' && $hour === 12) {
-                $hour24 = 0;
-            }
-
-            // Format display time (12-hour format)
-            $displayHour = $hour24 % 12;
-            if ($displayHour === 0) $displayHour = 12;
-            $displayMeridiem = $hour24 < 12 ? 'AM' : 'PM';
-
-            return [
-                'db' => sprintf('%02d:%02d:00', $hour24, $minute),
-                'display' => sprintf('%d:%02d %s', $displayHour, $minute, $displayMeridiem),
-            ];
-        }
-
-        return null;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 8: Select Duration
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleSelectDuration(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-        $text = $this->getTextContent($message);
-
-        $durationHours = null;
-
-        // Handle button selections
-        $durationMap = [
-            'duration_30min' => 0.5,
-            'duration_1hr' => 1,
-            'duration_2hr' => 2,
-            'duration_3hr' => 3,
-            'duration_4hr_plus' => 4,
-        ];
-
-        if ($selectionId && isset($durationMap[$selectionId])) {
-            $durationHours = $durationMap[$selectionId];
-        }
-
-        // Try to parse text input
-        if (!$durationHours && $text) {
-            $durationHours = $this->parseDuration($text);
-        }
-
-        if ($durationHours !== null) {
-            $this->setTemp($session, 'duration_hours', $durationHours);
+        // Handle custom date input
+        if ($this->getTemp($session, 'awaiting_custom_date') && $message->isText()) {
+            $dateText = trim($message->text ?? '');
             
-            $this->nextStep($session, JobPostingStep::SUGGEST_PAY->value);
-            $this->promptSuggestPay($session);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptSelectDuration($session);
-    }
-
-    protected function promptSelectDuration(ConversationSession $session): void
-    {
-        $response = JobMessages::askJobDuration();
-        $this->sendJobMessage($session->phone, $response);
-    }
-
-    /**
-     * Parse duration from text.
-     */
-    protected function parseDuration(string $text): ?float
-    {
-        $text = trim(strtolower($text));
-
-        // Extract number
-        if (preg_match('/(\d+(?:\.\d+)?)\s*(hr|hour|hrs|hours|min|mins|minutes|മണിക്കൂർ)?/i', $text, $matches)) {
-            $value = (float) $matches[1];
-            $unit = $matches[2] ?? 'hr';
-
-            if (in_array($unit, ['min', 'mins', 'minutes'])) {
-                return $value / 60;
-            }
-
-            return $value;
-        }
-
-        return null;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 9: Suggest Pay
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleSuggestPay(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-        $text = $this->getTextContent($message);
-
-        $categoryId = $this->getTemp($session, 'category_id');
-        $category = JobCategory::find($categoryId);
-        $durationHours = $this->getTemp($session, 'duration_hours', 1);
-
-        $payRange = $this->postingService->calculateSuggestedPay($category, $durationHours);
-
-        // Handle suggested amount buttons
-        if ($selectionId === 'pay_suggested_min') {
-            $this->setTemp($session, 'pay_amount', $payRange['min']);
-            $this->nextStep($session, JobPostingStep::ENTER_INSTRUCTIONS->value);
-            $this->promptEnterInstructions($session);
-            return;
-        }
-
-        if ($selectionId === 'pay_suggested_max') {
-            $this->setTemp($session, 'pay_amount', $payRange['max']);
-            $this->nextStep($session, JobPostingStep::ENTER_INSTRUCTIONS->value);
-            $this->promptEnterInstructions($session);
-            return;
-        }
-
-        // Custom amount - go to enter pay step
-        if ($selectionId === 'pay_custom') {
-            $this->nextStep($session, JobPostingStep::ENTER_PAY->value);
-            $this->promptEnterPay($session);
-            return;
-        }
-
-        // Try to parse text as amount
-        if ($text) {
-            $amount = $this->parseAmount($text);
-            if ($amount) {
-                $this->setTemp($session, 'pay_amount', $amount);
-                $this->nextStep($session, JobPostingStep::ENTER_INSTRUCTIONS->value);
-                $this->promptEnterInstructions($session);
-                return;
-            }
-        }
-
-        // Re-prompt
-        $this->promptSuggestPay($session);
-    }
-
-    protected function promptSuggestPay(ConversationSession $session): void
-    {
-        $categoryId = $this->getTemp($session, 'category_id');
-        $category = JobCategory::find($categoryId);
-        $durationHours = $this->getTemp($session, 'duration_hours', 1);
-
-        if ($category) {
-            $response = JobMessages::suggestPay($category, $durationHours);
-            $this->sendJobMessage($session->phone, $response);
-        } else {
-            // Category lost - restart
-            $this->start($session);
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 10: Enter Pay (Custom Amount)
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleEnterPay(IncomingMessage $message, ConversationSession $session): void
-    {
-        $text = $this->getTextContent($message);
-
-        if ($text) {
-            $amount = $this->parseAmount($text);
-            if ($amount && $amount >= 50 && $amount <= 50000) {
-                // Warn if amount seems too low
-                $categoryId = $this->getTemp($session, 'category_id');
-                $category = JobCategory::find($categoryId);
-                $payRange = $this->postingService->calculateSuggestedPay($category, $this->getTemp($session, 'duration_hours', 1));
-
-                if ($amount < $payRange['min'] * 0.5) {
-                    // Amount is less than half the suggested minimum
-                    $this->sendButtons(
-                        $session->phone,
-                        "⚠️ *Low amount warning*\n\n" .
-                        "₹{$amount} is lower than typical for this job.\n" .
-                        "Suggested: ₹{$payRange['min']} - ₹{$payRange['max']}\n\n" .
-                        "Workers may not apply. Continue anyway?",
-                        [
-                            ['id' => 'confirm_low_pay', 'title' => '✅ Continue'],
-                            ['id' => 'retry', 'title' => '✏️ Change Amount'],
-                        ]
-                    );
-                    $this->setTemp($session, 'pending_pay_amount', $amount);
+            // Try to parse date
+            try {
+                $parsed = \Carbon\Carbon::createFromFormat('d/m/Y', $dateText);
+                if ($parsed && $parsed->isFuture()) {
+                    $date = $parsed->format('Y-m-d');
+                    $this->setTemp($session, 'awaiting_custom_date', false);
+                } else {
+                    $this->sendText($session->phone, "❌ Please enter a future date.");
                     return;
                 }
-
-                $this->setTemp($session, 'pay_amount', $amount);
-                $this->nextStep($session, JobPostingStep::ENTER_INSTRUCTIONS->value);
-                $this->promptEnterInstructions($session);
+            } catch (\Exception $e) {
+                $this->sendText($session->phone, "❌ Invalid date format. Use DD/MM/YYYY.");
                 return;
             }
         }
 
-        // Check for low pay confirmation
-        $selectionId = $this->getSelectionId($message);
-        if ($selectionId === 'confirm_low_pay') {
-            $pendingAmount = $this->getTemp($session, 'pending_pay_amount');
-            if ($pendingAmount) {
-                $this->setTemp($session, 'pay_amount', $pendingAmount);
-                $this->setTemp($session, 'pending_pay_amount', null);
-                $this->nextStep($session, JobPostingStep::ENTER_INSTRUCTIONS->value);
-                $this->promptEnterInstructions($session);
-                return;
-            }
+        if ($date) {
+            $this->setTemp($session, 'job_date', $date);
+            $this->nextStep($session, JobPostingStep::ENTER_TIME->value);
+            $this->askTime($session);
+            return;
         }
 
-        // Invalid amount
-        $this->sendButtons(
-            $session->phone,
-            "❌ *Invalid amount*\n\nPlease enter a valid amount between ₹50 and ₹50,000.\n\nദയവായി ₹50 മുതൽ ₹50,000 വരെയുള്ള തുക നൽകുക.",
-            [
-                ['id' => 'retry', 'title' => '🔄 Try Again'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ]
-        );
+        $this->askDate($session);
     }
 
-    protected function promptEnterPay(ConversationSession $session): void
-    {
-        $categoryId = $this->getTemp($session, 'category_id');
-        $category = JobCategory::find($categoryId);
-        $payRange = $this->postingService->calculateSuggestedPay($category, $this->getTemp($session, 'duration_hours', 1));
+    /*
+    |--------------------------------------------------------------------------
+    | Step 7: Time
+    |--------------------------------------------------------------------------
+    */
 
-        $this->sendButtons(
+    /**
+     * Ask user for job time.
+     */
+    protected function askTime(ConversationSession $session): void
+    {
+        $message = "⏰ *When should this job start?*\n*ജോലി എപ്പോൾ തുടങ്ങണം?*\n\n" .
+            "Select a time slot or enter your own:\n" .
+            "ഒരു സമയം തിരഞ്ഞെടുക്കുക:";
+
+        $this->whatsApp->sendList(
             $session->phone,
-            "*Step 9/12* 📝\n\n" .
-            "💰 *Enter Payment Amount*\n\n" .
-            "Suggested: ₹{$payRange['min']} - ₹{$payRange['max']}\n\n" .
-            "Please enter your amount (in ₹)\n" .
-            "നിങ്ങളുടെ തുക നൽകുക (₹-ൽ)\n\n" .
-            "_ഉദാ: 300, ₹500_",
-            [
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ]
+            $message,
+            'Select Time',
+            [[
+                'title' => 'Time Options',
+                'rows' => [
+                    ['id' => 'morning', 'title' => '🌅 Morning (9:00 AM)', 'description' => 'Start at 9 AM'],
+                    ['id' => 'afternoon', 'title' => '☀️ Afternoon (2:00 PM)', 'description' => 'Start at 2 PM'],
+                    ['id' => 'evening', 'title' => '🌆 Evening (5:00 PM)', 'description' => 'Start at 5 PM'],
+                    ['id' => 'custom_time', 'title' => '⌨️ Enter Custom Time', 'description' => 'Type your preferred time'],
+                ],
+            ]],
+            '⏰ Job Time'
+        );
+    }
+    
+    /**
+     * Ask for custom time input.
+     */
+    protected function askCustomTime(ConversationSession $session): void
+    {
+        $this->sendText(
+            $session->phone,
+            "⏰ *Enter your preferred time*\n*നിങ്ങൾ ഇഷ്ടപ്പെടുന്ന സമയം നൽകുക*\n\n" .
+            "Examples:\n" .
+            "• 9:00 AM\n" .
+            "• 10:30 AM\n" .
+            "• 2:00 PM\n" .
+            "• 14:30\n\n" .
+            "_You can use 12-hour (AM/PM) or 24-hour format_"
         );
     }
 
     /**
-     * Parse amount from text.
+     * Handle time input.
      */
-    protected function parseAmount(string $text): ?float
+    protected function handleTime(IncomingMessage $message, ConversationSession $session): void
     {
-        // Remove currency symbols and text
-        $cleaned = preg_replace('/[₹,Rs\.INR\s]/i', '', $text);
+        $selection = $this->getSelectionId($message);
 
-        if (is_numeric($cleaned)) {
-            return round((float) $cleaned, 2);
+        // Handle preset time selections (store in 24-hour format for MySQL)
+        $time = match ($selection) {
+            'morning' => '09:00:00',
+            'afternoon' => '14:00:00',
+            'evening' => '17:00:00',
+            default => null,
+        };
+        
+        // Also store display version for confirmation screen
+        $timeDisplay = match ($selection) {
+            'morning' => '9:00 AM',
+            'afternoon' => '2:00 PM',
+            'evening' => '5:00 PM',
+            default => null,
+        };
+
+        if ($selection === 'custom_time') {
+            $this->nextStep($session, JobPostingStep::ENTER_CUSTOM_TIME->value);
+            $this->askCustomTime($session);
+            return;
+        }
+        
+        // Handle custom time text input
+        if (!$time && $message->isText()) {
+            $inputTime = trim($message->text ?? '');
+            $parsed = $this->parseTimeInput($inputTime);
+            
+            if ($parsed) {
+                $time = $parsed['mysql'];
+                $timeDisplay = $parsed['display'];
+            } else {
+                $this->sendText(
+                    $session->phone,
+                    "❌ Invalid time format. Please use formats like:\n" .
+                    "• 9:00 AM\n" .
+                    "• 2:30 PM\n" .
+                    "• 14:30"
+                );
+                $this->askTime($session);
+                return;
+            }
         }
 
+        if ($time) {
+            $this->setTemp($session, 'job_time', $time);
+            $this->setTemp($session, 'job_time_display', $timeDisplay);
+            $this->nextStep($session, JobPostingStep::SELECT_DURATION->value);
+            $this->askDuration($session);
+            return;
+        }
+
+        $this->askTime($session);
+    }
+    
+    /**
+     * Handle custom time input.
+     */
+    protected function handleCustomTime(IncomingMessage $message, ConversationSession $session): void
+    {
+        if (!$message->isText()) {
+            $this->askCustomTime($session);
+            return;
+        }
+        
+        $inputTime = trim($message->text ?? '');
+        $parsed = $this->parseTimeInput($inputTime);
+        
+        if (!$parsed) {
+            $this->sendText(
+                $session->phone,
+                "❌ Invalid time format.\n\n" .
+                "Please enter time like:\n" .
+                "• 9:00 AM\n" .
+                "• 10:30 AM\n" .
+                "• 2:00 PM\n" .
+                "• 14:30"
+            );
+            $this->askCustomTime($session);
+            return;
+        }
+        
+        $this->setTemp($session, 'job_time', $parsed['mysql']);
+        $this->setTemp($session, 'job_time_display', $parsed['display']);
+        $this->nextStep($session, JobPostingStep::SELECT_DURATION->value);
+        $this->askDuration($session);
+    }
+    
+    /**
+     * Parse user time input to MySQL format.
+     * 
+     * @param string $input User input like "9:00 AM", "2:30 PM", "14:30"
+     * @return array|null ['mysql' => 'HH:MM:SS', 'display' => 'H:MM AM/PM'] or null if invalid
+     */
+    protected function parseTimeInput(string $input): ?array
+    {
+        $input = trim(strtoupper($input));
+        
+        // Try 12-hour format: 9:00 AM, 9:00AM, 9 AM, 9AM
+        if (preg_match('/^(\d{1,2}):?(\d{2})?\s*(AM|PM)$/i', $input, $matches)) {
+            $hour = (int) $matches[1];
+            $minute = isset($matches[2]) && $matches[2] !== '' ? (int) $matches[2] : 0;
+            $period = strtoupper($matches[3]);
+            
+            // Validate hour and minute
+            if ($hour < 1 || $hour > 12 || $minute < 0 || $minute > 59) {
+                return null;
+            }
+            
+            // Convert to 24-hour
+            if ($period === 'AM') {
+                $hour24 = ($hour === 12) ? 0 : $hour;
+            } else {
+                $hour24 = ($hour === 12) ? 12 : $hour + 12;
+            }
+            
+            return [
+                'mysql' => sprintf('%02d:%02d:00', $hour24, $minute),
+                'display' => sprintf('%d:%02d %s', $hour, $minute, $period),
+            ];
+        }
+        
+        // Try 24-hour format: 14:30, 09:00
+        if (preg_match('/^(\d{1,2}):(\d{2})$/', $input, $matches)) {
+            $hour = (int) $matches[1];
+            $minute = (int) $matches[2];
+            
+            // Validate
+            if ($hour < 0 || $hour > 23 || $minute < 0 || $minute > 59) {
+                return null;
+            }
+            
+            // Convert to 12-hour for display
+            $period = $hour >= 12 ? 'PM' : 'AM';
+            $hour12 = $hour % 12;
+            if ($hour12 === 0) $hour12 = 12;
+            
+            return [
+                'mysql' => sprintf('%02d:%02d:00', $hour, $minute),
+                'display' => sprintf('%d:%02d %s', $hour12, $minute, $period),
+            ];
+        }
+        
         return null;
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step 11: Enter Instructions (Optional)
+    | Step 8: Duration
     |--------------------------------------------------------------------------
     */
 
-    protected function handleEnterInstructions(IncomingMessage $message, ConversationSession $session): void
+    /**
+     * Ask user for estimated duration.
+     */
+    protected function askDuration(ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
-        $text = $this->getTextContent($message);
+        $message = JobPostingStep::SELECT_DURATION->instruction();
 
-        // Skip instructions
-        if ($selectionId === 'skip_instructions' || $this->isSkip($message)) {
-            $this->setTemp($session, 'special_instructions', null);
-            $this->nextStep($session, JobPostingStep::CONFIRM_POST->value);
-            $this->promptConfirmPost($session);
-            return;
-        }
-
-        // Process instructions text
-        if ($text) {
-            $instructions = trim($text);
-            if (mb_strlen($instructions) > 500) {
-                $instructions = mb_substr($instructions, 0, 500);
-            }
-            $this->setTemp($session, 'special_instructions', $instructions);
-            
-            $this->nextStep($session, JobPostingStep::CONFIRM_POST->value);
-            $this->promptConfirmPost($session);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptEnterInstructions($session);
-    }
-
-    protected function promptEnterInstructions(ConversationSession $session): void
-    {
-        $response = JobMessages::askSpecialInstructions();
-        $this->sendJobMessage($session->phone, $response);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 12: Confirm Post
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleConfirmPost(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        // Confirm posting
-        if ($selectionId === 'confirm_job_post') {
-            $this->createJobPost($session);
-            return;
-        }
-
-        // Edit - restart flow
-        if ($selectionId === 'edit_job_post') {
-            // Go back to category selection
-            $this->nextStep($session, JobPostingStep::SELECT_CATEGORY->value);
-            $this->promptSelectCategory($session);
-            return;
-        }
-
-        // Cancel
-        if ($selectionId === 'cancel_job_post') {
-            $this->clearTemp($session);
-            $this->sendTextWithMenu($session->phone, "❌ *Job posting cancelled*\n\nജോലി പോസ്റ്റിംഗ് റദ്ദാക്കി.");
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Handle edit navigation buttons
-        if ($this->handleEditNavigation($selectionId, $session)) {
-            return;
-        }
-
-        // Re-prompt
-        $this->promptConfirmPost($session);
-    }
-
-    protected function promptConfirmPost(ConversationSession $session): void
-    {
-        $categoryId = $this->getTemp($session, 'category_id');
-        $category = JobCategory::find($categoryId);
-
-        if (!$category) {
-            $this->start($session);
-            return;
-        }
-
-        $jobData = [
-            'title' => $this->getTemp($session, 'title'),
-            'description' => $this->getTemp($session, 'description'),
-            'location_name' => $this->getTemp($session, 'location_name'),
-            'job_date' => $this->getTemp($session, 'job_date_display'),
-            'job_time' => $this->getTemp($session, 'job_time_display') ?? $this->getTemp($session, 'job_time'),
-            'duration_hours' => $this->getTemp($session, 'duration_hours'),
-            'pay_amount' => $this->getTemp($session, 'pay_amount'),
-            'special_instructions' => $this->getTemp($session, 'special_instructions'),
-        ];
-
-        $response = JobMessages::confirmJobPost($jobData, $category);
-        $this->sendJobMessage($session->phone, $response);
+        $this->whatsApp->sendList(
+            $session->phone,
+            $message,
+            'Select Duration',
+            [[
+                'title' => 'Duration Options',
+                'rows' => [
+                    ['id' => '30min', 'title' => '⏱️ 30 minutes', 'description' => 'Quick task'],
+                    ['id' => '1hr', 'title' => '⏱️ 1 hour', 'description' => 'Short task'],
+                    ['id' => '2hr', 'title' => '⏱️ 2 hours', 'description' => 'Medium task'],
+                    ['id' => '3hr', 'title' => '⏱️ 3 hours', 'description' => 'Longer task'],
+                    ['id' => 'halfday', 'title' => '⏱️ Half day', 'description' => '4-5 hours'],
+                    ['id' => 'fullday', 'title' => '⏱️ Full day', 'description' => '8+ hours'],
+                ],
+            ]],
+            '⏱️ Duration'
+        );
     }
 
     /**
-     * Handle edit navigation buttons.
+     * Handle duration selection.
      */
-    protected function handleEditNavigation(?string $selectionId, ConversationSession $session): bool
+    protected function handleDuration(IncomingMessage $message, ConversationSession $session): void
     {
-        if (!$selectionId) {
-            return false;
+        $selection = $this->getSelectionId($message);
+
+        $duration = match ($selection) {
+            '30min' => '30 minutes',
+            '1hr' => '1 hour',
+            '2hr' => '2 hours',
+            '3hr' => '3 hours',
+            'halfday' => 'Half day',
+            'fullday' => 'Full day',
+            default => null,
+        };
+
+        if ($duration) {
+            $this->setTemp($session, 'estimated_duration', $duration);
+            $this->nextStep($session, JobPostingStep::SUGGEST_PAY->value);
+            $this->suggestPay($session);
+            return;
         }
 
-        $editSteps = [
-            'edit_category' => JobPostingStep::SELECT_CATEGORY->value,
-            'edit_title' => JobPostingStep::ENTER_TITLE->value,
-            'edit_description' => JobPostingStep::ENTER_DESCRIPTION->value,
-            'edit_location' => JobPostingStep::ENTER_LOCATION->value,
-            'edit_date' => JobPostingStep::SELECT_DATE->value,
-            'edit_time' => JobPostingStep::ENTER_TIME->value,
-            'edit_duration' => JobPostingStep::SELECT_DURATION->value,
-            'edit_pay' => JobPostingStep::ENTER_PAY->value,
-            'edit_instructions' => JobPostingStep::ENTER_INSTRUCTIONS->value,
-        ];
+        $this->askDuration($session);
+    }
 
-        if (isset($editSteps[$selectionId])) {
-            $this->setTemp($session, 'editing', true);
-            $this->nextStep($session, $editSteps[$selectionId]);
-            $this->promptCurrentStep($session);
-            return true;
+    /*
+    |--------------------------------------------------------------------------
+    | Step 9: Pay Suggestion
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Suggest pay based on category.
+     */
+    protected function suggestPay(ConversationSession $session): void
+    {
+        $minPay = $this->getTemp($session, 'suggested_pay_min') ?? 200;
+        $maxPay = $this->getTemp($session, 'suggested_pay_max') ?? 500;
+        $suggestedPay = (int) (($minPay + $maxPay) / 2);
+
+        $this->setTemp($session, 'suggested_pay', $suggestedPay);
+
+        $message = str_replace(
+            ['{min}', '{max}'],
+            [$minPay, $maxPay],
+            JobPostingStep::SUGGEST_PAY->instruction()
+        );
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => "pay_{$suggestedPay}", 'title' => "₹{$suggestedPay}"],
+                ['id' => 'custom_pay', 'title' => '💵 Enter Amount'],
+                ['id' => 'back', 'title' => '⬅️ Back'],
+            ],
+            '💰 Payment'
+        );
+    }
+
+    /**
+     * Handle pay suggestion response.
+     */
+    protected function handlePaySuggestion(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+
+        if ($selection === 'custom_pay') {
+            $this->nextStep($session, JobPostingStep::ENTER_PAY->value);
+            $this->askPay($session);
+            return;
         }
 
-        // Back to confirm
-        if ($selectionId === 'back_to_confirm') {
-            $this->setTemp($session, 'editing', false);
+        if (preg_match('/^pay_(\d+)$/', $selection ?? '', $matches)) {
+            $pay = (int) $matches[1];
+            $this->setTemp($session, 'pay_amount', $pay);
+            $this->nextStep($session, JobPostingStep::ENTER_INSTRUCTIONS->value);
+            $this->askInstructions($session);
+            return;
+        }
+
+        $this->suggestPay($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 10: Custom Pay
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ask user for custom pay amount.
+     */
+    protected function askPay(ConversationSession $session): void
+    {
+        $message = JobPostingStep::ENTER_PAY->instruction();
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => 'back', 'title' => '⬅️ Back'],
+                ['id' => 'cancel', 'title' => '❌ Cancel'],
+            ],
+            '💵 Payment Amount'
+        );
+    }
+
+    /**
+     * Handle custom pay input.
+     */
+    protected function handlePay(IncomingMessage $message, ConversationSession $session): void
+    {
+        if (!$message->isText()) {
+            $this->sendText($session->phone, "❌ Please type the pay amount.");
+            return;
+        }
+
+        $text = trim($message->text ?? '');
+        $pay = (int) preg_replace('/[^0-9]/', '', $text);
+
+        if ($pay < 50) {
+            $this->sendText($session->phone, "❌ Minimum pay is ₹50.");
+            return;
+        }
+
+        if ($pay > 50000) {
+            $this->sendText($session->phone, "❌ Maximum pay is ₹50,000.");
+            return;
+        }
+
+        $this->setTemp($session, 'pay_amount', $pay);
+        $this->nextStep($session, JobPostingStep::ENTER_INSTRUCTIONS->value);
+        $this->askInstructions($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 11: Special Instructions
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ask user for special instructions.
+     */
+    protected function askInstructions(ConversationSession $session): void
+    {
+        $message = JobPostingStep::ENTER_INSTRUCTIONS->instruction();
+
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => 'skip', 'title' => '⏭️ Skip'],
+                ['id' => 'back', 'title' => '⬅️ Back'],
+            ],
+            '📌 Instructions'
+        );
+    }
+
+    /**
+     * Handle instructions input.
+     */
+    protected function handleInstructions(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+
+        if ($selection === 'skip') {
+            $this->setTemp($session, 'special_instructions', null);
             $this->nextStep($session, JobPostingStep::CONFIRM_POST->value);
-            $this->promptConfirmPost($session);
-            return true;
+            $this->showConfirmation($session);
+            return;
         }
 
-        return false;
+        if ($message->isText()) {
+            $instructions = trim($message->text ?? '');
+
+            if (strlen($instructions) > 300) {
+                $this->sendText($session->phone, "❌ Instructions must be less than 300 characters.");
+                return;
+            }
+
+            $this->setTemp($session, 'special_instructions', $instructions);
+            $this->nextStep($session, JobPostingStep::CONFIRM_POST->value);
+            $this->showConfirmation($session);
+            return;
+        }
+
+        $this->askInstructions($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Create Job Post
+    | Step 12: Confirmation
     |--------------------------------------------------------------------------
     */
 
-    protected function createJobPost(ConversationSession $session): void
+    /**
+     * Show confirmation message.
+     */
+    protected function showConfirmation(ConversationSession $session): void
     {
-        $user = $this->getUser($session);
-        
-        if (!$user) {
-            $this->sendTextWithMenu(
-                $session->phone,
-                "❌ *Error*\n\nYou must be registered to post jobs.\n\nജോലി പോസ്റ്റ് ചെയ്യാൻ രജിസ്റ്റർ ചെയ്യണം."
-            );
-            return;
-        }
+        $jobData = $this->getJobDataFromTemp($session);
+        $message = JobMessages::jobPostConfirmation($jobData);
 
-        try {
-            $jobData = [
-                'job_category_id' => $this->getTemp($session, 'category_id'),
-                'title' => $this->getTemp($session, 'title'),
-                'description' => $this->getTemp($session, 'description'),
-                'location_name' => $this->getTemp($session, 'location_name'),
-                'latitude' => $this->getTemp($session, 'latitude'),
-                'longitude' => $this->getTemp($session, 'longitude'),
-                'job_date' => $this->getTemp($session, 'job_date'),
-                'job_time' => $this->getTemp($session, 'job_time'), // Now in HH:MM:SS format
-                'duration_hours' => $this->getTemp($session, 'duration_hours'),
-                'pay_amount' => $this->getTemp($session, 'pay_amount'),
-                'special_instructions' => $this->getTemp($session, 'special_instructions'),
-            ];
-
-            // Create the job post
-            $job = $this->postingService->createJobPost($user, $jobData);
-
-            // Publish the job (move from draft to open)
-            $job->publish();
-
-            // Find and notify matching workers
-            $workerCount = $this->postingService->notifyMatchingWorkers($job);
-
-            $this->logInfo('Job posted successfully', [
-                'job_id' => $job->id,
-                'job_number' => $job->job_number,
-                'workers_notified' => $workerCount,
-            ]);
-
-            // Clear temp data
-            $this->clearTemp($session);
-
-            // Move to complete step
-            $this->nextStep($session, JobPostingStep::COMPLETE->value);
-
-            // Send success message
-            $response = JobMessages::jobPostedSuccess($job, $workerCount);
-            $this->sendJobMessage($session->phone, $response);
-
-        } catch (\Exception $e) {
-            $this->logError('Failed to create job post', [
-                'error' => $e->getMessage(),
-                'user_id' => $user->id,
-            ]);
-
-            $this->sendButtons(
-                $session->phone,
-                "❌ *Error*\n\nFailed to post job. Please try again.\n\nജോലി പോസ്റ്റ് ചെയ്യാൻ കഴിഞ്ഞില്ല. വീണ്ടും ശ്രമിക്കുക.",
-                [
-                    ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ]
-            );
-        }
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => 'confirm', 'title' => '✅ Post Job'],
+                ['id' => 'edit', 'title' => '✏️ Edit'],
+                ['id' => 'cancel', 'title' => '❌ Cancel'],
+            ],
+            '✅ Confirm Job'
+        );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Step 13: Complete
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleComplete(IncomingMessage $message, ConversationSession $session): void
+    /**
+     * Handle confirmation.
+     */
+    protected function handleConfirmation(IncomingMessage $message, ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
+        $selection = $this->getSelectionId($message);
 
-        // View job
-        if ($selectionId && str_starts_with($selectionId, 'view_job_')) {
-            // TODO: Go to job detail view
-            $this->goToMainMenu($session);
+        if ($selection === 'confirm') {
+            $this->postJob($session);
             return;
         }
 
-        // Post another
-        if ($selectionId === 'post_another_job') {
+        if ($selection === 'edit') {
             $this->start($session);
             return;
         }
 
-        // Default - go to main menu
-        $this->goToMainMenu($session);
+        if ($selection === 'cancel') {
+            $this->goToMainMenu($session);
+            return;
+        }
+
+        $this->showConfirmation($session);
+    }
+
+    /**
+     * Post the job.
+     */
+    protected function postJob(ConversationSession $session): void
+    {
+        try {
+            $user = $this->sessionManager->getUser($session);
+            $jobData = $this->getJobDataFromTemp($session);
+            $jobData['poster_user_id'] = $user->id;
+            
+            // Remove display-only fields not in database
+            unset($jobData['estimated_duration']);
+            unset($jobData['job_time_display']);
+
+            // Create job directly using the model
+            $job = JobPost::create($jobData);
+
+            $this->sendText($session->phone, JobMessages::jobPosted($job));
+
+            $this->nextStep($session, JobPostingStep::COMPLETE->value);
+            
+            // Show success buttons
+            $this->whatsApp->sendButtons(
+                $session->phone,
+                "What would you like to do next?",
+                [
+                    ['id' => 'view_job_' . $job->id, 'title' => '📋 View Job'],
+                    ['id' => 'post_another', 'title' => '➕ Post Another'],
+                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                ],
+                '🎉 Success'
+            );
+
+        } catch (\Exception $e) {
+            Log::error('Failed to post job', [
+                'error' => $e->getMessage(),
+                'phone' => $this->maskPhone($session->phone),
+            ]);
+
+            $this->sendText($session->phone, "❌ Failed to post job. Please try again.");
+            $this->showConfirmation($session);
+        }
     }
 
     /*
@@ -1137,40 +1219,96 @@ class JobPostFlowHandler extends AbstractFlowHandler
     */
 
     /**
-     * Send a JobMessages response.
+     * Get job data from temp storage.
      */
-    protected function sendJobMessage(string $phone, array $response): void
+    protected function getJobDataFromTemp(ConversationSession $session): array
     {
-        $type = $response['type'] ?? 'text';
-
-        switch ($type) {
-            case 'text':
-                $this->sendText($phone, $response['text']);
-                break;
-
-            case 'buttons':
-                $this->sendButtons(
-                    $phone,
-                    $response['body'] ?? $response['text'] ?? '',
-                    $response['buttons'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
-
-            case 'list':
-                $this->sendList(
-                    $phone,
-                    $response['body'] ?? '',
-                    $response['button'] ?? 'Select',
-                    $response['sections'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
-
-            default:
-                $this->sendText($phone, $response['text'] ?? 'Message sent.');
+        // Get raw duration string for display
+        $durationStr = $this->getTemp($session, 'estimated_duration');
+        // Convert duration string to hours for database
+        $durationHours = $this->parseDurationToHours($durationStr);
+        
+        return [
+            'job_category_id' => $this->getTemp($session, 'job_category_id'),
+            'custom_category_text' => $this->getTemp($session, 'custom_category_text'),
+            'title' => $this->getTemp($session, 'title'),
+            'description' => $this->getTemp($session, 'description'),
+            'location_name' => $this->getTemp($session, 'location_name'),
+            'latitude' => $this->getTemp($session, 'latitude'),
+            'longitude' => $this->getTemp($session, 'longitude'),
+            'job_date' => $this->getTemp($session, 'job_date'),
+            'job_time' => $this->getTemp($session, 'job_time'),
+            'job_time_display' => $this->getTemp($session, 'job_time_display'), // For confirmation display
+            'duration_hours' => $durationHours,
+            'estimated_duration' => $durationStr, // Keep for preview display
+            'pay_amount' => $this->getTemp($session, 'pay_amount'),
+            'special_instructions' => $this->getTemp($session, 'special_instructions'),
+            'status' => 'open',
+            'posted_at' => now(),
+        ];
+    }
+    
+    /**
+     * Parse duration string to decimal hours.
+     */
+    protected function parseDurationToHours(?string $duration): ?float
+    {
+        if (!$duration) {
+            return null;
         }
+        
+        return match ($duration) {
+            '30 minutes', '30min' => 0.5,
+            '1 hour', '1hr' => 1.0,
+            '2 hours', '2hr' => 2.0,
+            '3 hours', '3hr' => 3.0,
+            '4 hours', '4hr' => 4.0,
+            'Half day', 'half_day' => 4.0,
+            'Full day', 'full_day' => 8.0,
+            default => 1.0,
+        };
+    }
+
+    /**
+     * Go to main menu.
+     */
+    protected function goToMainMenu(ConversationSession $session): void
+    {
+        $this->flowRouter->goToMainMenu($session);
+    }
+
+    /**
+     * Handle job-related button clicks (view applications, etc.)
+     */
+    protected function handleJobButtons(?string $selectionId, ConversationSession $session): bool
+    {
+        if (!$selectionId) {
+            return false;
+        }
+
+        // Handle "View All Applications" button
+        if (preg_match('/^view_all_apps_(\d+)$/', $selectionId, $matches)) {
+            $jobId = (int) $matches[1];
+            // Switch to poster menu and show applications
+            $this->setTemp($session, 'view_applications_job_id', $jobId);
+            $this->flowRouter->startFlow($session, FlowType::JOB_POSTER_MENU);
+            return true;
+        }
+
+        // Handle "View Job" button
+        if (preg_match('/^view_job_(\d+)$/', $selectionId, $matches)) {
+            $jobId = (int) $matches[1];
+            $this->setTemp($session, 'selected_job_id', $jobId);
+            $this->flowRouter->startFlow($session, FlowType::JOB_POSTER_MENU);
+            return true;
+        }
+
+        // Handle "Post Another" button
+        if ($selectionId === 'post_another') {
+            $this->start($session);
+            return true;
+        }
+
+        return false;
     }
 }

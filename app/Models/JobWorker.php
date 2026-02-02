@@ -2,43 +2,53 @@
 
 namespace App\Models;
 
-use App\Enums\VehicleType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Database\Eloquent\Builder;
 
 /**
- * Job Worker Model - Worker profiles for job marketplace.
+ * Job Worker model for the Njaanum Panikkar (Jobs Marketplace) module.
  *
  * @property int $id
  * @property int $user_id
- * @property string $name
+ * @property string|null $name
  * @property string|null $photo_url
  * @property float|null $latitude
  * @property float|null $longitude
  * @property string|null $address
- * @property VehicleType $vehicle_type
- * @property array|null $job_types
- * @property array|null $availability
- * @property float $rating
+ * @property string|null $vehicle_type (none, two_wheeler, four_wheeler)
+ * @property array|null $job_types Array of category IDs worker can do
+ * @property array|null $availability Array: morning, afternoon, evening, flexible
+ * @property float $rating Average rating out of 5
  * @property int $rating_count
  * @property int $jobs_completed
- * @property float $total_earnings
- * @property bool $is_available
+ * @property float $total_earnings Lifetime earnings in INR
+ * @property bool $is_available Currently accepting jobs
  * @property bool $is_verified
- * @property string|null $verification_photo_url
+ * @property string|null $verification_photo_url ID verification photo
  * @property \Carbon\Carbon|null $verified_at
  * @property \Carbon\Carbon|null $last_active_at
+ * @property \Carbon\Carbon $created_at
+ * @property \Carbon\Carbon $updated_at
+ * @property \Carbon\Carbon|null $deleted_at
  *
- * @srs-ref Section 3.2 - Job Workers
+ * @property-read User $user
+ * @property-read \Illuminate\Database\Eloquent\Collection|JobApplication[] $applications
+ * @property-read \Illuminate\Database\Eloquent\Collection|JobPost[] $assignedJobs
+ *
+ * @srs-ref Section 3.4 - Worker Registration
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobWorker extends Model
 {
     use HasFactory, SoftDeletes;
+
+    /**
+     * The table associated with the model.
+     */
+    protected $table = 'job_workers';
 
     /**
      * The attributes that are mass assignable.
@@ -66,18 +76,15 @@ class JobWorker extends Model
 
     /**
      * The attributes that should be cast.
-     * 
-     * NOTE: job_types and availability are NOT cast here - they use
-     * custom accessors/mutators to handle JSON encoding/decoding
-     * because session context stores them as JSON strings.
      */
     protected $casts = [
-        'vehicle_type' => VehicleType::class,
-        // 'job_types' => 'array',      // Handled by accessor/mutator
-        // 'availability' => 'array',   // Handled by accessor/mutator
-        'latitude' => 'float',
-        'longitude' => 'float',
-        'rating' => 'decimal:1',
+        'latitude' => 'decimal:8',
+        'longitude' => 'decimal:8',
+        'job_types' => 'array',
+        'availability' => 'array',
+        'rating' => 'decimal:2',
+        'rating_count' => 'integer',
+        'jobs_completed' => 'integer',
         'total_earnings' => 'decimal:2',
         'is_available' => 'boolean',
         'is_verified' => 'boolean',
@@ -89,114 +96,13 @@ class JobWorker extends Model
      * Default attribute values.
      */
     protected $attributes = [
-        'rating' => 0.0,
+        'rating' => 0,
         'rating_count' => 0,
         'jobs_completed' => 0,
-        'total_earnings' => 0.00,
+        'total_earnings' => 0,
         'is_available' => true,
         'is_verified' => false,
     ];
-
-    /*
-    |--------------------------------------------------------------------------
-    | Mutators - Ensure proper JSON encoding for array fields
-    |--------------------------------------------------------------------------
-    | These mutators handle the "Array to string conversion" error by
-    | explicitly JSON-encoding arrays before database insert.
-    | Custom accessors below handle decoding on read (since 'array' cast is removed).
-    */
-
-    /**
-     * Set job_types attribute - ensures proper JSON encoding.
-     * Handles arrays, JSON strings, or mixed input from session context.
-     */
-    public function setJobTypesAttribute($value): void
-    {
-        $this->attributes['job_types'] = $this->ensureJsonEncoded($value);
-    }
-
-    /**
-     * Set availability attribute - ensures proper JSON encoding.
-     * Handles arrays, JSON strings, or mixed input from session context.
-     */
-    public function setAvailabilityAttribute($value): void
-    {
-        $this->attributes['availability'] = $this->ensureJsonEncoded($value);
-    }
-
-    /**
-     * Ensure value is properly JSON encoded for database storage.
-     * Handles: PHP arrays, JSON strings, or null.
-     */
-    protected function ensureJsonEncoded(mixed $value): string
-    {
-        // If null or empty, return empty array JSON
-        if ($value === null || $value === '') {
-            return '[]';
-        }
-
-        // If already a string, check if it's valid JSON
-        if (is_string($value)) {
-            $decoded = json_decode($value, true);
-            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                return $value; // Already valid JSON string
-            }
-            // Not valid JSON, wrap in array
-            return json_encode([$value]);
-        }
-
-        // If it's an array, JSON encode it
-        if (is_array($value)) {
-            return json_encode($value);
-        }
-
-        // Fallback: wrap in array and encode
-        return json_encode([$value]);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Accessors - Decode JSON strings to arrays when reading
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Get job_types attribute - decodes JSON string to PHP array.
-     */
-    public function getJobTypesAttribute($value): array
-    {
-        if (is_array($value)) {
-            return $value;
-        }
-
-        if (is_string($value)) {
-            $decoded = json_decode($value, true);
-            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                return $decoded;
-            }
-        }
-
-        return [];
-    }
-
-    /**
-     * Get availability attribute - decodes JSON string to PHP array.
-     */
-    public function getAvailabilityAttribute($value): array
-    {
-        if (is_array($value)) {
-            return $value;
-        }
-
-        if (is_string($value)) {
-            $decoded = json_decode($value, true);
-            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                return $decoded;
-            }
-        }
-
-        return [];
-    }
 
     /*
     |--------------------------------------------------------------------------
@@ -205,7 +111,7 @@ class JobWorker extends Model
     */
 
     /**
-     * Get the user who owns this worker profile.
+     * Get the user that owns this worker profile.
      */
     public function user(): BelongsTo
     {
@@ -221,180 +127,16 @@ class JobWorker extends Model
     }
 
     /**
-     * Get pending applications.
-     */
-    public function pendingApplications(): HasMany
-    {
-        return $this->applications()->where('status', 'pending');
-    }
-
-    /**
-     * Get accepted applications.
-     */
-    public function acceptedApplications(): HasMany
-    {
-        return $this->applications()->where('status', 'accepted');
-    }
-
-    /**
-     * Get jobs assigned to this worker.
+     * Get all jobs assigned to this worker.
      */
     public function assignedJobs(): HasMany
     {
         return $this->hasMany(JobPost::class, 'assigned_worker_id');
     }
 
-    /**
-     * Get active assigned jobs.
-     */
-    public function activeJobs(): HasMany
-    {
-        return $this->assignedJobs()->whereIn('status', ['assigned', 'in_progress']);
-    }
-
-    /**
-     * Get completed jobs.
-     */
-    public function completedJobs(): HasMany
-    {
-        return $this->assignedJobs()->where('status', 'completed');
-    }
-
-    /**
-     * Get job verifications for this worker.
-     */
-    public function verifications(): HasMany
+    public function verifications(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
         return $this->hasMany(JobVerification::class, 'worker_id');
-    }
-
-    /**
-     * Get badges earned by this worker.
-     */
-    public function badges(): HasMany
-    {
-        return $this->hasMany(WorkerBadge::class, 'worker_id');
-    }
-
-    /**
-     * Get earnings records.
-     */
-    public function earnings(): HasMany
-    {
-        return $this->hasMany(WorkerEarning::class, 'worker_id');
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Scopes
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Scope to filter available workers.
-     */
-    public function scopeAvailable(Builder $query): Builder
-    {
-        return $query->where('is_available', true);
-    }
-
-    /**
-     * Scope to filter verified workers.
-     */
-    public function scopeVerified(Builder $query): Builder
-    {
-        return $query->where('is_verified', true);
-    }
-
-    /**
-     * Scope to filter workers with vehicle.
-     */
-    public function scopeWithVehicle(Builder $query): Builder
-    {
-        return $query->where('vehicle_type', '!=', VehicleType::NONE);
-    }
-
-    /**
-     * Scope to filter workers with specific vehicle type.
-     */
-    public function scopeWithVehicleType(Builder $query, VehicleType $type): Builder
-    {
-        return $query->where('vehicle_type', $type);
-    }
-
-    /**
-     * Scope to filter workers who can do a specific job category.
-     */
-    public function scopeCanDoJob(Builder $query, int $categoryId): Builder
-    {
-        return $query->whereJsonContains('job_types', $categoryId);
-    }
-
-    /**
-     * Scope to filter workers available at a specific time.
-     */
-    public function scopeAvailableAt(Builder $query, string $availability): Builder
-    {
-        return $query->where(function ($q) use ($availability) {
-            $q->whereJsonContains('availability', $availability)
-                ->orWhereJsonContains('availability', 'flexible');
-        });
-    }
-
-    /**
-     * Scope to find workers near a location.
-     */
-    public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
-    {
-        return $query
-            ->whereNotNull('latitude')
-            ->whereNotNull('longitude')
-            ->whereRaw(
-                "ST_Distance_Sphere(
-                    POINT(longitude, latitude),
-                    POINT(?, ?)
-                ) <= ?",
-                [$longitude, $latitude, $radiusKm * 1000]
-            );
-    }
-
-    /**
-     * Scope to select with distance from a point.
-     */
-    public function scopeWithDistanceFrom(Builder $query, float $latitude, float $longitude): Builder
-    {
-        return $query->selectRaw(
-            "*, ST_Distance_Sphere(
-                POINT(longitude, latitude),
-                POINT(?, ?)
-            ) / 1000 as distance_km",
-            [$longitude, $latitude]
-        );
-    }
-
-    /**
-     * Scope to filter by minimum rating.
-     */
-    public function scopeMinRating(Builder $query, float $minRating): Builder
-    {
-        return $query->where('rating', '>=', $minRating);
-    }
-
-    /**
-     * Scope to order by rating.
-     */
-    public function scopeTopRated(Builder $query): Builder
-    {
-        return $query->orderBy('rating', 'desc')
-            ->orderBy('jobs_completed', 'desc');
-    }
-
-    /**
-     * Scope to filter recently active workers.
-     */
-    public function scopeRecentlyActive(Builder $query, int $hours = 24): Builder
-    {
-        return $query->where('last_active_at', '>=', now()->subHours($hours));
     }
 
     /*
@@ -404,196 +146,67 @@ class JobWorker extends Model
     */
 
     /**
-     * Get display name.
-     */
-    public function getDisplayNameAttribute(): string
-    {
-        return $this->name;
-    }
-
-    /**
-     * Get formatted phone.
-     */
-    public function getFormattedPhoneAttribute(): string
-    {
-        return $this->user?->formatted_phone ?? '';
-    }
-
-    /**
-     * Get rating display with stars.
-     */
-    public function getRatingDisplayAttribute(): string
-    {
-        if ($this->rating_count === 0) {
-            return 'New Worker';
-        }
-
-        $stars = str_repeat('⭐', (int) round($this->rating));
-        return $stars . ' ' . number_format($this->rating, 1) .
-            ' (' . $this->rating_count . ' ratings)';
-    }
-
-    /**
-     * Get short rating display.
-     */
-    public function getShortRatingAttribute(): string
-    {
-        if ($this->rating_count === 0) {
-            return 'New';
-        }
-
-        return '⭐ ' . number_format($this->rating, 1) .
-            ' (' . $this->rating_count . ')';
-    }
-
-    /**
-     * Get vehicle display.
-     */
-    public function getVehicleDisplayAttribute(): string
-    {
-        return $this->vehicle_type->display();
-    }
-
-    /**
-     * Get location display.
-     */
-    public function getLocationDisplayAttribute(): string
-    {
-        return $this->address ?? 'Location available';
-    }
-
-    /**
-     * Get earnings display.
-     */
-    public function getEarningsDisplayAttribute(): string
-    {
-        return '₹' . number_format($this->total_earnings);
-    }
-
-    /**
-     * Check if worker has a vehicle.
-     */
-    public function getHasVehicleAttribute(): bool
-    {
-        return $this->vehicle_type !== VehicleType::NONE;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Methods
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Check if worker can accept a job.
+     * Check if worker can accept jobs in this category.
      */
     public function canAcceptJob(JobCategory $category): bool
     {
-        // Check if available
-        if (!$this->is_available) {
-            return false;
+        // If worker has no job types set, allow all
+        if (empty($this->job_types) || !is_array($this->job_types)) {
+            return true;
+        }
+        
+        // Check if category ID is in worker's registered job types
+        return in_array($category->id, $this->job_types);
+    }
+
+    /**
+     * Get vehicle display text.
+     */
+    public function getVehicleDisplayAttribute(): string
+    {
+        return match($this->vehicle_type) {
+            'none' => '🚶 Walking Only',
+            'two_wheeler' => '🛵 Two Wheeler',
+            'four_wheeler' => '🚗 Four Wheeler',
+            default => 'Not specified',
+        };
+    }
+
+    /**
+     * Get availability display text.
+     */
+    public function getAvailabilityDisplayAttribute(): string
+    {
+        if (empty($this->availability)) {
+            return 'Flexible';
         }
 
-        // Check if worker does this job type
-        if (!in_array($category->id, $this->job_types ?? [])) {
-            return false;
+        $labels = [
+            'morning' => '🌅 Morning',
+            'afternoon' => '☀️ Afternoon',
+            'evening' => '🌆 Evening',
+            'flexible' => '🔄 Flexible',
+        ];
+
+        return collect($this->availability)
+            ->map(fn($slot) => $labels[$slot] ?? $slot)
+            ->implode(', ');
+    }
+
+    /**
+     * Get formatted rating.
+     */
+    public function getFormattedRatingAttribute(): string
+    {
+        if ($this->rating_count === 0) {
+            return 'No ratings yet';
         }
 
-        // Check vehicle requirement
-        if ($category->requires_vehicle && !$this->has_vehicle) {
-            return false;
-        }
-
-        return true;
+        return "⭐ {$this->rating}/5 ({$this->rating_count} reviews)";
     }
 
     /**
-     * Get distance from a location in km.
-     */
-    public function getDistanceFrom(float $latitude, float $longitude): ?float
-    {
-        if (!$this->latitude || !$this->longitude) {
-            return null;
-        }
-
-        // Haversine formula
-        $earthRadius = 6371; // km
-
-        $latDiff = deg2rad($latitude - $this->latitude);
-        $lngDiff = deg2rad($longitude - $this->longitude);
-
-        $a = sin($latDiff / 2) * sin($latDiff / 2) +
-            cos(deg2rad($this->latitude)) * cos(deg2rad($latitude)) *
-            sin($lngDiff / 2) * sin($lngDiff / 2);
-
-        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
-
-        return round($earthRadius * $c, 2);
-    }
-
-    /**
-     * Update rating based on new rating.
-     */
-    public function updateRating(int $newRating): void
-    {
-        $totalRating = ($this->rating * $this->rating_count) + $newRating;
-        $newCount = $this->rating_count + 1;
-
-        $this->update([
-            'rating' => round($totalRating / $newCount, 1),
-            'rating_count' => $newCount,
-        ]);
-    }
-
-    /**
-     * Recalculate rating from completed jobs.
-     */
-    public function recalculateRating(): void
-    {
-        $ratings = $this->verifications()
-            ->whereNotNull('rating')
-            ->pluck('rating');
-
-        if ($ratings->isEmpty()) {
-            return;
-        }
-
-        $this->update([
-            'rating' => round($ratings->avg(), 1),
-            'rating_count' => $ratings->count(),
-        ]);
-    }
-
-    /**
-     * Increment jobs completed and add earnings.
-     */
-    public function incrementJobsCompleted(float $amount): void
-    {
-        $this->increment('jobs_completed');
-        $this->addEarnings($amount);
-    }
-
-    /**
-     * Add earnings.
-     */
-    public function addEarnings(float $amount): void
-    {
-        $this->increment('total_earnings', $amount);
-    }
-
-    /**
-     * Mark as verified.
-     */
-    public function verify(): void
-    {
-        $this->update([
-            'is_verified' => true,
-            'verified_at' => now(),
-        ]);
-    }
-
-    /**
-     * Update last active timestamp.
+     * Update the last active timestamp.
      */
     public function touchLastActive(): void
     {
@@ -601,43 +214,152 @@ class JobWorker extends Model
     }
 
     /**
-     * Toggle availability.
+     * Get formatted earnings.
      */
-    public function toggleAvailability(): void
+    public function getFormattedEarningsAttribute(): string
     {
-        $this->update(['is_available' => !$this->is_available]);
+        return '₹' . number_format($this->total_earnings, 0);
     }
 
     /**
-     * Convert to WhatsApp list item.
+     * Check if worker has location set.
      */
-    public function toListItem(): array
+    public function getHasLocationAttribute(): bool
     {
-        $description = $this->short_rating;
-        if ($this->jobs_completed > 0) {
-            $description .= ' • ' . $this->jobs_completed . ' jobs done';
+        return $this->latitude !== null && $this->longitude !== null;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Scope for available workers.
+     */
+    public function scopeAvailable($query)
+    {
+        return $query->where('is_available', true);
+    }
+
+    /**
+     * Scope for verified workers.
+     */
+    public function scopeVerified($query)
+    {
+        return $query->where('is_verified', true);
+    }
+
+    /**
+     * Scope for workers with specific vehicle type.
+     */
+    public function scopeWithVehicle($query, string $vehicleType)
+    {
+        return $query->where('vehicle_type', $vehicleType);
+    }
+
+    /**
+     * Scope for workers who can do specific job type.
+     */
+    public function scopeCanDoJobType($query, int $categoryId)
+    {
+        return $query->whereJsonContains('job_types', $categoryId);
+    }
+
+    /**
+     * Scope for nearby workers.
+     */
+    public function scopeNearby($query, float $latitude, float $longitude, int $radiusKm = 10)
+    {
+        $haversine = "(6371 * acos(cos(radians(?)) 
+                     * cos(radians(latitude)) 
+                     * cos(radians(longitude) - radians(?)) 
+                     + sin(radians(?)) 
+                     * sin(radians(latitude))))";
+
+        return $query->select('*')
+            ->selectRaw("{$haversine} AS distance", [$latitude, $longitude, $latitude])
+            ->whereNotNull('latitude')
+            ->whereNotNull('longitude')
+            ->having('distance', '<', $radiusKm)
+            ->orderBy('distance');
+    }
+
+    /**
+     * Scope for recently active workers.
+     */
+    public function scopeRecentlyActive($query, int $hours = 24)
+    {
+        return $query->where('last_active_at', '>=', now()->subHours($hours));
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Actions
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Update worker's last active timestamp.
+     */
+    public function updateLastActive(): void
+    {
+        $this->update(['last_active_at' => now()]);
+    }
+
+    /**
+     * Toggle availability status.
+     */
+    public function toggleAvailability(): bool
+    {
+        $this->is_available = !$this->is_available;
+        $this->save();
+
+        return $this->is_available;
+    }
+
+    /**
+     * Add a rating.
+     */
+    public function addRating(float $newRating): void
+    {
+        $totalRating = ($this->rating * $this->rating_count) + $newRating;
+        $this->rating_count += 1;
+        $this->rating = round($totalRating / $this->rating_count, 2);
+        $this->save();
+    }
+
+    /**
+     * Record a completed job.
+     */
+    public function recordCompletedJob(float $earnings): void
+    {
+        $this->jobs_completed += 1;
+        $this->total_earnings += $earnings;
+        $this->save();
+    }
+
+    /**
+     * Get the distance from a location in kilometers.
+     */
+    public function distanceFrom(float $latitude, float $longitude): ?float
+    {
+        if (!$this->has_location) {
+            return null;
         }
 
-        return [
-            'id' => 'worker_' . $this->id,
-            'title' => substr($this->name, 0, 24),
-            'description' => substr($description, 0, 72),
-        ];
-    }
+        $earthRadius = 6371; // km
 
-    /**
-     * Convert to summary format.
-     */
-    public function toSummary(): array
-    {
-        return [
-            'id' => $this->id,
-            'name' => $this->name,
-            'photo_url' => $this->photo_url,
-            'rating' => $this->short_rating,
-            'jobs_completed' => $this->jobs_completed,
-            'vehicle' => $this->vehicle_display,
-            'is_verified' => $this->is_verified,
-        ];
+        $latDelta = deg2rad($latitude - $this->latitude);
+        $lonDelta = deg2rad($longitude - $this->longitude);
+
+        $a = sin($latDelta / 2) * sin($latDelta / 2) +
+            cos(deg2rad($this->latitude)) * cos(deg2rad($latitude)) *
+            sin($lonDelta / 2) * sin($lonDelta / 2);
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return round($earthRadius * $c, 2);
     }
 }

@@ -461,7 +461,7 @@ class JobWorkerRegistrationFlowHandler extends AbstractFlowHandler
                     $count = count($currentTypes);
                     $this->sendButtons(
                         $session->phone,
-                        "{$emoji} *{$category->name_ml}* {$action}\n\n" .
+                        "{$emoji} *{$category->name_en}* {$action}\n\n" .
                         "📋 Selected: *{$count}* job types\n\n" .
                         "Select more or tap Done when finished.",
                         [

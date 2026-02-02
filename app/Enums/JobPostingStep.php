@@ -7,16 +7,20 @@ namespace App\Enums;
  *
  * @srs-ref Section 3.3 - Job Posting Flow
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
+ * 
+ * UPDATED: Added ENTER_CUSTOM_CATEGORY step for flexible "Other" category
  */
 enum JobPostingStep: string
 {
     case SELECT_CATEGORY = 'select_category';
+    case ENTER_CUSTOM_CATEGORY = 'enter_custom_category'; // NEW: For "Other" category
     case ENTER_TITLE = 'enter_title';
     case ENTER_DESCRIPTION = 'enter_description';
     case ENTER_LOCATION = 'enter_location';
     case REQUEST_LOCATION_COORDS = 'request_location_coords';
     case SELECT_DATE = 'select_date';
     case ENTER_TIME = 'enter_time';
+    case ENTER_CUSTOM_TIME = 'enter_custom_time'; // NEW: For custom time input
     case SELECT_DURATION = 'select_duration';
     case SUGGEST_PAY = 'suggest_pay';
     case ENTER_PAY = 'enter_pay';
@@ -31,12 +35,14 @@ enum JobPostingStep: string
     {
         return match ($this) {
             self::SELECT_CATEGORY => 'Select Category',
+            self::ENTER_CUSTOM_CATEGORY => 'Custom Job Type',
             self::ENTER_TITLE => 'Job Title',
             self::ENTER_DESCRIPTION => 'Description',
             self::ENTER_LOCATION => 'Location Name',
             self::REQUEST_LOCATION_COORDS => 'Share Location',
             self::SELECT_DATE => 'Select Date',
-            self::ENTER_TIME => 'Enter Time',
+            self::ENTER_TIME => 'Select Time',
+            self::ENTER_CUSTOM_TIME => 'Enter Custom Time',
             self::SELECT_DURATION => 'Duration',
             self::SUGGEST_PAY => 'Suggested Pay',
             self::ENTER_PAY => 'Enter Pay Amount',
@@ -53,18 +59,20 @@ enum JobPostingStep: string
     {
         return match ($this) {
             self::SELECT_CATEGORY => 1,
-            self::ENTER_TITLE => 2,
-            self::ENTER_DESCRIPTION => 3,
-            self::ENTER_LOCATION => 4,
-            self::REQUEST_LOCATION_COORDS => 5,
-            self::SELECT_DATE => 6,
-            self::ENTER_TIME => 7,
-            self::SELECT_DURATION => 8,
-            self::SUGGEST_PAY => 9,
-            self::ENTER_PAY => 10,
-            self::ENTER_INSTRUCTIONS => 11,
-            self::CONFIRM_POST => 12,
-            self::COMPLETE => 13,
+            self::ENTER_CUSTOM_CATEGORY => 2,
+            self::ENTER_TITLE => 3,
+            self::ENTER_DESCRIPTION => 4,
+            self::ENTER_LOCATION => 5,
+            self::REQUEST_LOCATION_COORDS => 6,
+            self::SELECT_DATE => 7,
+            self::ENTER_TIME => 8,
+            self::ENTER_CUSTOM_TIME => 8,
+            self::SELECT_DURATION => 9,
+            self::SUGGEST_PAY => 10,
+            self::ENTER_PAY => 11,
+            self::ENTER_INSTRUCTIONS => 12,
+            self::CONFIRM_POST => 13,
+            self::COMPLETE => 14,
         };
     }
 
@@ -74,17 +82,19 @@ enum JobPostingStep: string
     public function progress(): int
     {
         return match ($this) {
-            self::SELECT_CATEGORY => 8,
-            self::ENTER_TITLE => 16,
-            self::ENTER_DESCRIPTION => 24,
-            self::ENTER_LOCATION => 32,
-            self::REQUEST_LOCATION_COORDS => 40,
-            self::SELECT_DATE => 48,
+            self::SELECT_CATEGORY => 7,
+            self::ENTER_CUSTOM_CATEGORY => 14,
+            self::ENTER_TITLE => 21,
+            self::ENTER_DESCRIPTION => 28,
+            self::ENTER_LOCATION => 35,
+            self::REQUEST_LOCATION_COORDS => 42,
+            self::SELECT_DATE => 49,
             self::ENTER_TIME => 56,
-            self::SELECT_DURATION => 64,
-            self::SUGGEST_PAY => 72,
-            self::ENTER_PAY => 80,
-            self::ENTER_INSTRUCTIONS => 88,
+            self::ENTER_CUSTOM_TIME => 56,
+            self::SELECT_DURATION => 63,
+            self::SUGGEST_PAY => 70,
+            self::ENTER_PAY => 77,
+            self::ENTER_INSTRUCTIONS => 84,
             self::CONFIRM_POST => 95,
             self::COMPLETE => 100,
         };
@@ -97,12 +107,14 @@ enum JobPostingStep: string
     {
         return match ($this) {
             self::SELECT_CATEGORY => "📋 *Post a Job*\n\nStep 1: Select the type of job you need help with\n\nഎന്ത് പണിക്കാണ് സഹായം വേണ്ടത്?",
+            self::ENTER_CUSTOM_CATEGORY => "✏️ *Custom Job Type*\n\nYou selected 'Other'. Please describe what type of work you need:\n\n(e.g., Coconut climber, Wood cutter, Electrician)\n\nഎന്ത് തരത്തിലുള്ള പണിയാണ് വേണ്ടത്?",
             self::ENTER_TITLE => "✏️ *Job Title*\n\nStep 2: Give your job a short title (e.g., 'Stand in queue at RTO')\n\nപണിക്ക് ഒരു ചെറിയ പേര് നൽകുക",
             self::ENTER_DESCRIPTION => "📝 *Description*\n\nStep 3: Describe what needs to be done (optional)\n\nചെയ്യേണ്ട കാര്യം വിവരിക്കുക",
             self::ENTER_LOCATION => "📍 *Location*\n\nStep 4: Where should the worker come? (e.g., 'Collectorate, Ernakulam')\n\nപണിക്കാരൻ എവിടെ വരണം?",
             self::REQUEST_LOCATION_COORDS => "🗺️ *Share Location*\n\nStep 5: Please share the exact location for the job\n\nകൃത്യമായ ലൊക്കേഷൻ ഷെയർ ചെയ്യുക",
             self::SELECT_DATE => "📅 *Job Date*\n\nStep 6: When do you need this done?\n\nഏത് ദിവസം വേണം?",
-            self::ENTER_TIME => "⏰ *Job Time*\n\nStep 7: What time should the worker arrive? (e.g., '9:00 AM')\n\nഎത്ര മണിക്ക് എത്തണം?",
+            self::ENTER_TIME => "⏰ *Job Time*\n\nStep 7: What time should the worker arrive?\n\nഎത്ര മണിക്ക് എത്തണം?",
+            self::ENTER_CUSTOM_TIME => "⏰ *Enter Custom Time*\n\nPlease enter your preferred time (e.g., 9:00 AM, 2:30 PM, 14:30)\n\nനിങ്ങൾ ഇഷ്ടപ്പെടുന്ന സമയം നൽകുക",
             self::SELECT_DURATION => "⏱️ *Duration*\n\nStep 8: How long will this job take approximately?\n\nഏകദേശം എത്ര സമയം എടുക്കും?",
             self::SUGGEST_PAY => "💰 *Suggested Pay*\n\nBased on the job type, typical pay is ₹{min}-₹{max}\n\nDo you want to use the suggested amount?",
             self::ENTER_PAY => "💵 *Payment Amount*\n\nStep 9: How much will you pay? (in ₹)\n\nഎത്ര രൂപ കൊടുക്കും?",
@@ -114,17 +126,22 @@ enum JobPostingStep: string
 
     /**
      * Get the next step.
+     * 
+     * NOTE: ENTER_CUSTOM_CATEGORY is conditionally inserted after SELECT_CATEGORY
+     * only when "Other" category is selected. The handler manages this logic.
      */
     public function next(): ?self
     {
         return match ($this) {
-            self::SELECT_CATEGORY => self::ENTER_TITLE,
+            self::SELECT_CATEGORY => self::ENTER_TITLE, // Default; handler overrides for "Other"
+            self::ENTER_CUSTOM_CATEGORY => self::ENTER_TITLE,
             self::ENTER_TITLE => self::ENTER_DESCRIPTION,
             self::ENTER_DESCRIPTION => self::ENTER_LOCATION,
             self::ENTER_LOCATION => self::REQUEST_LOCATION_COORDS,
             self::REQUEST_LOCATION_COORDS => self::SELECT_DATE,
             self::SELECT_DATE => self::ENTER_TIME,
             self::ENTER_TIME => self::SELECT_DURATION,
+            self::ENTER_CUSTOM_TIME => self::SELECT_DURATION,
             self::SELECT_DURATION => self::SUGGEST_PAY,
             self::SUGGEST_PAY => self::ENTER_PAY,
             self::ENTER_PAY => self::ENTER_INSTRUCTIONS,
@@ -141,12 +158,14 @@ enum JobPostingStep: string
     {
         return match ($this) {
             self::SELECT_CATEGORY => null,
-            self::ENTER_TITLE => self::SELECT_CATEGORY,
+            self::ENTER_CUSTOM_CATEGORY => self::SELECT_CATEGORY,
+            self::ENTER_TITLE => self::SELECT_CATEGORY, // Or ENTER_CUSTOM_CATEGORY if "Other"
             self::ENTER_DESCRIPTION => self::ENTER_TITLE,
             self::ENTER_LOCATION => self::ENTER_DESCRIPTION,
             self::REQUEST_LOCATION_COORDS => self::ENTER_LOCATION,
             self::SELECT_DATE => self::REQUEST_LOCATION_COORDS,
             self::ENTER_TIME => self::SELECT_DATE,
+            self::ENTER_CUSTOM_TIME => self::ENTER_TIME,
             self::SELECT_DURATION => self::ENTER_TIME,
             self::SUGGEST_PAY => self::SELECT_DURATION,
             self::ENTER_PAY => self::SUGGEST_PAY,
@@ -171,12 +190,14 @@ enum JobPostingStep: string
     {
         return match ($this) {
             self::SELECT_CATEGORY => 'list',
+            self::ENTER_CUSTOM_CATEGORY => 'text',
             self::ENTER_TITLE => 'text',
             self::ENTER_DESCRIPTION => 'text',
             self::ENTER_LOCATION => 'text',
             self::REQUEST_LOCATION_COORDS => 'location',
             self::SELECT_DATE => 'button',
-            self::ENTER_TIME => 'text',
+            self::ENTER_TIME => 'list',
+            self::ENTER_CUSTOM_TIME => 'text',
             self::SELECT_DURATION => 'button',
             self::SUGGEST_PAY => 'button',
             self::ENTER_PAY => 'text',

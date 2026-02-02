@@ -7,6 +7,8 @@ namespace App\Enums;
  *
  * @srs-ref Section 7.1 High-Level Architecture - Flow Controllers
  * @srs-ref Section 3 - Jobs Marketplace Module (Njaanum Panikkar)
+ * 
+ * UPDATED: JOB_WORKER_MENU and JOB_POSTER_MENU now point to dedicated handlers
  */
 enum FlowType: string
 {
@@ -141,8 +143,7 @@ enum FlowType: string
     /**
      * Get the handler class name.
      *
-     * NOTE: JOB_BROWSE, JOB_WORKER_MENU, JOB_POSTER_MENU, JOB_APPLICATIONS
-     * currently reuse existing handlers as dedicated handlers are not yet implemented.
+     * UPDATED: JOB_WORKER_MENU and JOB_POSTER_MENU now use dedicated handlers.
      */
     public function handlerClass(): string
     {
@@ -167,15 +168,13 @@ enum FlowType: string
             self::FISH_MANAGE_SUBSCRIPTION => \App\Services\Flow\Handlers\Fish\FishManageSubscriptionHandler::class,
             self::FISH_SELLER_MENU => \App\Services\Flow\Handlers\Fish\FishSellerMenuHandler::class,
             // Job flows - in Jobs subdirectory
-            // NOTE: Existing handlers only - some flows reuse handlers
             self::JOB_WORKER_REGISTER => \App\Services\Flow\Handlers\Jobs\JobWorkerRegistrationFlowHandler::class,
             self::JOB_POST => \App\Services\Flow\Handlers\Jobs\JobPostFlowHandler::class,
             // JOB_BROWSE uses JobApplicationFlowHandler to browse and view jobs
             self::JOB_BROWSE => \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler::class,
-            // JOB_WORKER_MENU uses JobExecutionFlowHandler for worker dashboard
-            self::JOB_WORKER_MENU => \App\Services\Flow\Handlers\Jobs\JobExecutionFlowHandler::class,
-            // JOB_POSTER_MENU uses JobSelectionFlowHandler for poster dashboard
-            self::JOB_POSTER_MENU => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
+            // UPDATED: Dedicated handlers for worker and poster menus
+            self::JOB_WORKER_MENU => \App\Services\Flow\Handlers\Jobs\JobWorkerMenuFlowHandler::class,
+            self::JOB_POSTER_MENU => \App\Services\Flow\Handlers\Jobs\JobPosterMenuFlowHandler::class,
             // JOB_APPLICATIONS uses JobSelectionFlowHandler to view applications
             self::JOB_APPLICATIONS => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
             self::JOB_APPLICATION => \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler::class,
@@ -311,6 +310,7 @@ enum FlowType: string
             self::JOB_WORKER_REGISTER,
             self::JOB_BROWSE,
             self::JOB_POST,
+            self::JOB_POSTER_MENU, // Added: Anyone can view their posted jobs
         ]);
     }
 
@@ -343,8 +343,9 @@ enum FlowType: string
             self::JOB_WORKER_REGISTER => JobWorkerRegistrationStep::ASK_NAME->value,
             self::JOB_POST => JobPostingStep::SELECT_CATEGORY->value,
             self::JOB_BROWSE => 'show_nearby',
-            self::JOB_WORKER_MENU => 'show_menu',
-            self::JOB_POSTER_MENU => 'show_menu',
+            // UPDATED: Dedicated initial steps for menu handlers
+            self::JOB_WORKER_MENU => 'worker_menu',
+            self::JOB_POSTER_MENU => 'poster_menu',
             self::JOB_APPLICATIONS => 'show_applications',
             self::JOB_APPLICATION => JobApplicationStep::VIEW_DETAILS->value,
             self::JOB_SELECTION => 'view_applications',
@@ -495,8 +496,8 @@ enum FlowType: string
             ],
             self::JOB_POSTER_MENU => [
                 'id' => 'menu_job_poster_dashboard',
-                'title' => '📋 My Tasks',
-                'description' => 'View your posted tasks',
+                'title' => '📋 My Posted Tasks',
+                'description' => 'View and manage your posted tasks',
             ],
             self::JOB_APPLICATIONS => [
                 'id' => 'menu_job_applications',
@@ -553,8 +554,8 @@ enum FlowType: string
             self::JOB_WORKER_REGISTER => 30,
             self::JOB_POST => 30,
             self::JOB_BROWSE => 30,
-            self::JOB_WORKER_MENU => 15,
-            self::JOB_POSTER_MENU => 15,
+            self::JOB_WORKER_MENU => 30, // Extended for profile editing
+            self::JOB_POSTER_MENU => 30, // Extended for job management
             self::JOB_APPLICATIONS => 30,
             self::JOB_APPLICATION => 15,
             self::JOB_SELECTION => 30,
@@ -590,10 +591,10 @@ enum FlowType: string
             self::FISH_SELLER_MENU => 1,
             // Job flows
             self::JOB_WORKER_REGISTER => 7,
-            self::JOB_POST => 12,
+            self::JOB_POST => 13, // Updated: +1 for custom category step
             self::JOB_BROWSE => 3,
-            self::JOB_WORKER_MENU => 1,
-            self::JOB_POSTER_MENU => 1,
+            self::JOB_WORKER_MENU => 4, // Updated: profile view + edit
+            self::JOB_POSTER_MENU => 4, // Updated: job list + detail + actions
             self::JOB_APPLICATIONS => 3,
             self::JOB_APPLICATION => 5,
             self::JOB_SELECTION => 4,
@@ -631,7 +632,7 @@ enum FlowType: string
             self::JOB_WORKER_REGISTER => 'Register to become a job worker',
             self::JOB_POST => 'Post a task for workers',
             self::JOB_BROWSE => 'Browse available tasks nearby',
-            self::JOB_WORKER_MENU => 'Worker dashboard and options',
+            self::JOB_WORKER_MENU => 'View and edit your worker profile',
             self::JOB_POSTER_MENU => 'View and manage your posted tasks',
             self::JOB_APPLICATIONS => 'View and manage worker applications',
             self::JOB_APPLICATION => 'Apply for a job as a worker',
@@ -734,6 +735,7 @@ enum FlowType: string
             self::FISH_SUBSCRIBE->menuItem(),
             self::JOB_BROWSE->menuItem(),
             self::JOB_POST->menuItem(),
+            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
             self::SETTINGS->menuItem(),
@@ -755,6 +757,7 @@ enum FlowType: string
             self::FISH_BROWSE->menuItem(),
             self::JOB_BROWSE->menuItem(),
             self::JOB_POST->menuItem(),
+            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
             self::SETTINGS->menuItem(),
@@ -775,6 +778,7 @@ enum FlowType: string
             self::FISH_BROWSE->menuItem(),
             self::JOB_BROWSE->menuItem(),
             self::JOB_POST->menuItem(),
+            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),
             self::SETTINGS->menuItem(),
@@ -793,6 +797,7 @@ enum FlowType: string
             self::JOB_BROWSE->menuItem(),
             self::JOB_WORKER_MENU->menuItem(),
             self::JOB_POST->menuItem(),
+            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
             self::FISH_BROWSE->menuItem(),
             self::AGREEMENT_CREATE->menuItem(),
             self::AGREEMENT_LIST->menuItem(),

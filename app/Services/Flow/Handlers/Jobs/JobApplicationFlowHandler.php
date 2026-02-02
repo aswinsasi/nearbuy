@@ -154,7 +154,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
             $rows[] = [
                 'id' => 'view_job_' . $job->id,
-                'title' => mb_substr($job->category->icon . ' ' . $job->title, 0, 24),
+                'title' => mb_substr(($job->category?->icon ?? '📋') . ' ' . $job->title, 0, 24),
                 'description' => mb_substr($job->pay_display . $distanceText . ' • ' . $job->formatted_date, 0, 72),
             ];
         }
@@ -355,6 +355,27 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
             return false;
         }
 
+        // Handle Worker Menu navigation
+        if ($selectionId === 'job_worker_menu') {
+            $this->clearTemp($session);
+            $this->flowRouter->startFlow($session, FlowType::JOB_WORKER_MENU);
+            return true;
+        }
+
+        // Handle Job Browse navigation
+        if ($selectionId === 'job_browse' || $selectionId === 'browse_jobs' || $selectionId === 'find_jobs') {
+            $this->clearTemp($session);
+            $this->flowRouter->startFlow($session, FlowType::JOB_BROWSE);
+            return true;
+        }
+
+        // Handle Job Poster Menu navigation
+        if ($selectionId === 'job_poster_menu' || $selectionId === 'my_jobs') {
+            $this->clearTemp($session);
+            $this->flowRouter->startFlow($session, FlowType::JOB_POSTER_MENU);
+            return true;
+        }
+
         // Handle "Register as Worker" button
         if ($selectionId === 'start_worker_registration') {
             $this->flowRouter->startFlow($session, FlowType::JOB_WORKER_REGISTER);
@@ -429,7 +450,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         }
 
         // Verify user is the poster
-        if ($job->poster_id !== $user?->id) {
+        if ($job->poster_user_id !== $user?->id) {
             $this->sendTextWithMenu($session->phone, "❌ You can only view applications for your own jobs.");
             return;
         }
@@ -459,11 +480,12 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         $rows = [];
         foreach ($applications as $index => $app) {
             $worker = $app->worker;
+            $statusValue = is_object($app->status) ? $app->status->value : $app->status;
             $amount = $app->proposed_amount 
-                ? '₹' . number_format($app->proposed_amount)
-                : '₹' . number_format($job->pay_amount);
+                ? '₹' . number_format((float) $app->proposed_amount)
+                : '₹' . number_format((float) $job->pay_amount);
             
-            $status = match($app->status) {
+            $status = match($statusValue) {
                 'pending' => '🟡',
                 'accepted' => '✅',
                 'rejected' => '❌',
@@ -471,17 +493,22 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
                 default => '🔵',
             };
 
+            $workerName = $worker->name ?? 'Worker';
+            $rating = $worker->rating ? "⭐{$worker->rating}" : '🆕';
+
             $rows[] = [
                 'id' => 'view_applicant_' . $app->id,
-                'title' => mb_substr("{$status} {$worker->name}", 0, 24),
-                'description' => mb_substr("{$worker->short_rating} • {$amount}", 0, 72),
+                'title' => mb_substr("{$status} {$workerName}", 0, 24),
+                'description' => mb_substr("{$rating} • {$amount}", 0, 72),
             ];
         }
 
         $count = $applications->count();
+        $categoryIcon = $job->category?->icon ?? '📋';
+        
         $this->sendList(
             $session->phone,
-            "👥 *Applications for:*\n{$job->category->icon} *{$job->title}*\n\n" .
+            "👥 *Applications for:*\n{$categoryIcon} *{$job->title}*\n\n" .
             "You have *{$count}* application(s).\n" .
             "{$count} അപേക്ഷകൾ ലഭിച്ചു.\n\n" .
             "Select an applicant to view details and accept/reject.",
@@ -513,31 +540,33 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         }
 
         // Verify user is the poster
-        if ($application->jobPost->poster_id !== $user?->id) {
+        if ($application->jobPost->poster_user_id !== $user?->id) {
             $this->sendTextWithMenu($session->phone, "❌ You can only view applications for your own jobs.");
             return;
         }
 
         $worker = $application->worker;
         $job = $application->jobPost;
+        $statusValue = is_object($application->status) ? $application->status->value : $application->status;
 
         $amount = $application->proposed_amount 
-            ? '₹' . number_format($application->proposed_amount) . ' (proposed)'
-            : '₹' . number_format($job->pay_amount);
+            ? '₹' . number_format((float) $application->proposed_amount) . ' (proposed)'
+            : '₹' . number_format((float) $job->pay_amount);
 
         $messageText = $application->message 
             ? "\n\n✉️ *Message:*\n_{$application->message}_"
             : "";
 
-        $vehicleText = $worker->has_vehicle 
-            ? "🚗 {$worker->vehicle_display}"
-            : "🚶 No vehicle";
+        $rating = $worker->rating 
+            ? "⭐ {$worker->rating}/5" 
+            : "🆕 New worker";
+
+        $completedJobs = $worker->jobs_completed ?? 0;
 
         $message = "👤 *APPLICANT DETAILS*\n\n" .
             "👷 *{$worker->name}*\n" .
-            "⭐ {$worker->short_rating}\n" .
-            "✅ {$worker->jobs_completed} jobs completed\n" .
-            "{$vehicleText}\n\n" .
+            "{$rating}\n" .
+            "✅ {$completedJobs} jobs completed\n\n" .
             "💰 *Amount:* {$amount}" .
             $messageText . "\n\n" .
             "📋 *For:* {$job->title}";
@@ -548,7 +577,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         }
 
         // Show accept/reject buttons only if pending
-        if ($application->status === 'pending') {
+        if ($statusValue === 'pending') {
             $this->sendButtons(
                 $session->phone,
                 $message,
@@ -560,11 +589,11 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
                 '👤 Applicant'
             );
         } else {
-            $statusText = match($application->status) {
+            $statusText = match($statusValue) {
                 'accepted' => '✅ ACCEPTED',
                 'rejected' => '❌ REJECTED',
                 'withdrawn' => '⬜ WITHDRAWN',
-                default => $application->status,
+                default => strtoupper($statusValue),
             };
 
             $this->sendButtons(
@@ -593,12 +622,14 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         }
 
         // Verify user is the poster
-        if ($application->jobPost->poster_id !== $user?->id) {
+        if ($application->jobPost->poster_user_id !== $user?->id) {
             $this->sendTextWithMenu($session->phone, "❌ You can only accept applications for your own jobs.");
             return;
         }
 
-        if ($application->status !== 'pending') {
+        $statusValue = is_object($application->status) ? $application->status->value : $application->status;
+
+        if ($statusValue !== 'pending') {
             $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
             return;
         }
@@ -612,11 +643,11 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
             // Notify poster
             $this->sendButtons(
                 $session->phone,
-                "✅ *Worker Accepted!*\n\n" .
+                "✅ *Worker Accepted!*\n*പണിക്കാരനെ സ്വീകരിച്ചു!*\n\n" .
                 "You've accepted *{$worker->name}* for:\n" .
                 "📋 {$job->title}\n\n" .
                 "The worker has been notified and will contact you soon.\n\n" .
-                "📞 Worker's phone will be shared when they confirm.",
+                "📞 Worker's phone: " . ($worker->user && $worker->user->phone ? $worker->user->phone : 'Will be shared'),
                 [
                     ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 View Others'],
                     ['id' => 'main_menu', 'title' => '🏠 Menu'],
@@ -629,12 +660,14 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
             if ($workerUser?->phone) {
                 $this->sendButtons(
                     $workerUser->phone,
-                    "🎉 *Good News!*\n\n" .
-                    "Your application for *{$job->title}* has been ACCEPTED!\n\n" .
+                    "🎉 *Good News!*\n*നല്ല വാർത്ത!*\n\n" .
+                    "Your application for *{$job->title}* has been ACCEPTED!\n" .
+                    "നിങ്ങളുടെ അപേക്ഷ സ്വീകരിച്ചു!\n\n" .
                     "📍 {$job->location_display}\n" .
                     "📅 {$job->formatted_date_time}\n" .
                     "💰 {$job->pay_display}\n\n" .
-                    "Please contact the task giver to confirm details.",
+                    "Please contact the task giver to confirm details.\n" .
+                    "📞 Poster Phone: " . ($job->poster->phone ?? 'Not available'),
                     [
                         ['id' => 'view_job_' . $job->id, 'title' => '📋 View Job'],
                         ['id' => 'main_menu', 'title' => '🏠 Menu'],
@@ -655,7 +688,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
                 'application_id' => $applicationId,
             ]);
 
-            $this->sendTextWithMenu($session->phone, "❌ Failed to accept application. Please try again.");
+            $this->sendTextWithMenu($session->phone, "❌ Failed to accept application: " . $e->getMessage());
         }
     }
 
@@ -673,12 +706,14 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         }
 
         // Verify user is the poster
-        if ($application->jobPost->poster_id !== $user?->id) {
+        if ($application->jobPost->poster_user_id !== $user?->id) {
             $this->sendTextWithMenu($session->phone, "❌ You can only reject applications for your own jobs.");
             return;
         }
 
-        if ($application->status !== 'pending') {
+        $statusValue = is_object($application->status) ? $application->status->value : $application->status;
+
+        if ($statusValue !== 'pending') {
             $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
             return;
         }
@@ -778,7 +813,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         // Calculate distance if both have coordinates
         $distanceKm = 0;
         if ($job->latitude && $job->longitude && $worker?->latitude && $worker?->longitude) {
-            $distanceKm = $job->getDistanceFrom($worker->latitude, $worker->longitude) ?? 0;
+            $distanceKm = $job->distanceFrom($worker->latitude, $worker->longitude) ?? 0;
         }
 
         // Build detailed job view
@@ -800,7 +835,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
         $message = "📋 *JOB DETAILS*\n" .
             "*ജോലി വിവരങ്ങൾ*\n\n" .
-            "{$job->category->icon} *{$job->title}*\n\n" .
+            ($job->category?->icon ?? '📋') . " *{$job->title}*\n\n" .
             "📍 *Location:* {$job->location_display}\n" .
             "🗺️ Distance: {$distance} away\n" .
             "📅 *Date:* {$job->formatted_date_time}\n" .
@@ -960,7 +995,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
     protected function promptProposeAmount(ConversationSession $session): void
     {
-        $postedPay = $this->getTemp($session, 'job_pay', 0);
+        $postedPay = (float) $this->getTemp($session, 'job_pay', 0);
         $payDisplay = '₹' . number_format($postedPay);
 
         $this->sendButtons(
@@ -1035,12 +1070,12 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
     protected function promptConfirmApplication(ConversationSession $session): void
     {
         $jobTitle = $this->getTemp($session, 'job_title', 'Job');
-        $postedPay = $this->getTemp($session, 'job_pay', 0);
+        $postedPay = (float) $this->getTemp($session, 'job_pay', 0);
         $applicationMessage = $this->getTemp($session, 'application_message');
         $proposedAmount = $this->getTemp($session, 'proposed_amount');
 
         $payDisplay = $proposedAmount
-            ? '₹' . number_format($proposedAmount) . ' (proposed)'
+            ? '₹' . number_format((float) $proposedAmount) . ' (proposed)'
             : '₹' . number_format($postedPay);
 
         $messageDisplay = $applicationMessage ?: '(No message)';
@@ -1181,7 +1216,8 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         $selectionId = $this->getSelectionId($message);
 
         // Handle browse more jobs
-        if ($selectionId === 'browse_jobs') {
+        if ($selectionId === 'job_browse' || $selectionId === 'browse_jobs') {
+            $this->clearTemp($session);
             $this->flowRouter->startFlow($session, FlowType::JOB_BROWSE);
             return;
         }

@@ -9,18 +9,18 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Str;
 
 /**
- * Job Post Model - Posted jobs and tasks.
+ * Job Post model for the Njaanum Panikkar (Jobs Marketplace) module.
  *
  * @property int $id
+ * @property string $job_number
  * @property int $poster_user_id
  * @property int $job_category_id
- * @property string $job_number
+ * @property string|null $custom_category_text Custom job type when "Other" category is selected
  * @property string $title
  * @property string|null $description
+ * @property string|null $special_instructions
  * @property string|null $location_name
  * @property float|null $latitude
  * @property float|null $longitude
@@ -28,17 +28,25 @@ use Illuminate\Support\Str;
  * @property string|null $job_time
  * @property float|null $duration_hours
  * @property float $pay_amount
- * @property string|null $special_instructions
- * @property JobStatus $status
+ * @property string $status
  * @property int|null $assigned_worker_id
  * @property int $applications_count
  * @property \Carbon\Carbon|null $posted_at
  * @property \Carbon\Carbon|null $assigned_at
  * @property \Carbon\Carbon|null $started_at
  * @property \Carbon\Carbon|null $completed_at
+ * @property \Carbon\Carbon|null $cancelled_at
+ * @property string|null $cancellation_reason
  * @property \Carbon\Carbon|null $expires_at
+ * @property \Carbon\Carbon $created_at
+ * @property \Carbon\Carbon $updated_at
  *
- * @srs-ref Section 3.3 - Job Posts
+ * @property-read User $poster
+ * @property-read JobCategory|null $category
+ * @property-read JobWorker|null $assignedWorker
+ * @property-read \Illuminate\Database\Eloquent\Collection|JobApplication[] $applications
+ *
+ * @srs-ref Section 3.3 - Job Posting
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobPost extends Model
@@ -46,14 +54,21 @@ class JobPost extends Model
     use HasFactory, SoftDeletes;
 
     /**
+     * The table associated with the model.
+     */
+    protected $table = 'job_posts';
+
+    /**
      * The attributes that are mass assignable.
      */
     protected $fillable = [
+        'job_number',
         'poster_user_id',
         'job_category_id',
-        'job_number',
+        'custom_category_text',
         'title',
         'description',
+        'special_instructions',
         'location_name',
         'latitude',
         'longitude',
@@ -61,7 +76,6 @@ class JobPost extends Model
         'job_time',
         'duration_hours',
         'pay_amount',
-        'special_instructions',
         'status',
         'assigned_worker_id',
         'applications_count',
@@ -69,6 +83,8 @@ class JobPost extends Model
         'assigned_at',
         'started_at',
         'completed_at',
+        'cancelled_at',
+        'cancellation_reason',
         'expires_at',
     ];
 
@@ -76,23 +92,55 @@ class JobPost extends Model
      * The attributes that should be cast.
      */
     protected $casts = [
-        'status' => JobStatus::class,
         'job_date' => 'date',
+        'pay_amount' => 'decimal:2',
+        'duration_hours' => 'decimal:1',
         'latitude' => 'decimal:8',
         'longitude' => 'decimal:8',
-        'duration_hours' => 'decimal:1',
-        'pay_amount' => 'decimal:2',
+        'applications_count' => 'integer',
         'posted_at' => 'datetime',
         'assigned_at' => 'datetime',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
+        'cancelled_at' => 'datetime',
         'expires_at' => 'datetime',
+        'status' => JobStatus::class,
     ];
 
     /**
-     * Default expiry hours for open jobs.
+     * Boot the model.
      */
-    public const DEFAULT_EXPIRY_HOURS = 48;
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function (JobPost $job) {
+            if (empty($job->job_number)) {
+                $job->job_number = self::generateJobNumber();
+            }
+            if (empty($job->status)) {
+                $job->status = 'open';
+            }
+            if (empty($job->expires_at)) {
+                $job->expires_at = now()->addDays(7);
+            }
+            if (empty($job->posted_at) && $job->status === 'open') {
+                $job->posted_at = now();
+            }
+        });
+    }
+
+    /**
+     * Generate a unique job number.
+     */
+    public static function generateJobNumber(): string
+    {
+        $prefix = 'JP';
+        $date = now()->format('Ymd');
+        $random = strtoupper(substr(uniqid(), -4));
+        
+        return "{$prefix}-{$date}-{$random}";
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -129,23 +177,149 @@ class JobPost extends Model
      */
     public function applications(): HasMany
     {
-        return $this->hasMany(JobApplication::class);
+        return $this->hasMany(JobApplication::class, 'job_post_id');
     }
 
     /**
-     * Get pending applications.
+     * Get the accepted application.
      */
-    public function pendingApplications(): HasMany
+    public function acceptedApplication(): HasOne
     {
-        return $this->applications()->where('status', 'pending');
+        return $this->hasOne(JobApplication::class, 'job_post_id')
+            ->where('status', 'accepted');
     }
 
     /**
-     * Get the verification record.
+     * Get the job verification record.
      */
     public function verification(): HasOne
     {
-        return $this->hasOne(JobVerification::class);
+        return $this->hasOne(\App\Models\JobVerification::class, 'job_post_id');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors & Mutators
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get the display name for the job category.
+     * Uses custom_category_text if set, otherwise falls back to category name.
+     */
+    public function getCategoryDisplayNameAttribute(): string
+    {
+        if (!empty($this->custom_category_text)) {
+            return $this->custom_category_text;
+        }
+
+        return $this->category?->name ?? 'Unknown';
+    }
+
+    /**
+     * Check if this job uses a custom category.
+     */
+    public function getIsCustomCategoryAttribute(): bool
+    {
+        return !empty($this->custom_category_text);
+    }
+
+    /**
+     * Get formatted pay amount.
+     */
+    public function getFormattedPayAttribute(): string
+    {
+        return '₹' . number_format($this->pay_amount, 0);
+    }
+
+    /**
+     * Get formatted job date.
+     */
+    public function getFormattedDateAttribute(): string
+    {
+        return $this->job_date?->format('d M Y') ?? 'TBD';
+    }
+    
+    /**
+     * Get formatted duration.
+     */
+    public function getFormattedDurationAttribute(): string
+    {
+        if (!$this->duration_hours) {
+            return 'Not specified';
+        }
+        
+        if ($this->duration_hours < 1) {
+            return (int)($this->duration_hours * 60) . ' minutes';
+        }
+        
+        if ($this->duration_hours == 1) {
+            return '1 hour';
+        }
+        
+        return $this->duration_hours . ' hours';
+    }
+
+    /**
+     * Check if job is open for applications.
+     */
+    public function getIsOpenAttribute(): bool
+    {
+        return $this->status === 'open' && 
+            ($this->expires_at === null || $this->expires_at > now());
+    }
+
+    /**
+     * Check if job is active (open or assigned).
+     */
+    public function getIsActiveAttribute(): bool
+    {
+        return in_array($this->status, ['open', 'assigned', 'in_progress']);
+    }
+
+    /**
+     * Check if job is expired.
+     */
+    public function getIsExpiredAttribute(): bool
+    {
+        return $this->status === 'expired' || 
+            ($this->status === 'open' && $this->expires_at && $this->expires_at <= now());
+    }
+
+    /**
+     * Get pending applications count.
+     */
+    public function getPendingApplicationsCountAttribute(): int
+    {
+        return $this->applications()->where('status', 'pending')->count();
+    }
+
+    /**
+     * Check if job accepts applications.
+     * 
+     * Job accepts applications when:
+     * - Status is 'open'
+     * - Job date is today or in the future
+     * - Not expired (expires_at is null or in the future)
+     */
+    public function getAcceptsApplicationsAttribute(): bool
+    {
+        // Must be open status
+       if ($this->status !== JobStatus::OPEN) {
+            return false;
+        }
+
+        // Job date must be today or future
+        if ($this->job_date && $this->job_date->lt(now()->startOfDay())) {
+            return false;
+        }
+
+        // Check expires_at if set
+        if ($this->expires_at && $this->expires_at->lte(now())) {
+            return false;
+        }
+
+        return true;
     }
 
     /*
@@ -155,375 +329,115 @@ class JobPost extends Model
     */
 
     /**
-     * Scope to filter draft jobs.
+     * Scope for open jobs.
      */
-    public function scopeDraft(Builder $query): Builder
+    public function scopeOpen($query)
     {
-        return $query->where('status', JobStatus::DRAFT);
-    }
-
-    /**
-     * Scope to filter open jobs.
-     */
-    public function scopeOpen(Builder $query): Builder
-    {
-        return $query->where('status', JobStatus::OPEN);
-    }
-
-    /**
-     * Scope to filter assigned jobs.
-     */
-    public function scopeAssigned(Builder $query): Builder
-    {
-        return $query->where('status', JobStatus::ASSIGNED);
-    }
-
-    /**
-     * Scope to filter in-progress jobs.
-     */
-    public function scopeInProgress(Builder $query): Builder
-    {
-        return $query->where('status', JobStatus::IN_PROGRESS);
-    }
-
-    /**
-     * Scope to filter completed jobs.
-     */
-    public function scopeCompleted(Builder $query): Builder
-    {
-        return $query->where('status', JobStatus::COMPLETED);
-    }
-
-    /**
-     * Scope to filter cancelled jobs.
-     */
-    public function scopeCancelled(Builder $query): Builder
-    {
-        return $query->where('status', JobStatus::CANCELLED);
-    }
-
-    /**
-     * Scope to filter expired jobs.
-     */
-    public function scopeExpired(Builder $query): Builder
-    {
-        return $query->where(function ($q) {
-            $q->where('status', JobStatus::EXPIRED)
-                ->orWhere(function ($q2) {
-                    $q2->where('status', JobStatus::OPEN)
-                        ->where('expires_at', '<=', now());
-                });
-        });
-    }
-
-    /**
-     * Scope to filter active jobs (not completed/cancelled/expired).
-     */
-    public function scopeActive(Builder $query): Builder
-    {
-        return $query->whereIn('status', [
-            JobStatus::OPEN,
-            JobStatus::ASSIGNED,
-            JobStatus::IN_PROGRESS,
-        ]);
-    }
-
-    /**
-     * Scope to filter browsable jobs (open and not expired).
-     */
-    public function scopeBrowsable(Builder $query): Builder
-    {
-        return $query->where('status', JobStatus::OPEN)
+        return $query->where('status', 'open')
             ->where(function ($q) {
                 $q->whereNull('expires_at')
-                    ->orWhere('expires_at', '>', now());
+                  ->orWhere('expires_at', '>', now());
             });
     }
 
     /**
-     * Scope to filter by category.
+     * Scope for active jobs.
      */
-    public function scopeForCategory(Builder $query, int $categoryId): Builder
+    public function scopeActive($query)
+    {
+        return $query->whereIn('status', ['open', 'assigned', 'in_progress']);
+    }
+
+    /**
+     * Scope for jobs by poster.
+     */
+    public function scopeByPoster($query, int $posterUserId)
+    {
+        return $query->where('poster_user_id', $posterUserId);
+    }
+
+    /**
+     * Scope for jobs by category.
+     */
+    public function scopeByCategory($query, int $categoryId)
     {
         return $query->where('job_category_id', $categoryId);
     }
 
     /**
-     * Scope to filter jobs for today.
+     * Scope for jobs with custom category.
      */
-    public function scopeToday(Builder $query): Builder
+    public function scopeWithCustomCategory($query)
     {
-        return $query->whereDate('job_date', today());
+        return $query->whereNotNull('custom_category_text');
     }
 
     /**
-     * Scope to filter upcoming jobs.
+     * Scope for nearby jobs.
      */
-    public function scopeUpcoming(Builder $query): Builder
+    public function scopeNearby($query, float $latitude, float $longitude, int $radiusKm = 10)
     {
-        return $query->where('job_date', '>=', today())
-            ->orderBy('job_date')
-            ->orderBy('job_time');
-    }
+        // Haversine formula for distance calculation
+        $haversine = "(6371 * acos(cos(radians(?)) 
+                     * cos(radians(latitude)) 
+                     * cos(radians(longitude) - radians(?)) 
+                     + sin(radians(?)) 
+                     * sin(radians(latitude))))";
 
-    /**
-     * Scope to filter jobs by poster.
-     */
-    public function scopeByPoster(Builder $query, int $userId): Builder
-    {
-        return $query->where('poster_user_id', $userId);
-    }
-
-    /**
-     * Scope to find jobs near a location.
-     */
-    public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
-    {
-        return $query
+        return $query->select('*')
+            ->selectRaw("{$haversine} AS distance", [$latitude, $longitude, $latitude])
             ->whereNotNull('latitude')
             ->whereNotNull('longitude')
-            ->whereRaw(
-                "ST_Distance_Sphere(
-                    POINT(longitude, latitude),
-                    POINT(?, ?)
-                ) <= ?",
-                [$longitude, $latitude, $radiusKm * 1000]
-            );
+            ->having('distance', '<', $radiusKm)
+            ->orderBy('distance');
     }
 
     /**
-     * Scope to select with distance from a point.
+     * Scope for jobs expiring soon.
      */
-    public function scopeWithDistanceFrom(Builder $query, float $latitude, float $longitude): Builder
+    public function scopeExpiringSoon($query, int $hours = 24)
     {
-        return $query->selectRaw(
-            "*, ST_Distance_Sphere(
-                POINT(longitude, latitude),
-                POINT(?, ?)
-            ) / 1000 as distance_km",
-            [$longitude, $latitude]
-        );
-    }
-
-    /**
-     * Scope for browsing jobs.
-     */
-    public function scopeForBrowse(Builder $query): Builder
-    {
-        return $query->with(['poster', 'category'])
-            ->browsable()
-            ->upcoming();
+        return $query->where('status', 'open')
+            ->whereNotNull('expires_at')
+            ->where('expires_at', '<=', now()->addHours($hours))
+            ->where('expires_at', '>', now());
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Accessors
+    | Actions
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get display title with category icon.
+     * Assign a worker to this job.
      */
-    public function getDisplayTitleAttribute(): string
+    public function assignWorker(JobWorker $worker): bool
     {
-        $icon = $this->category?->icon ?? '💼';
-        return $icon . ' ' . $this->title;
-    }
-
-    /**
-     * Get pay display.
-     */
-    public function getPayDisplayAttribute(): string
-    {
-        return '₹' . number_format($this->pay_amount);
-    }
-
-    /**
-     * Get duration display.
-     */
-    public function getDurationDisplayAttribute(): ?string
-    {
-        if (!$this->duration_hours) {
-            return null;
-        }
-
-        $hours = $this->duration_hours;
-        if ($hours < 1) {
-            return (int)($hours * 60) . ' mins';
-        }
-
-        return $hours . ' hrs';
-    }
-
-    /**
-     * Get formatted date time.
-     */
-    public function getFormattedDateTimeAttribute(): string
-    {
-        $date = $this->job_date->format('D, M j');
-
-        if ($this->job_time) {
-            return $date . ' at ' . $this->job_time;
-        }
-
-        return $date;
-    }
-
-    /**
-     * Get location display.
-     */
-    public function getLocationDisplayAttribute(): string
-    {
-        return $this->location_name ?? 'Location to be shared';
-    }
-
-    /**
-     * Get status display.
-     */
-    public function getStatusDisplayAttribute(): string
-    {
-        return $this->status->display();
-    }
-
-    /**
-     * Check if job is expired.
-     */
-    public function getIsExpiredAttribute(): bool
-    {
-        if ($this->status === JobStatus::EXPIRED) {
-            return true;
-        }
-
-        if ($this->expires_at && $this->expires_at <= now()) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if job can be edited.
-     */
-    public function getCanEditAttribute(): bool
-    {
-        return $this->status->canEdit();
-    }
-
-    /**
-     * Check if job can be cancelled.
-     */
-    public function getCanCancelAttribute(): bool
-    {
-        return $this->status->canCancel();
-    }
-
-    /**
-     * Check if job accepts applications.
-     */
-    public function getAcceptsApplicationsAttribute(): bool
-    {
-        return $this->status->acceptsApplications() && !$this->is_expired;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Methods
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Generate unique job number.
-     */
-    public static function generateJobNumber(): string
-    {
-        $date = now()->format('Ymd');
-        $random = strtoupper(Str::random(4));
-        $number = "JP-{$date}-{$random}";
-
-        while (self::where('job_number', $number)->exists()) {
-            $random = strtoupper(Str::random(4));
-            $number = "JP-{$date}-{$random}";
-        }
-
-        return $number;
-    }
-
-    /**
-     * Get distance from a location in km.
-     */
-    public function getDistanceFrom(float $latitude, float $longitude): ?float
-    {
-        if (!$this->latitude || !$this->longitude) {
-            return null;
-        }
-
-        $earthRadius = 6371;
-
-        $latDiff = deg2rad($latitude - $this->latitude);
-        $lngDiff = deg2rad($longitude - $this->longitude);
-
-        $a = sin($latDiff / 2) * sin($latDiff / 2) +
-            cos(deg2rad($this->latitude)) * cos(deg2rad($latitude)) *
-            sin($lngDiff / 2) * sin($lngDiff / 2);
-
-        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
-
-        return round($earthRadius * $c, 2);
-    }
-
-    /**
-     * Publish the job (move from draft to open).
-     */
-    public function publish(): bool
-    {
-        if ($this->status !== JobStatus::DRAFT) {
+        if ($this->status !== 'open') {
             return false;
         }
 
         $this->update([
-            'status' => JobStatus::OPEN,
-            'posted_at' => now(),
-            'expires_at' => now()->addHours(self::DEFAULT_EXPIRY_HOURS),
-        ]);
-
-        return true;
-    }
-
-    /**
-     * Assign job to a worker.
-     */
-    public function assign(JobWorker $worker): bool
-    {
-        if (!$this->status->canTransitionTo(JobStatus::ASSIGNED)) {
-            return false;
-        }
-
-        $this->update([
-            'status' => JobStatus::ASSIGNED,
+            'status' => 'assigned',
             'assigned_worker_id' => $worker->id,
             'assigned_at' => now(),
         ]);
 
-        // Reject all other pending applications
-        $this->applications()
-            ->where('worker_id', '!=', $worker->id)
-            ->where('status', 'pending')
-            ->update(['status' => 'rejected', 'responded_at' => now()]);
-
         return true;
     }
 
     /**
-     * Start the job.
+     * Start the job execution.
      */
     public function start(): bool
     {
-        if (!$this->status->canTransitionTo(JobStatus::IN_PROGRESS)) {
+        if ($this->status !== 'assigned') {
             return false;
         }
 
         $this->update([
-            'status' => JobStatus::IN_PROGRESS,
+            'status' => 'in_progress',
             'started_at' => now(),
         ]);
 
@@ -531,23 +445,18 @@ class JobPost extends Model
     }
 
     /**
-     * Complete the job.
+     * Mark the job as completed.
      */
     public function complete(): bool
     {
-        if (!$this->status->canTransitionTo(JobStatus::COMPLETED)) {
+        if ($this->status !== 'in_progress') {
             return false;
         }
 
         $this->update([
-            'status' => JobStatus::COMPLETED,
+            'status' => 'completed',
             'completed_at' => now(),
         ]);
-
-        // Update worker stats
-        if ($this->assignedWorker) {
-            $this->assignedWorker->incrementJobsCompleted($this->pay_amount);
-        }
 
         return true;
     }
@@ -555,46 +464,154 @@ class JobPost extends Model
     /**
      * Cancel the job.
      */
-    public function cancel(): bool
+    public function cancel(string $reason = null): bool
     {
-        if (!$this->status->canCancel()) {
-            return false;
-        }
-
-        $this->update(['status' => JobStatus::CANCELLED]);
-
-        // Withdraw all pending applications
-        $this->applications()
-            ->where('status', 'pending')
-            ->update(['status' => 'withdrawn']);
-
-        return true;
-    }
-
-    /**
-     * Mark as expired.
-     */
-    public function markExpired(): void
-    {
-        $this->update(['status' => JobStatus::EXPIRED]);
-    }
-
-    /**
-     * Unassign worker (return to open).
-     */
-    public function unassign(): bool
-    {
-        if ($this->status !== JobStatus::ASSIGNED) {
+        if (in_array($this->status, ['completed', 'cancelled'])) {
             return false;
         }
 
         $this->update([
-            'status' => JobStatus::OPEN,
-            'assigned_worker_id' => null,
-            'assigned_at' => null,
+            'status' => 'cancelled',
+            'cancelled_at' => now(),
+            'cancellation_reason' => $reason,
         ]);
 
         return true;
+    }
+
+    /**
+     * Mark the job as expired.
+     */
+    public function markExpired(): bool
+    {
+        if ($this->status !== 'open') {
+            return false;
+        }
+
+        $this->update([
+            'status' => 'expired',
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Repost the job (create a copy with new dates).
+     */
+    public function repost(): JobPost
+    {
+        return self::create([
+            'poster_user_id' => $this->poster_user_id,
+            'job_category_id' => $this->job_category_id,
+            'custom_category_text' => $this->custom_category_text,
+            'title' => $this->title,
+            'description' => $this->description,
+            'special_instructions' => $this->special_instructions,
+            'location_name' => $this->location_name,
+            'latitude' => $this->latitude,
+            'longitude' => $this->longitude,
+            'job_date' => now()->addDay(),
+            'job_time' => $this->job_time,
+            'duration_hours' => $this->duration_hours,
+            'pay_amount' => $this->pay_amount,
+            'status' => 'open',
+            'posted_at' => now(),
+            'expires_at' => now()->addDays(7),
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers
+    |--------------------------------------------------------------------------
+    */
+
+   /**
+     * Get the distance from a location in kilometers.
+     */
+    public function distanceFrom(float|string $latitude, float|string $longitude): ?float
+    {
+        if (!$this->latitude || !$this->longitude) {
+            return null;
+        }
+
+        // Cast to float to handle string values from database
+        $latitude = (float) $latitude;
+        $longitude = (float) $longitude;
+
+        $earthRadius = 6371; // km
+
+        $latDelta = deg2rad($latitude - $this->latitude);
+        $lonDelta = deg2rad($longitude - $this->longitude);
+
+        $a = sin($latDelta / 2) * sin($latDelta / 2) +
+            cos(deg2rad($this->latitude)) * cos(deg2rad($latitude)) *
+            sin($lonDelta / 2) * sin($lonDelta / 2);
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return round($earthRadius * $c, 2);
+    }
+
+    /**
+     * Get formatted distance string.
+     */
+    public function formattedDistanceFrom(float $latitude, float $longitude): string
+    {
+        $distance = $this->distanceFrom($latitude, $longitude);
+
+        if ($distance === null) {
+            return 'Unknown distance';
+        }
+
+        if ($distance < 1) {
+            return round($distance * 1000) . ' m';
+        }
+
+        return round($distance, 1) . ' km';
+    }
+
+    /**
+     * Get location display string.
+     */
+    public function getLocationDisplayAttribute(): string
+    {
+        return $this->location_name ?? 'Location not specified';
+    }
+
+    /**
+     * Get formatted date and time display.
+     */
+    public function getFormattedDateTimeAttribute(): string
+    {
+        $date = $this->job_date?->format('d M Y') ?? 'TBD';
+        
+        if ($this->job_time) {
+            try {
+                $time = \Carbon\Carbon::createFromFormat('H:i:s', $this->job_time)->format('g:i A');
+                return "{$date} at {$time}";
+            } catch (\Exception $e) {
+                return "{$date} at {$this->job_time}";
+            }
+        }
+        
+        return $date;
+    }
+
+    /**
+     * Get duration display (alias for formatted_duration).
+     */
+    public function getDurationDisplayAttribute(): string
+    {
+        return $this->formatted_duration;
+    }
+
+    /**
+     * Get pay display (alias for formatted_pay).
+     */
+    public function getPayDisplayAttribute(): string
+    {
+        return $this->formatted_pay;
     }
 
     /**
@@ -610,81 +627,45 @@ class JobPost extends Model
      */
     public function decrementApplicationsCount(): void
     {
-        $this->decrement('applications_count');
-    }
-
-    /**
-     * Check if a worker has already applied.
-     */
-    public function hasApplied(JobWorker $worker): bool
-    {
-        return $this->applications()->where('worker_id', $worker->id)->exists();
-    }
-
-    /**
-     * Get formatted date and time.
-     */
-    public function getFormattedDateTime(): string
-    {
-        return $this->formatted_date_time;
-    }
-
-    /**
-     * Convert to WhatsApp list item.
-     */
-    public function toListItem(): array
-    {
-        $description = $this->pay_display . ' • ' . $this->formatted_date_time;
-        if ($this->location_name) {
-            $description .= ' • ' . $this->location_name;
+        if ($this->applications_count > 0) {
+            $this->decrement('applications_count');
         }
-
-        return [
-            'id' => 'job_' . $this->id,
-            'title' => substr($this->display_title, 0, 24),
-            'description' => substr($description, 0, 72),
-        ];
     }
 
     /**
-     * Convert to detail format for messages.
+     * Assign this job to a worker.
+     *
+     * @param int|JobWorker $worker Worker ID or JobWorker model
+     * @return void
      */
-    public function toDetailFormat(): array
+    public function assign(int|JobWorker $worker): void
     {
-        return [
-            'job_number' => $this->job_number,
-            'title' => $this->title,
-            'category' => $this->category?->display_name,
-            'description' => $this->description,
-            'location' => $this->location_display,
-            'date_time' => $this->formatted_date_time,
-            'duration' => $this->duration_display,
-            'pay' => $this->pay_display,
-            'instructions' => $this->special_instructions,
-            'status' => $this->status_display,
-            'poster_name' => $this->poster?->display_name,
-            'applications_count' => $this->applications_count,
-        ];
+        $workerId = $worker instanceof JobWorker ? $worker->id : $worker;
+        
+        $this->update([
+            'assigned_worker_id' => $workerId,
+            'status' => \App\Enums\JobStatus::ASSIGNED,
+            'assigned_at' => now(),
+        ]);
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Boot
-    |--------------------------------------------------------------------------
-    */
-
-    protected static function boot()
+    /**
+     * Get the category display name (handles custom categories).
+     */
+    public function getCategoryDisplayAttribute(): string
     {
-        parent::boot();
+        if ($this->custom_category_text) {
+            return $this->custom_category_text;
+        }
+        
+        return $this->category?->name_en ?? $this->category?->name_ml ?? 'Other';
+    }
 
-        static::creating(function ($model) {
-            if (empty($model->job_number)) {
-                $model->job_number = self::generateJobNumber();
-            }
-
-            if (empty($model->status)) {
-                $model->status = JobStatus::DRAFT;
-            }
-        });
+    /**
+     * Get the category icon.
+     */
+    public function getCategoryIconAttribute(): string
+    {
+        return $this->category?->icon ?? '📋';
     }
 }

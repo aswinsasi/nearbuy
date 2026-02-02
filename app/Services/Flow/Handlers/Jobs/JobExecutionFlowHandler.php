@@ -376,7 +376,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $this->sendTextWithMenu(
                 $session->phone,
                 "⏳ *Waiting for worker*\n\n" .
-                "{$job->category->icon} {$job->title}\n\n" .
+                ($job->category?->icon ?? '📋') . " {$job->title}\n\n" .
                 "Worker hasn't started the job yet.\n" .
                 "You'll be notified when they arrive."
             );
@@ -402,7 +402,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $this->sendTextWithMenu(
                 $session->phone,
                 "⏳ *Work in Progress*\n\n" .
-                "{$job->category->icon} {$job->title}\n" .
+                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
                 "👤 {$job->assignedWorker->name}\n\n" .
                 "Worker is currently working on the task.\n" .
                 "You'll be notified when they mark it complete."
@@ -412,7 +412,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $this->sendTextWithMenu(
                 $session->phone,
                 "⏳ *Waiting for worker arrival*\n\n" .
-                "{$job->category->icon} {$job->title}\n" .
+                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
                 "👤 {$job->assignedWorker->name}\n\n" .
                 "You'll be notified when the worker arrives."
             );
@@ -549,7 +549,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
                 $session->phone,
                 "✅ *Arrival confirmed!*\n" .
                 "*എത്തിയതായി സ്ഥിരീകരിച്ചു!*\n\n" .
-                "{$job->category->icon} {$job->title}\n" .
+                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
                 "📍 {$job->location_display}\n\n" .
                 "Task giver has been notified.\n" .
                 "ടാസ്ക് ഗിവറിനെ അറിയിച്ചു.\n\n" .
@@ -644,7 +644,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $session->phone,
             "⏳ *Work in Progress*\n" .
             "*ജോലി നടക്കുന്നു*\n\n" .
-            "{$job->category->icon} {$job->title}\n" .
+            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
             "📍 {$job->location_display}\n" .
             "💰 {$job->pay_display}\n\n" .
             "When you're done, mark the job as complete.\n" .
@@ -701,7 +701,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $session->phone,
             "📸 *Completion Photo*\n" .
             "*പൂർത്തിയായ ഫോട്ടോ*\n\n" .
-            "{$job->category->icon} {$job->title}\n\n" .
+            ($job->category?->icon ?? '📋') . " {$job->title}\n\n" .
             "Please send a photo showing the completed work.\n" .
             "പണി കഴിഞ്ഞതിന്റെ ഫോട്ടോ അയക്കുക.\n\n" .
             "_ഫോട്ടോ ഇല്ലെങ്കിൽ Skip ചെയ്യാം_",
@@ -827,7 +827,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
                 $session->phone,
                 "✅ *Marked as Complete!*\n" .
                 "*പൂർത്തിയായി എന്ന് രേഖപ്പെടുത്തി!*\n\n" .
-                "{$job->category->icon} {$job->title}\n" .
+                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
                 "💰 {$job->pay_display}\n\n" .
                 "Task giver has been notified to confirm and pay.\n" .
                 "ടാസ്ക് ഗിവറിനോട് സ്ഥിരീകരിക്കാനും പേയ്മെന്റ് ചെയ്യാനും ആവശ്യപ്പെട്ടു.\n\n" .
@@ -874,7 +874,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             );
         }
 
-        $response = JobMessages::workerArrived($verification);
+        $response = JobMessages::workerArrived($job, $job->assignedWorker);
         $this->sendJobMessage($poster->phone, $response);
 
         $this->logInfo('Poster notified of arrival', [
@@ -909,7 +909,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $poster->phone,
             "✅ *Worker Marked Complete!*\n" .
             "*പണിക്കാരൻ പൂർത്തിയായി എന്ന് പറഞ്ഞു!*\n\n" .
-            "{$job->category->icon} {$job->title}\n" .
+            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
             "👤 {$worker->name}\n" .
             "💰 {$job->pay_display}\n\n" .
             "Please verify the work is done and confirm payment.",
@@ -972,7 +972,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $session->phone,
             "✅ *Confirm Work Completion*\n" .
             "*പണി പൂർത്തിയായോ?*\n\n" .
-            "{$job->category->icon} {$job->title}\n" .
+            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
             "👤 {$worker->name}\n\n" .
             "Is the work done satisfactorily?",
             [
@@ -1114,7 +1114,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $worker->user->phone,
             "💰 *Payment Confirmed!*\n" .
             "*പേയ്മെന്റ് സ്ഥിരീകരിച്ചു!*\n\n" .
-            "{$job->category->icon} {$job->title}\n" .
+            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
             "💵 Amount: *{$job->pay_display}*\n" .
             "💳 Method: {$methodDisplay}\n\n" .
             "Task giver has confirmed payment! 🎉",
@@ -1310,7 +1310,7 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             $this->sendTextWithMenu(
                 $session->phone,
                 "⏳ *Waiting for payment...*\n\n" .
-                "{$job->category->icon} {$job->title}\n" .
+                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
                 "💰 {$job->pay_display}\n\n" .
                 "Task giver is confirming payment."
             );

@@ -50,7 +50,10 @@ class JobExecutionService
         // Validate job can be started
         if (!$this->isJobReadyToStart($job)) {
             throw new \InvalidArgumentException(
-                'This job cannot be started. Current status: ' . $job->status->value
+                sprintf(
+                    'This job cannot be started. Current status: %s',
+                    (string) ($job->status?->value ?? 'unknown')
+                )
             );
         }
 
@@ -84,18 +87,35 @@ class JobExecutionService
      */
     public function isJobReadyToStart(JobPost $job): bool
     {
+        // Get status value (handle both enum and string)
+        $statusValue = $job->status instanceof JobStatus 
+            ? $job->status->value 
+            : (string) $job->status;
+
+        Log::debug('isJobReadyToStart check', [
+            'job_id' => $job->id,
+            'status_raw' => $job->status,
+            'status_value' => $statusValue,
+            'assigned_worker_id' => $job->assigned_worker_id,
+            'job_date' => $job->job_date,
+        ]);
+
         // Must be assigned or in progress
-        if (!in_array($job->status, [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])) {
+        if (!in_array($statusValue, ['assigned', 'in_progress'])) {
+            Log::debug('Job failed status check', ['status' => $statusValue]);
             return false;
         }
 
         // Must have an assigned worker
         if (!$job->assigned_worker_id) {
+            Log::debug('Job has no assigned worker');
             return false;
         }
 
         // Job date should be today or past (allow starting on job day)
+        // Skip this check if job_date is null (flexible timing)
         if ($job->job_date && $job->job_date->isFuture() && !$job->job_date->isToday()) {
+            Log::debug('Job date is in the future', ['job_date' => $job->job_date]);
             return false;
         }
 

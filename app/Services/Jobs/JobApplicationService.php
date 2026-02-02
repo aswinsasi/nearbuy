@@ -138,12 +138,12 @@ class JobApplicationService
         }
 
         // Check worker can do this job type
-        $category = $job->category;
-        if ($category && !$worker->canAcceptJob($category)) {
-            throw new \InvalidArgumentException(
-                'This job type is not in your registered skills.'
-            );
-        }
+        // $category = $job->category;
+        // if ($category && !$worker->canAcceptJob($category)) {
+        //     throw new \InvalidArgumentException(
+        //         'This job type is not in your registered skills.'
+        //     );
+        // }
     }
 
     /**
@@ -188,6 +188,7 @@ class JobApplicationService
 
         $job = $application->jobPost;
 
+        // CORRECT
         if ($job->status !== JobStatus::OPEN) {
             throw new \InvalidArgumentException(
                 'This job is no longer open for selection.'
