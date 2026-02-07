@@ -87,4 +87,5 @@ interface FlowHandlerInterface
      * @return string Expected type: 'text', 'button', 'list', 'location', 'image', 'document'
      */
     public function getExpectedInputType(string $step): string;
+    
 }

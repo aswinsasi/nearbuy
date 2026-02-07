@@ -4,82 +4,76 @@ namespace App\Enums;
 
 /**
  * Registration flow steps.
+ *
+ * NATURAL FLOW ORDER (feels like conversation, not form):
+ * 1. ASK_NAME - First thing we ask, builds rapport
+ * 2. ASK_LOCATION - Needed for all features, explain why
+ * 3. ASK_TYPE - Customer or Shop Owner (determines next steps)
+ * 4. COMPLETE - Customer done, Shop owner redirects to shop registration
+ *
+ * @srs-ref FR-REG-01 through FR-REG-07
  */
 enum RegistrationStep: string
 {
-    case ASK_TYPE = 'ask_type';
+    // Core registration steps (ALL users)
     case ASK_NAME = 'ask_name';
     case ASK_LOCATION = 'ask_location';
-    case ASK_SHOP_NAME = 'ask_shop_name';
-    case ASK_SHOP_CATEGORY = 'ask_shop_category';
-    case ASK_SHOP_LOCATION = 'ask_shop_location';
-    case ASK_NOTIFICATION_PREF = 'ask_notification_pref';
-    case CONFIRM = 'confirm';
+    case ASK_TYPE = 'ask_type';
     case COMPLETE = 'complete';
 
     /**
-     * Get the prompt message for this step.
+     * Get the next step in flow.
      */
-    public function prompt(): string
+    public function next(): ?self
     {
         return match ($this) {
-            self::ASK_TYPE => "Welcome to *NearBuy*! 🛒\n\nAre you registering as a customer or a shop owner?",
-            self::ASK_NAME => "Great! Please enter your name:",
-            self::ASK_LOCATION => "📍 Please share your location so we can show you nearby shops and offers.",
-            self::ASK_SHOP_NAME => "What is your shop name?",
-            self::ASK_SHOP_CATEGORY => "Select your shop category:",
-            self::ASK_SHOP_LOCATION => "📍 Please share your shop's location.",
-            self::ASK_NOTIFICATION_PREF => "How often would you like to receive product request notifications?",
-            self::CONFIRM => "Please confirm your details:",
-            self::COMPLETE => "✅ Registration complete! Welcome to NearBuy.",
-        };
-    }
-
-    /**
-     * Get the expected input type for this step.
-     */
-    public function expectedInput(): string
-    {
-        return match ($this) {
-            self::ASK_TYPE => 'button',
-            self::ASK_NAME => 'text',
-            self::ASK_LOCATION, self::ASK_SHOP_LOCATION => 'location',
-            self::ASK_SHOP_CATEGORY => 'list',
-            self::ASK_NOTIFICATION_PREF => 'list',
-            self::CONFIRM => 'button',
-            self::COMPLETE => 'none',
-        };
-    }
-
-    /**
-     * Get the next step.
-     */
-    public function next(bool $isShopOwner = false): ?self
-    {
-        return match ($this) {
-            self::ASK_TYPE => self::ASK_NAME,
             self::ASK_NAME => self::ASK_LOCATION,
-            self::ASK_LOCATION => $isShopOwner ? self::ASK_SHOP_NAME : self::CONFIRM,
-            self::ASK_SHOP_NAME => self::ASK_SHOP_CATEGORY,
-            self::ASK_SHOP_CATEGORY => self::ASK_SHOP_LOCATION,
-            self::ASK_SHOP_LOCATION => self::ASK_NOTIFICATION_PREF,
-            self::ASK_NOTIFICATION_PREF => self::CONFIRM,
-            self::CONFIRM => self::COMPLETE,
+            self::ASK_LOCATION => self::ASK_TYPE,
+            self::ASK_TYPE => self::COMPLETE,
             self::COMPLETE => null,
         };
     }
 
     /**
-     * Check if this is a shop-specific step.
+     * Get expected input type for validation.
      */
-    public function isShopStep(): bool
+    public function expectedInput(): string
     {
-        return in_array($this, [
-            self::ASK_SHOP_NAME,
-            self::ASK_SHOP_CATEGORY,
-            self::ASK_SHOP_LOCATION,
-            self::ASK_NOTIFICATION_PREF,
-        ]);
+        return match ($this) {
+            self::ASK_NAME => 'text',
+            self::ASK_LOCATION => 'location',
+            self::ASK_TYPE => 'button',
+            self::COMPLETE => 'none',
+        };
+    }
+
+    /**
+     * Get step number for progress indication.
+     */
+    public function stepNumber(): int
+    {
+        return match ($this) {
+            self::ASK_NAME => 1,
+            self::ASK_LOCATION => 2,
+            self::ASK_TYPE => 3,
+            self::COMPLETE => 3,
+        };
+    }
+
+    /**
+     * Total steps in customer registration.
+     */
+    public static function totalSteps(): int
+    {
+        return 3;
+    }
+
+    /**
+     * Check if step is the final one.
+     */
+    public function isFinal(): bool
+    {
+        return $this === self::COMPLETE;
     }
 
     /**
