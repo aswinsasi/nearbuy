@@ -5,20 +5,17 @@ namespace App\Enums;
 /**
  * User types in the NearBuy platform.
  *
- * A user has one PRIMARY type, but can have additional profiles:
- * - CUSTOMER can also be fish seller (fishSeller relation) or job worker (jobWorker relation)
- * - SHOP owner can also be fish seller and/or job worker
+ * IMPORTANT: Only CUSTOMER and SHOP are PRIMARY user types per SRS Section 6.3.
+ * Fish sellers and job workers are ADDITIONAL PROFILES (separate tables),
+ * not user types. Any user can add these profiles later.
  *
+ * @srs-ref Section 6.3 - users.type: customer, shop
  * @srs-ref Section 2.3 - User Classes (Customer, Shop Owner)
- * @srs-ref Section 2.2 - Pacha Meen (Fish Seller as additional role)
- * @srs-ref Section 3 - Njaanum Panikkar (Job Worker as additional role)
  */
 enum UserType: string
 {
     case CUSTOMER = 'customer';
     case SHOP = 'shop';
-    case FISH_SELLER = 'fish_seller';
-    case JOB_WORKER = 'job_worker';
 
     /**
      * Get the display label.
@@ -28,8 +25,6 @@ enum UserType: string
         return match ($this) {
             self::CUSTOMER => 'Customer',
             self::SHOP => 'Shop Owner',
-            self::FISH_SELLER => 'Fish Seller',
-            self::JOB_WORKER => 'Job Worker',
         };
     }
 
@@ -41,8 +36,6 @@ enum UserType: string
         return match ($this) {
             self::CUSTOMER => 'ഉപഭോക്താവ്',
             self::SHOP => 'കട ഉടമ',
-            self::FISH_SELLER => 'മീൻ വിൽപ്പനക്കാരൻ',
-            self::JOB_WORKER => 'പണിക്കാരൻ',
         };
     }
 
@@ -52,10 +45,8 @@ enum UserType: string
     public function icon(): string
     {
         return match ($this) {
-            self::CUSTOMER => '👤',
+            self::CUSTOMER => '🛒',
             self::SHOP => '🏪',
-            self::FISH_SELLER => '🐟',
-            self::JOB_WORKER => '👷',
         };
     }
 
@@ -65,6 +56,14 @@ enum UserType: string
     public function labeledIcon(): string
     {
         return $this->icon() . ' ' . $this->label();
+    }
+
+    /**
+     * Get button title (max 20 chars for WhatsApp).
+     */
+    public function buttonTitle(): string
+    {
+        return mb_substr($this->labeledIcon(), 0, 20);
     }
 
     /*
@@ -90,23 +89,6 @@ enum UserType: string
     }
 
     /**
-     * Check if user type can post fish catches.
-     * Note: Users with fishSeller profile can also post, regardless of type.
-     */
-    public function canPostCatches(): bool
-    {
-        return $this === self::FISH_SELLER;
-    }
-
-    /**
-     * Check if user type can subscribe to fish alerts.
-     */
-    public function canSubscribeToFishAlerts(): bool
-    {
-        return in_array($this, [self::CUSTOMER, self::SHOP, self::JOB_WORKER]);
-    }
-
-    /**
      * Check if user type can create flash deals.
      *
      * @srs-ref Section 4 - Flash Mob Deals (Shop owners only)
@@ -117,14 +99,12 @@ enum UserType: string
     }
 
     /**
-     * Check if user type can apply for jobs.
-     * Note: Users with jobWorker profile can apply, regardless of type.
-     *
-     * @srs-ref Section 3 - Njaanum Panikkar
+     * Check if user type can subscribe to fish alerts.
+     * All users can subscribe to fish alerts.
      */
-    public function canApplyForJobs(): bool
+    public function canSubscribeToFishAlerts(): bool
     {
-        return $this === self::JOB_WORKER;
+        return true;
     }
 
     /**
@@ -135,7 +115,7 @@ enum UserType: string
      */
     public function canPostJobs(): bool
     {
-        return true; // All user types can post tasks
+        return true;
     }
 
     /*
@@ -153,43 +133,6 @@ enum UserType: string
     }
 
     /**
-     * Get options for WhatsApp buttons.
-     */
-    public static function toButtons(): array
-    {
-        return array_map(fn(self $type) => [
-            'id' => $type->value,
-            'title' => mb_substr("{$type->icon()} {$type->label()}", 0, 20),
-        ], self::registrationOptions());
-    }
-
-    /**
-     * Get registration options.
-     * Users register as CUSTOMER or SHOP initially.
-     * FISH_SELLER and JOB_WORKER are additional profiles they can add later.
-     */
-    public static function registrationOptions(): array
-    {
-        return [
-            self::CUSTOMER,
-            self::SHOP,
-        ];
-    }
-
-    /**
-     * Get all options including secondary types.
-     */
-    public static function allOptions(): array
-    {
-        return [
-            self::CUSTOMER,
-            self::SHOP,
-            self::FISH_SELLER,
-            self::JOB_WORKER,
-        ];
-    }
-
-    /**
      * Check if value is valid.
      */
     public static function isValid(string $value): bool
@@ -198,10 +141,26 @@ enum UserType: string
     }
 
     /**
-     * Try to create from string.
+     * Get options for WhatsApp buttons.
      */
-    public static function tryFromString(string $value): ?self
+    public static function toButtons(): array
     {
-        return self::tryFrom($value);
+        return array_map(fn(self $type) => [
+            'id' => $type->value,
+            'title' => $type->buttonTitle(),
+        ], self::cases());
+    }
+
+    /**
+     * Get options for forms/select.
+     */
+    public static function options(): array
+    {
+        return collect(self::cases())->map(fn($case) => [
+            'value' => $case->value,
+            'label' => $case->label(),
+            'label_ml' => $case->labelMl(),
+            'icon' => $case->icon(),
+        ])->toArray();
     }
 }

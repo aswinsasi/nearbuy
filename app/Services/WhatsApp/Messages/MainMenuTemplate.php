@@ -245,13 +245,13 @@ class MainMenuTemplate
             return self::NEW_USER_QUICK_ACTIONS;
         }
 
-        // Priority 1: Fish seller (by type OR profile)
-        if ($user->type === UserType::FISH_SELLER || $user->fishSeller !== null) {
+        // Priority 1: Fish seller (has fish seller profile)
+        if ($user->isFishSeller()) {
             return self::FISH_SELLER_QUICK_ACTIONS;
         }
 
         // Priority 2: Job worker (has worker profile)
-        if ($user->jobWorker !== null) {
+        if ($user->isJobWorker()) {
             return self::WORKER_QUICK_ACTIONS;
         }
 
@@ -273,11 +273,11 @@ class MainMenuTemplate
             return '🚀 Get Started';
         }
 
-        if ($user->type === UserType::FISH_SELLER || $user->fishSeller !== null) {
+        if ($user->isFishSeller()) {
             return '🐟 Fish Seller';
         }
 
-        if ($user->jobWorker !== null) {
+        if ($user->isJobWorker()) {
             return '👷 Worker';
         }
 
@@ -322,7 +322,7 @@ class MainMenuTemplate
         }
 
         // Fish seller
-        if ($user->type === UserType::FISH_SELLER || $user->fishSeller !== null) {
+        if ($user->isFishSeller()) {
             return [
                 ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
                 ['id' => 'fish_update_stock', 'title' => '📦 Stock'],
@@ -331,7 +331,7 @@ class MainMenuTemplate
         }
 
         // Worker
-        if ($user->jobWorker !== null) {
+        if ($user->isJobWorker()) {
             return [
                 ['id' => 'job_browse', 'title' => '🔍 Find Work'],
                 ['id' => 'job_worker_menu', 'title' => '👷 My Jobs'],

@@ -3,7 +3,19 @@
 namespace App\Enums;
 
 /**
- * Shop categories available in NearBuy.
+ * Shop categories - EXACTLY 8 from SRS Appendix 8.1.
+ *
+ * 🛒 Grocery — Vegetables, fruits, daily needs
+ * 📱 Electronics — TV, laptop, gadgets
+ * 👕 Clothes — Fashion, textiles
+ * 💊 Medical — Pharmacy, health products
+ * 🪑 Furniture — Home & office furniture
+ * 📲 Mobile — Phones & accessories
+ * 🔌 Appliances — AC, fridge, washing machine
+ * 🔧 Hardware — Tools, construction materials
+ *
+ * @srs-ref SRS Appendix 8.1 - Shop Categories
+ * @srs-ref FR-SHOP-02 - Present shop category via list message (8 categories)
  */
 enum ShopCategory: string
 {
@@ -15,37 +27,21 @@ enum ShopCategory: string
     case MOBILE = 'mobile';
     case APPLIANCES = 'appliances';
     case HARDWARE = 'hardware';
-    case RESTAURANT = 'restaurant';
-    case BAKERY = 'bakery';
-    case STATIONERY = 'stationery';
-    case BEAUTY = 'beauty';
-    case AUTOMOTIVE = 'automotive';
-    case JEWELRY = 'jewelry';
-    case SPORTS = 'sports';
-    case OTHER = 'other';
 
     /**
-     * Get the display label.
+     * Get English label.
      */
     public function label(): string
     {
         return match ($this) {
-            self::GROCERY => 'Grocery Store',
+            self::GROCERY => 'Grocery',
             self::ELECTRONICS => 'Electronics',
-            self::CLOTHES => 'Clothing & Fashion',
-            self::MEDICAL => 'Medical / Pharmacy',
+            self::CLOTHES => 'Clothes',
+            self::MEDICAL => 'Medical',
             self::FURNITURE => 'Furniture',
-            self::MOBILE => 'Mobile & Accessories',
-            self::APPLIANCES => 'Home Appliances',
-            self::HARDWARE => 'Hardware Store',
-            self::RESTAURANT => 'Restaurant & Food',
-            self::BAKERY => 'Bakery',
-            self::STATIONERY => 'Stationery & Books',
-            self::BEAUTY => 'Beauty & Salon',
-            self::AUTOMOTIVE => 'Automotive',
-            self::JEWELRY => 'Jewelry',
-            self::SPORTS => 'Sports & Fitness',
-            self::OTHER => 'Other',
+            self::MOBILE => 'Mobile',
+            self::APPLIANCES => 'Appliances',
+            self::HARDWARE => 'Hardware',
         };
     }
 
@@ -55,27 +51,19 @@ enum ShopCategory: string
     public function labelMl(): string
     {
         return match ($this) {
-            self::GROCERY => 'പലചരക്ക് കട',
+            self::GROCERY => 'പലചരക്ക്',
             self::ELECTRONICS => 'ഇലക്ട്രോണിക്സ്',
             self::CLOTHES => 'വസ്ത്രങ്ങൾ',
-            self::MEDICAL => 'മെഡിക്കൽ ഷോപ്പ്',
+            self::MEDICAL => 'മെഡിക്കൽ',
             self::FURNITURE => 'ഫർണിച്ചർ',
-            self::MOBILE => 'മൊബൈൽ ഷോപ്പ്',
+            self::MOBILE => 'മൊബൈൽ',
             self::APPLIANCES => 'ഉപകരണങ്ങൾ',
             self::HARDWARE => 'ഹാർഡ്‌വെയർ',
-            self::RESTAURANT => 'ഭക്ഷണശാല',
-            self::BAKERY => 'ബേക്കറി',
-            self::STATIONERY => 'സ്റ്റേഷനറി',
-            self::BEAUTY => 'ബ്യൂട്ടി പാർലർ',
-            self::AUTOMOTIVE => 'ഓട്ടോമൊബൈൽ',
-            self::JEWELRY => 'ജ്വല്ലറി',
-            self::SPORTS => 'സ്പോർട്സ്',
-            self::OTHER => 'മറ്റുള്ളവ',
         };
     }
 
     /**
-     * Get icon emoji.
+     * Get emoji icon (from SRS Appendix 8.1).
      */
     public function icon(): string
     {
@@ -88,14 +76,40 @@ enum ShopCategory: string
             self::MOBILE => '📲',
             self::APPLIANCES => '🔌',
             self::HARDWARE => '🔧',
-            self::RESTAURANT => '🍽️',
-            self::BAKERY => '🥐',
-            self::STATIONERY => '📚',
-            self::BEAUTY => '💅',
-            self::AUTOMOTIVE => '🚗',
-            self::JEWELRY => '💎',
-            self::SPORTS => '⚽',
-            self::OTHER => '🏪',
+        };
+    }
+
+    /**
+     * Get description (from SRS Appendix 8.1).
+     */
+    public function description(): string
+    {
+        return match ($this) {
+            self::GROCERY => 'Vegetables, fruits, daily needs',
+            self::ELECTRONICS => 'TV, laptop, gadgets',
+            self::CLOTHES => 'Fashion, textiles',
+            self::MEDICAL => 'Pharmacy, health products',
+            self::FURNITURE => 'Home & office furniture',
+            self::MOBILE => 'Phones & accessories',
+            self::APPLIANCES => 'AC, fridge, washing machine',
+            self::HARDWARE => 'Tools, construction materials',
+        };
+    }
+
+    /**
+     * Get Malayalam description.
+     */
+    public function descriptionMl(): string
+    {
+        return match ($this) {
+            self::GROCERY => 'പച്ചക്കറി, പഴം, ദിനവൃത്തി',
+            self::ELECTRONICS => 'ടിവി, ലാപ്ടോപ്പ്, ഗാഡ്ജറ്റ്',
+            self::CLOTHES => 'ഫാഷൻ, തുണിത്തരം',
+            self::MEDICAL => 'ഫാർമസി, ആരോഗ്യം',
+            self::FURNITURE => 'വീട്, ഓഫീസ് ഫർണിച്ചർ',
+            self::MOBILE => 'ഫോൺ, ആക്സസറീസ്',
+            self::APPLIANCES => 'AC, ഫ്രിഡ്ജ്, വാഷിംഗ് മെഷീൻ',
+            self::HARDWARE => 'ടൂൾസ്, കെട്ടിട സാമഗ്രി',
         };
     }
 
@@ -114,58 +128,47 @@ enum ShopCategory: string
     {
         return array_column(self::cases(), 'value');
     }
+
     /**
-     * Get first page of categories (9 items + "More" option = 10 total).
+     * Check if value is valid.
      */
-    public static function toListSectionsPage1(): array
+    public static function isValid(string $value): bool
     {
-        $firstNine = array_slice(self::cases(), 0, 9);
-
-        $rows = array_map(fn(self $cat) => [
-            'id' => $cat->value,
-            'title' => substr($cat->displayWithIcon(), 0, 24),
-            'description' => '',
-        ], $firstNine);
-
-        // Add "More" option
-        $rows[] = [
-            'id' => 'more_categories',
-            'title' => '➡️ More Categories',
-            'description' => 'See more options',
-        ];
-
-        return [['title' => 'Shop Categories', 'rows' => $rows]];
+        return in_array($value, self::values());
     }
 
     /**
-     * Get second page of categories (remaining items + "Back" option).
-     */
-    public static function toListSectionsPage2(): array
-    {
-        $remaining = array_slice(self::cases(), 9);
-
-        $rows = array_map(fn(self $cat) => [
-            'id' => $cat->value,
-            'title' => substr($cat->displayWithIcon(), 0, 24),
-            'description' => '',
-        ], $remaining);
-
-        // Add "Back" option
-        $rows[] = [
-            'id' => 'back_categories',
-            'title' => '⬅️ Back',
-            'description' => 'Previous categories',
-        ];
-
-        return [['title' => 'More Categories', 'rows' => $rows]];
-    }
-
-    /**
-     * Get options for WhatsApp list - kept for backward compatibility.
-     * Returns first page only (max 10 items).
+     * Get WhatsApp list sections - all 8 categories fit in one list.
+     *
+     * @srs-ref FR-SHOP-02 - Present shop category via list message (8 categories)
      */
     public static function toListSections(): array
     {
-        return self::toListSectionsPage1();
+        $rows = array_map(fn(self $cat) => [
+            'id' => $cat->value,
+            'title' => mb_substr($cat->displayWithIcon(), 0, 24),
+            'description' => $cat->description(),
+        ], self::cases());
+
+        return [
+            [
+                'title' => 'Shop Category',
+                'rows' => $rows,
+            ],
+        ];
+    }
+
+    /**
+     * Get options for forms/select.
+     */
+    public static function options(): array
+    {
+        return collect(self::cases())->map(fn($case) => [
+            'value' => $case->value,
+            'label' => $case->label(),
+            'label_ml' => $case->labelMl(),
+            'icon' => $case->icon(),
+            'description' => $case->description(),
+        ])->toArray();
     }
 }

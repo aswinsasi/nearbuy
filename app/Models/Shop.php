@@ -2,14 +2,31 @@
 
 namespace App\Models;
 
-use App\Enums\ShopCategory;
 use App\Enums\NotificationFrequency;
+use App\Enums\ShopCategory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Builder;
 
+/**
+ * Shop model.
+ *
+ * @srs-ref Section 6.2.2 - shops Table
+ * @srs-ref FR-SHOP-05 - Create linked records in users and shops tables
+ *
+ * @property int $id
+ * @property int $user_id Owner reference (FK → users.id)
+ * @property string $shop_name Business name
+ * @property ShopCategory $category Shop category (8 options)
+ * @property float $latitude Shop location
+ * @property float $longitude Shop location
+ * @property string|null $address Shop address
+ * @property NotificationFrequency $notification_frequency Alert preference (default 2hours)
+ * @property bool $verified Verification status (default false)
+ * @property bool $is_active Shop active status
+ */
 class Shop extends Model
 {
     use HasFactory;
@@ -45,6 +62,19 @@ class Shop extends Model
         'is_active' => 'boolean',
     ];
 
+    /**
+     * Default attribute values.
+     *
+     * @srs-ref Section 6.2.2 - notification_frequency default 2hours, verified default false
+     *
+     * @var array
+     */
+    protected $attributes = [
+        'notification_frequency' => '2hours',
+        'verified' => false,
+        'is_active' => true,
+    ];
+
     /*
     |--------------------------------------------------------------------------
     | Relationships
@@ -53,6 +83,8 @@ class Shop extends Model
 
     /**
      * Get the owner of this shop.
+     *
+     * @srs-ref Section 6.1 - Users (1) → Shops (1)
      */
     public function user(): BelongsTo
     {
@@ -67,13 +99,10 @@ class Shop extends Model
         return $this->user();
     }
 
-    public function responses(): HasMany
-    {
-        return $this->productResponses();
-    }
-
     /**
      * Get offers from this shop.
+     *
+     * @srs-ref Section 6.1 - Shops (1) → Offers (N)
      */
     public function offers(): HasMany
     {
@@ -81,11 +110,29 @@ class Shop extends Model
     }
 
     /**
+     * Get active offers from this shop.
+     */
+    public function activeOffers(): HasMany
+    {
+        return $this->offers()->where('is_active', true);
+    }
+
+    /**
      * Get product responses from this shop.
+     *
+     * @srs-ref Section 6.1 - Shops respond to Product Requests
      */
     public function productResponses(): HasMany
     {
         return $this->hasMany(ProductResponse::class);
+    }
+
+    /**
+     * Alias for productResponses.
+     */
+    public function responses(): HasMany
+    {
+        return $this->productResponses();
     }
 
     /**
@@ -95,6 +142,9 @@ class Shop extends Model
     {
         return $this->hasMany(NotificationBatch::class);
     }
+
+    // NOTE: flashDeals() relationship will be added when FlashDeal model is created
+    // @srs-ref Flash Mob Deals Module (FD-001 to FD-028)
 
     /*
     |--------------------------------------------------------------------------
@@ -120,8 +170,10 @@ class Shop extends Model
 
     /**
      * Scope to filter by category.
+     *
+     * @srs-ref FR-OFR-10 - Display category list
      */
-    public function scopeOfCategory(Builder $query, ShopCategory|string $category): Builder
+    public function scopeByCategory(Builder $query, ShopCategory|string $category): Builder
     {
         $categoryValue = $category instanceof ShopCategory ? $category->value : $category;
         return $query->where('category', $categoryValue);
@@ -130,17 +182,22 @@ class Shop extends Model
     /**
      * Scope to filter by multiple categories.
      */
-    public function scopeOfCategories(Builder $query, array $categories): Builder
+    public function scopeByCategories(Builder $query, array $categories): Builder
     {
-        $values = array_map(fn($cat) => $cat instanceof ShopCategory ? $cat->value : $cat, $categories);
+        $values = array_map(
+            fn($cat) => $cat instanceof ShopCategory ? $cat->value : $cat,
+            $categories
+        );
         return $query->whereIn('category', $values);
     }
 
     /**
-     * Scope to find shops within a radius (km) of a location.
+     * Scope to find shops near a location.
      * Uses MySQL ST_Distance_Sphere for accurate distance calculation.
+     *
+     * @srs-ref FR-OFR-11 - Query offers within configurable radius (default 5km)
      */
-    public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
+    public function scopeNearTo(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
     {
         return $query
             ->whereNotNull('latitude')
@@ -170,6 +227,8 @@ class Shop extends Model
 
     /**
      * Scope to order by distance from a point.
+     *
+     * @srs-ref FR-OFR-12 - Sort results by distance (nearest first)
      */
     public function scopeOrderByDistance(Builder $query, float $latitude, float $longitude, string $direction = 'asc'): Builder
     {
@@ -192,41 +251,44 @@ class Shop extends Model
 
     /**
      * Scope to get shops that need immediate notification.
+     *
+     * @srs-ref FR-PRD-11 - Send immediate notifications for shops with immediate preference
      */
     public function scopeImmediateNotification(Builder $query): Builder
     {
         return $query->where('notification_frequency', NotificationFrequency::IMMEDIATE);
     }
 
+    /**
+     * Scope to get shops needing batched notification.
+     *
+     * @srs-ref FR-PRD-12 - Batch requests for shops with 2-hour preference
+     */
+    public function scopeBatchedNotification(Builder $query): Builder
+    {
+        return $query->where('notification_frequency', '!=', NotificationFrequency::IMMEDIATE);
+    }
+
     /*
     |--------------------------------------------------------------------------
-    | Accessors & Helpers
+    | Accessors
     |--------------------------------------------------------------------------
     */
 
     /**
      * Get active offers count.
      */
+    public function getActiveOfferCountAttribute(): int
+    {
+        return $this->activeOffers()->count();
+    }
+
+    /**
+     * Alias for activeOfferCount (backward compatibility).
+     */
     public function getActiveOffersCountAttribute(): int
     {
-        return $this->offers()->active()->count();
-    }
-
-    /**
-     * Check if shop has reached maximum offers.
-     */
-    public function hasReachedMaxOffers(): bool
-    {
-        $max = config('nearbuy.offers.max_active_per_shop', 5);
-        return $this->active_offers_count >= $max;
-    }
-
-    /**
-     * Check if shop can receive notifications now.
-     */
-    public function canReceiveImmediateNotification(): bool
-    {
-        return $this->notification_frequency === NotificationFrequency::IMMEDIATE;
+        return $this->active_offer_count;
     }
 
     /**
@@ -238,7 +300,76 @@ class Shop extends Model
     }
 
     /**
-     * Calculate distance from a given point.
+     * Get the owner's name.
+     */
+    public function getOwnerNameAttribute(): ?string
+    {
+        return $this->user?->name;
+    }
+
+    /**
+     * Get category display with icon.
+     */
+    public function getCategoryDisplayAttribute(): string
+    {
+        return $this->category?->displayWithIcon() ?? 'Unknown';
+    }
+
+    /**
+     * Get notification frequency display.
+     */
+    public function getNotificationDisplayAttribute(): string
+    {
+        return $this->notification_frequency?->displayWithIcon() ?? 'Unknown';
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Permission & Status Checks
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Check if shop has reached maximum offers.
+     */
+    public function hasReachedMaxOffers(): bool
+    {
+        $max = config('nearbuy.offers.max_active_per_shop', 5);
+        return $this->active_offer_count >= $max;
+    }
+
+    /**
+     * Check if shop can receive immediate notifications.
+     */
+    public function canReceiveImmediateNotification(): bool
+    {
+        return $this->notification_frequency === NotificationFrequency::IMMEDIATE;
+    }
+
+    /**
+     * Check if shop is verified.
+     */
+    public function isVerified(): bool
+    {
+        return $this->verified === true;
+    }
+
+    /**
+     * Check if shop is active.
+     */
+    public function isActive(): bool
+    {
+        return $this->is_active === true;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Distance Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Calculate distance from a given point in km.
      */
     public function distanceFrom(float $latitude, float $longitude): float
     {
@@ -270,8 +401,16 @@ class Shop extends Model
         return round($distance, 1) . ' km';
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Static Query Helpers
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Find nearby shops for a product request.
+     * Find shops for a product request.
+     *
+     * @srs-ref FR-PRD-05 - Identify eligible shops by category and proximity
      */
     public static function findForProductRequest(
         float $latitude,
@@ -282,14 +421,35 @@ class Shop extends Model
     ): \Illuminate\Database\Eloquent\Collection {
         $query = self::query()
             ->active()
-            ->nearLocation($latitude, $longitude, $radiusKm)
+            ->nearTo($latitude, $longitude, $radiusKm)
             ->withDistanceFrom($latitude, $longitude)
             ->orderByDistance($latitude, $longitude);
 
         if ($category) {
-            $query->ofCategory($category);
+            $query->byCategory($category);
         }
 
         return $query->limit($limit)->get();
+    }
+
+    /**
+     * Find shops with active offers by category.
+     *
+     * @srs-ref FR-OFR-10 - Display category list with offer counts
+     */
+    public static function findWithOffersByCategory(
+        float $latitude,
+        float $longitude,
+        float $radiusKm,
+        ShopCategory $category
+    ): \Illuminate\Database\Eloquent\Collection {
+        return self::query()
+            ->active()
+            ->byCategory($category)
+            ->nearTo($latitude, $longitude, $radiusKm)
+            ->whereHas('offers', fn($q) => $q->where('is_active', true))
+            ->withDistanceFrom($latitude, $longitude)
+            ->orderByDistance($latitude, $longitude)
+            ->get();
     }
 }

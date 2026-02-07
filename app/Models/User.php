@@ -3,23 +3,31 @@
 namespace App\Models;
 
 use App\Enums\UserType;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Illuminate\Database\Eloquent\Builder;
 
 /**
  * User model.
  *
- * IMPORTANT: A user's "type" (CUSTOMER, SHOP, FISH_SELLER) is their PRIMARY role.
- * However, any user can ALSO be a fish seller by having a fish_seller profile.
- * 
- * Example: A SHOP user can also sell fish by registering as a fish seller.
- * They remain type=SHOP but also have a fishSeller relationship.
+ * @srs-ref Section 6.2.1 - users Table
  *
- * @srs-ref Section 2.2: Fish sellers are separate registration from customers/shops
+ * IMPORTANT: A user's "type" is CUSTOMER or SHOP only (per SRS Section 6.3).
+ * Fish sellers and job workers are ADDITIONAL PROFILES stored in separate tables.
+ * Any user (customer or shop) can also be a fish seller AND/OR job worker.
+ *
+ * @property int $id
+ * @property string $phone WhatsApp phone number (unique)
+ * @property string|null $name User display name
+ * @property UserType $type customer or shop
+ * @property float|null $latitude User location
+ * @property float|null $longitude User location
+ * @property string|null $address Location description
+ * @property string $language Preferred language (en/ml)
+ * @property \Carbon\Carbon|null $registered_at Registration timestamp
  */
 class User extends Authenticatable
 {
@@ -60,14 +68,26 @@ class User extends Authenticatable
         'registered_at' => 'datetime',
     ];
 
+    /**
+     * Default attribute values.
+     *
+     * @var array
+     */
+    protected $attributes = [
+        'type' => 'customer',
+        'language' => 'en',
+    ];
+
     /*
     |--------------------------------------------------------------------------
-    | Relationships
+    | Core Relationships (SRS Section 6.1)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get the shop owned by this user.
+     * Get the shop owned by this user (1:1).
+     *
+     * @srs-ref Section 6.1 - Users (1) → Shops (1)
      */
     public function shop(): HasOne
     {
@@ -75,62 +95,9 @@ class User extends Authenticatable
     }
 
     /**
-     * Get the fish seller profile for this user.
+     * Get product requests created by this user (1:N).
      *
-     * NOTE: Any user type can have a fish seller profile!
-     * A CUSTOMER or SHOP user can also be a fish seller.
-     *
-     * @srs-ref Pacha Meen Module
-     * @srs-ref Section 2.2: Fish sellers are separate from main user types
-     */
-    public function fishSeller(): HasOne
-    {
-        return $this->hasOne(FishSeller::class);
-    }
-
-    /**
-     * Get fish subscriptions for this user.
-     *
-     * @srs-ref Pacha Meen Module - Customer Subscriptions
-     */
-    public function fishSubscriptions(): HasMany
-    {
-        return $this->hasMany(FishSubscription::class);
-    }
-
-    /**
-     * Get active fish subscriptions.
-     *
-     * @srs-ref PM-015: Used for manage alerts feature
-     */
-    public function activeFishSubscriptions(): HasMany
-    {
-        return $this->fishSubscriptions()
-            ->where('is_active', true)
-            ->where(function ($q) {
-                $q->where('is_paused', false)
-                    ->orWhere('paused_until', '<', now());
-            });
-    }
-
-    /**
-     * Get fish alerts received by this user.
-     */
-    public function fishAlerts(): HasMany
-    {
-        return $this->hasMany(FishAlert::class);
-    }
-
-    /**
-     * Get fish catch responses by this user.
-     */
-    public function fishCatchResponses(): HasMany
-    {
-        return $this->hasMany(FishCatchResponse::class);
-    }
-
-    /**
-     * Get product requests created by this user.
+     * @srs-ref Section 6.1 - Users (1) → Product Requests (N)
      */
     public function productRequests(): HasMany
     {
@@ -139,6 +106,8 @@ class User extends Authenticatable
 
     /**
      * Get agreements where user is the creator (from party).
+     *
+     * @srs-ref Section 6.1 - Users (1) → Agreements (N)
      */
     public function createdAgreements(): HasMany
     {
@@ -154,11 +123,82 @@ class User extends Authenticatable
     }
 
     /**
-     * Get the conversation session for this user.
+     * Get conversation session for this user.
      */
     public function conversationSession(): HasOne
     {
         return $this->hasOne(ConversationSession::class);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Add-On Module Relationships (Profiles)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get fish seller profile (nullable).
+     *
+     * Any user can ALSO be a fish seller by having this profile.
+     *
+     * @srs-ref Pacha Meen Module (PM-001 to PM-004)
+     */
+    public function fishSeller(): HasOne
+    {
+        return $this->hasOne(FishSeller::class);
+    }
+
+    /**
+     * Get fish subscriptions for this user.
+     *
+     * @srs-ref PM-011 to PM-015 - Customer Subscriptions
+     */
+    public function fishSubscriptions(): HasMany
+    {
+        return $this->hasMany(FishSubscription::class);
+    }
+
+    /**
+     * Get active fish subscriptions.
+     */
+    public function activeFishSubscriptions(): HasMany
+    {
+        return $this->fishSubscriptions()
+            ->where('is_active', true)
+            ->where(function ($q) {
+                $q->where('is_paused', false)
+                    ->orWhere('paused_until', '<', now());
+            });
+    }
+
+    /**
+     * Get job worker profile (nullable).
+     *
+     * Any user can ALSO be a job worker by having this profile.
+     *
+     * @srs-ref Njaanum Panikkar Module (NP-001 to NP-005)
+     */
+    public function jobWorker(): HasOne
+    {
+        return $this->hasOne(JobWorker::class);
+    }
+
+    /**
+     * Get job posts created by this user (as task giver).
+     *
+     * @srs-ref NP-006 to NP-014 - Job Posting
+     */
+    public function jobPosts(): HasMany
+    {
+        return $this->hasMany(JobPost::class, 'poster_user_id');
+    }
+
+    /**
+     * Get active job posts by this user.
+     */
+    public function activeJobPosts(): HasMany
+    {
+        return $this->jobPosts()->whereIn('status', ['open', 'assigned', 'in_progress']);
     }
 
     /*
@@ -192,46 +232,6 @@ class User extends Authenticatable
     }
 
     /**
-     * Scope to filter users with type FISH_SELLER.
-     *
-     * NOTE: This only finds users whose PRIMARY type is FISH_SELLER.
-     * To find ALL users who can sell fish, use scopeWithFishSellerProfile().
-     */
-    public function scopeFishSellers(Builder $query): Builder
-    {
-        return $query->where('type', UserType::FISH_SELLER);
-    }
-
-    /**
-     * Scope to filter users who have a fish seller profile.
-     *
-     * This finds ANY user who can sell fish, regardless of their primary type.
-     * Use this instead of scopeFishSellers() when you need all fish sellers.
-     *
-     * @srs-ref Section 2.2: Any user can be a fish seller
-     */
-    public function scopeWithFishSellerProfile(Builder $query): Builder
-    {
-        return $query->whereHas('fishSeller');
-    }
-
-    /**
-     * Scope to filter users with active fish subscriptions.
-     *
-     * @srs-ref PM-015: For subscription management
-     */
-    public function scopeWithActiveFishSubscription(Builder $query): Builder
-    {
-        return $query->whereHas('fishSubscriptions', function ($q) {
-            $q->where('is_active', true)
-                ->where(function ($q2) {
-                    $q2->where('is_paused', false)
-                        ->orWhere('paused_until', '<', now());
-                });
-        });
-    }
-
-    /**
      * Scope to filter registered users.
      */
     public function scopeRegistered(Builder $query): Builder
@@ -248,10 +248,12 @@ class User extends Authenticatable
     }
 
     /**
-     * Scope to find users within a radius (km) of a location.
+     * Scope to find users near a location.
      * Uses MySQL ST_Distance_Sphere for accurate distance calculation.
+     *
+     * @srs-ref FR-OFR-11 - Configurable radius queries
      */
-    public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
+    public function scopeNearTo(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
     {
         return $query
             ->whereNotNull('latitude')
@@ -279,19 +281,43 @@ class User extends Authenticatable
         );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Accessors & Helpers
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * Scope to order by distance from a point.
+     *
+     * @srs-ref FR-OFR-12 - Sort results by distance (nearest first)
+     */
+    public function scopeOrderByDistance(Builder $query, float $latitude, float $longitude, string $direction = 'asc'): Builder
+    {
+        return $query->orderByRaw(
+            "ST_Distance_Sphere(
+                POINT(longitude, latitude),
+                POINT(?, ?)
+            ) {$direction}",
+            [$longitude, $latitude]
+        );
+    }
 
     /**
-     * Check if user is a shop owner.
+     * Scope to filter users who have a fish seller profile.
      */
-    public function isShopOwner(): bool
+    public function scopeWithFishSellerProfile(Builder $query): Builder
     {
-        return $this->type === UserType::SHOP;
+        return $query->whereHas('fishSeller');
     }
+
+    /**
+     * Scope to filter users who have a job worker profile.
+     */
+    public function scopeWithJobWorkerProfile(Builder $query): Builder
+    {
+        return $query->whereHas('jobWorker');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Type Checks
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Check if user is a customer.
@@ -302,30 +328,41 @@ class User extends Authenticatable
     }
 
     /**
-     * Check if user is a fish seller (has fish seller PROFILE).
+     * Check if user is a shop owner.
+     */
+    public function isShopOwner(): bool
+    {
+        return $this->type === UserType::SHOP;
+    }
+
+    /**
+     * Check if user has a shop record.
+     */
+    public function hasShop(): bool
+    {
+        return $this->shop !== null;
+    }
+
+    /**
+     * Check if user is a fish seller (has fish seller profile).
      *
-     * FIXED: This now checks for fish_seller PROFILE, not user type!
-     * Any user (CUSTOMER, SHOP) can also be a fish seller.
-     *
-     * @srs-ref Section 2.2: Fish sellers are separate from main user types
+     * NOTE: This checks for profile, not user type!
+     * Any user (customer or shop) can be a fish seller.
      */
     public function isFishSeller(): bool
     {
-        // FIXED: Check for fish seller PROFILE, not user type
-        // OLD (WRONG): return $this->type === UserType::FISH_SELLER;
-        // NEW: Check if user has a fish seller profile
         return $this->fishSeller !== null;
     }
 
     /**
-     * Check if user's PRIMARY type is FISH_SELLER.
+     * Check if user is a job worker (has job worker profile).
      *
-     * Use this only when you specifically need to check the user type,
-     * not whether they can sell fish. For most cases, use isFishSeller().
+     * NOTE: This checks for profile, not user type!
+     * Any user (customer or shop) can be a job worker.
      */
-    public function hasTypeFishSeller(): bool
+    public function isJobWorker(): bool
     {
-        return $this->type === UserType::FISH_SELLER;
+        return $this->jobWorker !== null;
     }
 
     /**
@@ -344,27 +381,42 @@ class User extends Authenticatable
         return $this->latitude !== null && $this->longitude !== null;
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Permission Checks
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Check if user can post fish catches.
-     *
-     * FIXED: Now uses the corrected isFishSeller() check.
+     * Check if user can create offers.
      */
-    public function canPostFishCatches(): bool
+    public function canCreateOffers(): bool
     {
-        // User must have a fish seller profile to post catches
-        return $this->fishSeller !== null;
+        return $this->isShopOwner() && $this->hasShop();
     }
 
     /**
-     * Check if user can register as a fish seller.
-     *
-     * Any registered user who doesn't already have a fish seller profile can register.
-     *
-     * @srs-ref Section 2.2: Any user can become a fish seller
+     * Check if user can respond to product requests.
+     */
+    public function canRespondToRequests(): bool
+    {
+        return $this->isShopOwner() && $this->hasShop();
+    }
+
+    /**
+     * Check if user can post fish catches.
+     */
+    public function canPostFishCatches(): bool
+    {
+        return $this->isFishSeller();
+    }
+
+    /**
+     * Check if user can register as fish seller.
      */
     public function canRegisterAsFishSeller(): bool
     {
-        return $this->isRegistered() && $this->fishSeller === null;
+        return $this->isRegistered() && !$this->isFishSeller();
     }
 
     /**
@@ -372,15 +424,11 @@ class User extends Authenticatable
      */
     public function canSubscribeToFishAlerts(): bool
     {
-        return $this->type->canSubscribeToFishAlerts();
+        return $this->isRegistered();
     }
 
     /**
-     * Check if user has an active fish subscription.
-     *
-     * Used to determine whether to show "Subscribe" or "Manage Alerts" option.
-     *
-     * @srs-ref PM-015: Subscription modification
+     * Check if user has active fish subscriptions.
      */
     public function hasFishSubscription(): bool
     {
@@ -388,15 +436,43 @@ class User extends Authenticatable
     }
 
     /**
-     * Get all agreements (created + received).
+     * Check if user can apply for jobs.
      */
-    public function getAllAgreements()
+    public function canApplyForJobs(): bool
     {
-        return Agreement::where('from_user_id', $this->id)
-            ->orWhere('to_user_id', $this->id)
-            ->latest()
-            ->get();
+        return $this->isJobWorker();
     }
+
+    /**
+     * Check if user can register as job worker.
+     */
+    public function canRegisterAsJobWorker(): bool
+    {
+        return $this->isRegistered() && !$this->isJobWorker();
+    }
+
+    /**
+     * Check if user can post jobs (as task giver).
+     * Any registered user can post jobs.
+     */
+    public function canPostJobs(): bool
+    {
+        return $this->isRegistered();
+    }
+
+    /**
+     * Check if user has active job posts.
+     */
+    public function hasActiveJobPosts(): bool
+    {
+        return $this->activeJobPosts()->exists();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Get formatted phone number for display.
@@ -421,6 +497,81 @@ class User extends Authenticatable
     }
 
     /**
+     * Get first name.
+     */
+    public function getFirstNameAttribute(): string
+    {
+        if (!$this->name) {
+            return 'Friend';
+        }
+
+        $parts = explode(' ', trim($this->name));
+        return $parts[0];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Calculate distance from a given point in km.
+     */
+    public function distanceFrom(float $latitude, float $longitude): float
+    {
+        if (!$this->hasLocation()) {
+            return 0;
+        }
+
+        $earthRadiusKm = 6371;
+
+        $latDiff = deg2rad($latitude - $this->latitude);
+        $lonDiff = deg2rad($longitude - $this->longitude);
+
+        $a = sin($latDiff / 2) * sin($latDiff / 2) +
+            cos(deg2rad($this->latitude)) * cos(deg2rad($latitude)) *
+            sin($lonDiff / 2) * sin($lonDiff / 2);
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return $earthRadiusKm * $c;
+    }
+
+    /**
+     * Get formatted distance string.
+     */
+    public function getFormattedDistanceFrom(float $latitude, float $longitude): string
+    {
+        $distance = $this->distanceFrom($latitude, $longitude);
+
+        if ($distance < 1) {
+            return round($distance * 1000) . ' m';
+        }
+
+        return round($distance, 1) . ' km';
+    }
+
+    /**
+     * Get all agreements (created + received).
+     */
+    public function getAllAgreements()
+    {
+        return Agreement::where('from_user_id', $this->id)
+            ->orWhere('to_user_id', $this->id)
+            ->latest()
+            ->get();
+    }
+
+    /**
+     * Find user by phone number.
+     */
+    public static function findByPhone(string $phone): ?self
+    {
+        return self::where('phone', $phone)->first();
+    }
+
+    /**
      * Find or create user by phone number.
      */
     public static function findOrCreateByPhone(string $phone): self
@@ -429,96 +580,5 @@ class User extends Authenticatable
             ['phone' => $phone],
             ['type' => UserType::CUSTOMER]
         );
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Njaanum Panikkar Relationships
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Get the job worker profile for this user.
-     *
-     * @srs-ref Njaanum Panikkar Module
-     */
-    public function jobWorker(): HasOne
-    {
-        return $this->hasOne(JobWorker::class);
-    }
-
-    /**
-     * Get job posts created by this user.
-     *
-     * @srs-ref Njaanum Panikkar Module
-     */
-    public function jobPosts(): HasMany
-    {
-        return $this->hasMany(JobPost::class, 'poster_user_id');
-    }
-
-    /**
-     * Get active job posts by this user.
-     */
-    public function activeJobPosts(): HasMany
-    {
-        return $this->jobPosts()->whereIn('status', ['open', 'assigned', 'in_progress']);
-    }
-
-    // ============================================================================
-    // ADD THESE HELPER METHODS inside the User class
-    // ============================================================================
-
-    /**
-     * Check if user is a job worker (has job worker PROFILE).
-     *
-     * @srs-ref Njaanum Panikkar Module
-     */
-    public function isJobWorker(): bool
-    {
-        return $this->jobWorker !== null;
-    }
-
-    /**
-     * Check if user can register as a job worker.
-     *
-     * Any registered user who doesn't already have a job worker profile can register.
-     */
-    public function canRegisterAsJobWorker(): bool
-    {
-        return $this->isRegistered() && $this->jobWorker === null;
-    }
-
-    /**
-     * Check if user can post jobs.
-     *
-     * Any registered user can post jobs.
-     */
-    public function canPostJobs(): bool
-    {
-        return $this->isRegistered();
-    }
-
-    /**
-     * Check if user has active job posts.
-     */
-    public function hasActiveJobPosts(): bool
-    {
-        return $this->activeJobPosts()->exists();
-    }
-
-    // ============================================================================
-    // ADD THIS SCOPE inside the User class
-    // ============================================================================
-
-    /**
-     * Scope to filter users who have a job worker profile.
-     *
-     * @srs-ref Njaanum Panikkar Module
-     */
-    public function scopeWithJobWorkerProfile(Builder $query): Builder
-    {
-        return $query->whereHas('jobWorker');
     }
 }
