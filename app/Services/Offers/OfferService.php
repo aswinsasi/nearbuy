@@ -4,37 +4,31 @@ namespace App\Services\Offers;
 
 use App\Enums\OfferValidity;
 use App\Enums\ShopCategory;
+use App\Enums\UserType;
 use App\Models\Offer;
 use App\Models\Shop;
 use App\Models\User;
 use App\Services\Media\MediaService;
+use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Service for managing offers.
+ * Offer Service - Create, query, and track offers.
  *
- * Handles offer creation, querying, and analytics.
+ * @srs-ref FR-OFR-01 to FR-OFR-06
  *
  * @example
- * $offerService = app(OfferService::class);
- *
- * // Create offer
- * $offer = $offerService->createOffer($shop, [
+ * // Create offer (auto-detect shop from user)
+ * $offer = $offerService->createOfferForUser($user, [
  *     'media_url' => 'https://s3.../offer.jpg',
  *     'media_type' => 'image',
- *     'caption' => 'Special discount!',
- *     'validity' => 'week',
+ *     'validity' => 'today',
  * ]);
  *
- * // Browse offers near location
- * $offers = $offerService->getOffersNearLocation(
- *     latitude: 9.5916,
- *     longitude: 76.5222,
- *     radiusKm: 5,
- *     category: 'grocery'
- * );
+ * // Get nearby offers
+ * $offers = $offerService->getNearbyOffers(9.5916, 76.5222, 5);
  */
 class OfferService
 {
@@ -49,15 +43,28 @@ class OfferService
     */
 
     /**
-     * Create a new offer for a shop.
+     * Create offer for user (auto-detect shop).
+     *
+     * @srs-ref FR-OFR-03 - Store in cloud storage with unique identifiers
+     * @srs-ref FR-OFR-06 - Initialize view_count=0, location_tap_count=0
+     */
+    public function createOfferForUser(User $user, array $data): Offer
+    {
+        // Auto-detect shop from user
+        $shop = $user->shop;
+
+        if (!$shop) {
+            throw new \Exception('User does not have a shop');
+        }
+
+        return $this->createOffer($shop, $data);
+    }
+
+    /**
+     * Create offer for shop.
      *
      * @param Shop $shop
-     * @param array{
-     *     media_url: string,
-     *     media_type: string,
-     *     caption?: string,
-     *     validity: string
-     * } $data
+     * @param array{media_url: string, media_type: string, validity: string, caption?: string} $data
      * @return Offer
      * @throws \Exception
      */
@@ -65,22 +72,23 @@ class OfferService
     {
         // Check max offers limit
         $maxOffers = config('nearbuy.offers.max_active_per_shop', 5);
-        $activeCount = $shop->offers()->active()->count();
+        $activeCount = $shop->offers()->where('is_active', true)->count();
 
         if ($activeCount >= $maxOffers) {
             throw new \Exception("Maximum of {$maxOffers} active offers reached");
         }
 
-        // Calculate expiry based on validity
-        $expiresAt = $this->calculateExpiry($data['validity']);
+        // Parse validity
+        $validity = OfferValidity::tryFrom($data['validity']) ?? OfferValidity::THREE_DAYS;
 
+        // FR-OFR-06: Initialize metrics to 0
         $offer = Offer::create([
             'shop_id' => $shop->id,
             'media_url' => $data['media_url'],
             'media_type' => $data['media_type'],
             'caption' => $data['caption'] ?? null,
-            'validity_type' => $this->parseValidity($data['validity']),
-            'expires_at' => $expiresAt,
+            'validity_type' => $validity,
+            'expires_at' => $validity->expiresAt(),
             'view_count' => 0,
             'location_tap_count' => 0,
             'is_active' => true,
@@ -89,53 +97,19 @@ class OfferService
         Log::info('Offer created', [
             'offer_id' => $offer->id,
             'shop_id' => $shop->id,
-            'expires_at' => $expiresAt,
+            'validity' => $validity->value,
+            'expires_at' => $offer->expires_at,
         ]);
 
         return $offer;
     }
 
     /**
-     * Update an existing offer.
-     *
-     * @param Offer $offer
-     * @param array $data
-     * @return Offer
-     */
-    public function updateOffer(Offer $offer, array $data): Offer
-    {
-        $updateData = [];
-
-        if (isset($data['caption'])) {
-            $updateData['caption'] = $data['caption'];
-        }
-
-        if (isset($data['validity'])) {
-            $updateData['validity_type'] = $this->parseValidity($data['validity']);
-            $updateData['expires_at'] = $this->calculateExpiry($data['validity']);
-        }
-
-        if (isset($data['is_active'])) {
-            $updateData['is_active'] = $data['is_active'];
-        }
-
-        if (!empty($updateData)) {
-            $offer->update($updateData);
-        }
-
-        return $offer->fresh();
-    }
-
-    /**
-     * Delete an offer and its media.
-     *
-     * @param Offer $offer
-     * @return bool
+     * Delete offer and its media.
      */
     public function deleteOffer(Offer $offer): bool
     {
         try {
-            // Delete media from storage
             if ($offer->media_url) {
                 $this->mediaService->deleteFromStorage($offer->media_url);
             }
@@ -143,7 +117,6 @@ class OfferService
             $offer->delete();
 
             Log::info('Offer deleted', ['offer_id' => $offer->id]);
-
             return true;
 
         } catch (\Exception $e) {
@@ -151,21 +124,16 @@ class OfferService
                 'offer_id' => $offer->id,
                 'error' => $e->getMessage(),
             ]);
-
             return false;
         }
     }
 
     /**
-     * Deactivate an offer (soft delete alternative).
-     *
-     * @param Offer $offer
-     * @return Offer
+     * Deactivate offer.
      */
     public function deactivateOffer(Offer $offer): Offer
     {
         $offer->update(['is_active' => false]);
-
         return $offer;
     }
 
@@ -176,16 +144,12 @@ class OfferService
     */
 
     /**
-     * Get active offers near a location.
+     * Get offers near a location.
      *
-     * @param float $latitude User latitude
-     * @param float $longitude User longitude
-     * @param float $radiusKm Search radius in km
-     * @param string|null $category Filter by category
-     * @param int $limit Max results
-     * @return Collection
+     * @srs-ref FR-OFR-11 - Query within configurable radius (default 5km)
+     * @srs-ref FR-OFR-12 - Sort by distance (nearest first)
      */
-    public function getOffersNearLocation(
+    public function getNearbyOffers(
         float $latitude,
         float $longitude,
         float $radiusKm = 5,
@@ -210,9 +174,9 @@ class OfferService
             ->with(['shop']);
 
         if ($category && $category !== 'all') {
-            $categoryEnum = ShopCategory::tryFrom(strtoupper($category));
-            if ($categoryEnum) {
-                $query->where('shops.category', $categoryEnum);
+            $catEnum = ShopCategory::tryFrom($category);
+            if ($catEnum) {
+                $query->where('shops.category', $catEnum);
             }
         }
 
@@ -220,13 +184,7 @@ class OfferService
     }
 
     /**
-     * Get offers by category with distance from user.
-     *
-     * @param string $category
-     * @param float $latitude
-     * @param float $longitude
-     * @param float $radiusKm
-     * @return Collection
+     * Get offers by category.
      */
     public function getOffersByCategory(
         string $category,
@@ -234,61 +192,13 @@ class OfferService
         float $longitude,
         float $radiusKm = 5
     ): Collection {
-        return $this->getOffersNearLocation($latitude, $longitude, $radiusKm, $category);
+        return $this->getNearbyOffers($latitude, $longitude, $radiusKm, $category);
     }
 
     /**
-     * Get shops with active offers near location.
+     * Get offer counts by category.
      *
-     * @param float $latitude
-     * @param float $longitude
-     * @param float $radiusKm
-     * @param string|null $category
-     * @return Collection
-     */
-    public function getShopsWithOffers(
-        float $latitude,
-        float $longitude,
-        float $radiusKm = 5,
-        ?string $category = null
-    ): Collection {
-        $query = Shop::query()
-            ->selectRaw('
-                shops.*,
-                (ST_Distance_Sphere(
-                    POINT(shops.longitude, shops.latitude),
-                    POINT(?, ?)
-                ) / 1000) as distance_km,
-                COUNT(offers.id) as offer_count
-            ', [$longitude, $latitude])
-            ->join('offers', 'shops.id', '=', 'offers.shop_id')
-            ->where('shops.is_active', true)
-            ->where('offers.is_active', true)
-            ->where('offers.expires_at', '>', now())
-            ->havingRaw('distance_km <= ?', [$radiusKm])
-            ->groupBy('shops.id')
-            ->orderBy('distance_km')
-            ->with(['offers' => function ($query) {
-                $query->active()->orderBy('created_at', 'desc');
-            }]);
-
-        if ($category && $category !== 'all') {
-            $categoryEnum = ShopCategory::tryFrom(strtoupper($category));
-            if ($categoryEnum) {
-                $query->where('shops.category', $categoryEnum);
-            }
-        }
-
-        return $query->get();
-    }
-
-    /**
-     * Get offer counts by category near location.
-     *
-     * @param float $latitude
-     * @param float $longitude
-     * @param float $radiusKm
-     * @return array<string, int>
+     * @srs-ref FR-OFR-10 - Display category list with offer counts
      */
     public function getOfferCountsByCategory(
         float $latitude,
@@ -311,42 +221,34 @@ class OfferService
             ->get();
 
         $counts = [];
-        $totalCount = 0;
-        
+        $total = 0;
+
         foreach ($results as $row) {
             $counts[strtolower($row->category)] = $row->count;
-            $totalCount += $row->count;
+            $total += $row->count;
         }
 
-        // Add total count for "all" category option
-        $counts['all'] = $totalCount;
+        $counts['all'] = $total;
 
         return $counts;
     }
 
     /**
      * Get active offers for a shop.
-     *
-     * @param Shop $shop
-     * @return Collection
      */
     public function getShopOffers(Shop $shop): Collection
     {
         return $shop->offers()
-            ->active()
+            ->where('is_active', true)
+            ->where('expires_at', '>', now())
             ->orderBy('created_at', 'desc')
             ->get();
     }
 
     /**
-     * Get a single offer with distance from user.
-     *
-     * @param int $offerId
-     * @param float $latitude
-     * @param float $longitude
-     * @return Offer|null
+     * Get single offer with distance.
      */
-    public function getOfferWithDistance(int $offerId, float $latitude, float $longitude): ?Offer
+    public function getOfferWithDistance(int $offerId, float $lat, float $lng): ?Offer
     {
         return Offer::query()
             ->select('offers.*')
@@ -355,7 +257,7 @@ class OfferService
                     POINT(shops.longitude, shops.latitude),
                     POINT(?, ?)
                 ) / 1000) as distance_km
-            ', [$longitude, $latitude])
+            ', [$lng, $lat])
             ->join('shops', 'offers.shop_id', '=', 'shops.id')
             ->where('offers.id', $offerId)
             ->with(['shop'])
@@ -364,42 +266,36 @@ class OfferService
 
     /*
     |--------------------------------------------------------------------------
-    | Analytics
+    | Analytics (FR-OFR-06)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Increment view count for an offer.
+     * Increment view count.
      *
-     * @param Offer $offer
-     * @return void
+     * @srs-ref FR-OFR-06 - Track offer view counts
      */
     public function incrementViewCount(Offer $offer): void
     {
         $offer->increment('view_count');
-
         Log::debug('Offer view recorded', ['offer_id' => $offer->id]);
     }
 
     /**
-     * Increment location tap count for an offer.
+     * Increment location tap count.
      *
-     * @param Offer $offer
-     * @return void
+     * @srs-ref FR-OFR-06 - Track location tap metrics
      */
     public function incrementLocationTap(Offer $offer): void
     {
         $offer->increment('location_tap_count');
-
         Log::debug('Offer location tap recorded', ['offer_id' => $offer->id]);
     }
 
     /**
-     * Calculate estimated customer reach for a shop.
+     * Calculate estimated customer reach.
      *
-     * @param Shop $shop
-     * @param float $radiusKm
-     * @return int
+     * @srs-ref FR-OFR-05 - Show estimated customer reach
      */
     public function calculateEstimatedReach(Shop $shop, float $radiusKm = 5): int
     {
@@ -410,20 +306,17 @@ class OfferService
                     POINT(?, ?)
                 ) / 1000) <= ?
             ', [$shop->longitude, $shop->latitude, $radiusKm])
-            ->where('type', 'CUSTOMER')
+            ->where('type', UserType::CUSTOMER)
             ->whereNotNull('registered_at')
             ->count();
     }
 
     /**
-     * Get offer statistics for a shop.
-     *
-     * @param Shop $shop
-     * @return array
+     * Get shop offer stats.
      */
     public function getShopOfferStats(Shop $shop): array
     {
-        $offers = $shop->offers()->active()->get();
+        $offers = $this->getShopOffers($shop);
 
         return [
             'active_offers' => $offers->count(),
@@ -435,14 +328,52 @@ class OfferService
 
     /*
     |--------------------------------------------------------------------------
+    | Validation
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Check if shop can upload more offers.
+     */
+    public function canUploadOffer(Shop $shop): bool
+    {
+        $maxOffers = config('nearbuy.offers.max_active_per_shop', 5);
+        $activeCount = $shop->offers()->where('is_active', true)->count();
+
+        return $activeCount < $maxOffers;
+    }
+
+    /**
+     * Get remaining offer slots.
+     */
+    public function getRemainingSlots(Shop $shop): int
+    {
+        $maxOffers = config('nearbuy.offers.max_active_per_shop', 5);
+        $activeCount = $shop->offers()->where('is_active', true)->count();
+
+        return max(0, $maxOffers - $activeCount);
+    }
+
+    /**
+     * Check if user can upload offers.
+     */
+    public function canUserUploadOffer(User $user): bool
+    {
+        if (!$user->isShopOwner() || !$user->shop) {
+            return false;
+        }
+
+        return $this->canUploadOffer($user->shop);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Maintenance
     |--------------------------------------------------------------------------
     */
 
     /**
      * Expire old offers (for scheduled task).
-     *
-     * @return int Number of offers expired
      */
     public function expireOldOffers(): int
     {
@@ -459,10 +390,7 @@ class OfferService
     }
 
     /**
-     * Delete very old inactive offers and their media.
-     *
-     * @param int $daysOld
-     * @return int
+     * Cleanup very old inactive offers.
      */
     public function cleanupOldOffers(int $daysOld = 30): int
     {
@@ -481,77 +409,5 @@ class OfferService
         Log::info('Old offers cleaned up', ['count' => $count]);
 
         return $count;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validation
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Check if shop can upload more offers.
-     *
-     * @param Shop $shop
-     * @return bool
-     */
-    public function canUploadOffer(Shop $shop): bool
-    {
-        $maxOffers = config('nearbuy.offers.max_active_per_shop', 5);
-        $activeCount = $shop->offers()->active()->count();
-
-        return $activeCount < $maxOffers;
-    }
-
-    /**
-     * Get remaining offer slots for shop.
-     *
-     * @param Shop $shop
-     * @return int
-     */
-    public function getRemainingOfferSlots(Shop $shop): int
-    {
-        $maxOffers = config('nearbuy.offers.max_active_per_shop', 5);
-        $activeCount = $shop->offers()->active()->count();
-
-        return max(0, $maxOffers - $activeCount);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Helper Methods
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Calculate expiry date based on validity type.
-     *
-     * @param string $validity
-     * @return \Carbon\Carbon
-     */
-    protected function calculateExpiry(string $validity): \Carbon\Carbon
-    {
-        return match (strtolower($validity)) {
-            'today' => now()->endOfDay(),
-            '3days', 'three_days' => now()->addDays(3)->endOfDay(),
-            'week', 'this_week' => now()->addWeek()->endOfDay(),
-            default => now()->addDays(3)->endOfDay(),
-        };
-    }
-
-    /**
-     * Parse validity string to enum.
-     *
-     * @param string $validity
-     * @return OfferValidity
-     */
-    protected function parseValidity(string $validity): OfferValidity
-    {
-        return match (strtolower($validity)) {
-            'today' => OfferValidity::TODAY,
-            '3days', 'three_days' => OfferValidity::THREE_DAYS,
-            'week', 'this_week' => OfferValidity::WEEK,
-            default => OfferValidity::THREE_DAYS,
-        };
     }
 }

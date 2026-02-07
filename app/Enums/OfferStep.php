@@ -3,85 +3,100 @@
 namespace App\Enums;
 
 /**
- * Offer flow steps (browse and upload).
+ * Offer flow steps.
+ *
+ * THREE FLOWS:
+ * 1. BROWSE - Customer discovers nearby deals
+ * 2. UPLOAD - Shop owner publishes offers (simplified 3-step)
+ * 3. MANAGE - Shop owner manages their offers
+ *
+ * @srs-ref FR-OFR-01 to FR-OFR-16
  */
 enum OfferStep: string
 {
-    // Browse flow steps
+    /*
+    |--------------------------------------------------------------------------
+    | Browse Flow Steps (FR-OFR-10 to FR-OFR-16)
+    |--------------------------------------------------------------------------
+    */
+
+    /** Show category list with offer counts (FR-OFR-10) */
     case SELECT_CATEGORY = 'select_category';
-    case SELECT_RADIUS = 'select_radius';
+
+    /** Show offers list sorted by distance (FR-OFR-12, FR-OFR-13) */
     case SHOW_OFFERS = 'show_offers';
+
+    /** View single offer with image + shop details (FR-OFR-14) */
     case VIEW_OFFER = 'view_offer';
+
+    /** After sending location (FR-OFR-16) */
     case SHOW_LOCATION = 'show_location';
 
-    // Upload flow steps
-    case UPLOAD_IMAGE = 'upload_image';
-    case ADD_CAPTION = 'add_caption';
-    case SELECT_VALIDITY = 'select_validity';
-    case CONFIRM_UPLOAD = 'confirm_upload';
-    case UPLOAD_COMPLETE = 'upload_complete';
+    /*
+    |--------------------------------------------------------------------------
+    | Upload Flow Steps (FR-OFR-01 to FR-OFR-06)
+    |--------------------------------------------------------------------------
+    */
 
-    // Manage flow steps
+    /** Step 1: Ask for image/PDF upload */
+    case ASK_IMAGE = 'ask_image';
+
+    /** Step 2: Ask validity period */
+    case ASK_VALIDITY = 'ask_validity';
+
+    /** Step 3: Upload complete */
+    case DONE = 'done';
+
+    /*
+    |--------------------------------------------------------------------------
+    | Manage Flow Steps
+    |--------------------------------------------------------------------------
+    */
+
+    /** Show shop owner's offers with stats */
     case SHOW_MY_OFFERS = 'show_my_offers';
+
+    /** Manage single offer (stats, delete, extend) */
     case MANAGE_OFFER = 'manage_offer';
+
+    /** Confirm deletion */
     case DELETE_CONFIRM = 'delete_confirm';
 
-    /**
-     * Get the prompt message for this step.
-     */
-    public function prompt(): string
-    {
-        return match ($this) {
-            self::SELECT_CATEGORY => "🛍️ *Browse Offers*\n\nSelect a category to see offers:",
-            self::SELECT_RADIUS => "📍 How far would you like to search?",
-            self::SHOW_OFFERS => "Here are the latest offers near you:",
-            self::VIEW_OFFER => "Offer details:",
-            self::SHOW_LOCATION => "📍 Shop location:",
-
-            self::UPLOAD_IMAGE => "📤 *Upload Offer*\n\nPlease send an image or PDF of your offer:",
-            self::ADD_CAPTION => "Add a caption for your offer (or type 'skip'):",
-            self::SELECT_VALIDITY => "How long should this offer be valid?",
-            self::CONFIRM_UPLOAD => "Please confirm your offer:",
-            self::UPLOAD_COMPLETE => "✅ Your offer has been uploaded successfully!",
-
-            self::SHOW_MY_OFFERS => "🏷️ *My Offers*\n\nHere are your active offers:",
-            self::MANAGE_OFFER => "What would you like to do with this offer?",
-            self::DELETE_CONFIRM => "Are you sure you want to delete this offer?",
-        };
-    }
+    /** Extend validity selection */
+    case EXTEND_VALIDITY = 'extend_validity';
 
     /**
-     * Get the expected input type for this step.
+     * Get expected input type.
      */
     public function expectedInput(): string
     {
         return match ($this) {
+            // Browse
             self::SELECT_CATEGORY => 'list',
-            self::SELECT_RADIUS => 'button',
             self::SHOW_OFFERS => 'list',
             self::VIEW_OFFER => 'button',
             self::SHOW_LOCATION => 'button',
 
-            self::UPLOAD_IMAGE => 'image',
-            self::ADD_CAPTION => 'text',
-            self::SELECT_VALIDITY => 'button',
-            self::CONFIRM_UPLOAD => 'button',
-            self::UPLOAD_COMPLETE => 'none',
+            // Upload
+            self::ASK_IMAGE => 'media',
+            self::ASK_VALIDITY => 'button',
+            self::DONE => 'button',
 
+            // Manage
             self::SHOW_MY_OFFERS => 'list',
             self::MANAGE_OFFER => 'button',
             self::DELETE_CONFIRM => 'button',
+            self::EXTEND_VALIDITY => 'button',
         };
     }
 
     /**
-     * Check if this is a browse step.
+     * Check if browse step.
      */
     public function isBrowseStep(): bool
     {
         return in_array($this, [
             self::SELECT_CATEGORY,
-            self::SELECT_RADIUS,
             self::SHOW_OFFERS,
             self::VIEW_OFFER,
             self::SHOW_LOCATION,
@@ -89,21 +104,19 @@ enum OfferStep: string
     }
 
     /**
-     * Check if this is an upload step.
+     * Check if upload step.
      */
     public function isUploadStep(): bool
     {
         return in_array($this, [
-            self::UPLOAD_IMAGE,
-            self::ADD_CAPTION,
-            self::SELECT_VALIDITY,
-            self::CONFIRM_UPLOAD,
-            self::UPLOAD_COMPLETE,
+            self::ASK_IMAGE,
+            self::ASK_VALIDITY,
+            self::DONE,
         ]);
     }
 
     /**
-     * Check if this is a manage step.
+     * Check if manage step.
      */
     public function isManageStep(): bool
     {
@@ -111,11 +124,50 @@ enum OfferStep: string
             self::SHOW_MY_OFFERS,
             self::MANAGE_OFFER,
             self::DELETE_CONFIRM,
+            self::EXTEND_VALIDITY,
         ]);
     }
 
     /**
-     * Get all values as array.
+     * Get all browse steps.
+     */
+    public static function browseSteps(): array
+    {
+        return [
+            self::SELECT_CATEGORY,
+            self::SHOW_OFFERS,
+            self::VIEW_OFFER,
+            self::SHOW_LOCATION,
+        ];
+    }
+
+    /**
+     * Get all upload steps.
+     */
+    public static function uploadSteps(): array
+    {
+        return [
+            self::ASK_IMAGE,
+            self::ASK_VALIDITY,
+            self::DONE,
+        ];
+    }
+
+    /**
+     * Get all manage steps.
+     */
+    public static function manageSteps(): array
+    {
+        return [
+            self::SHOW_MY_OFFERS,
+            self::MANAGE_OFFER,
+            self::DELETE_CONFIRM,
+            self::EXTEND_VALIDITY,
+        ];
+    }
+
+    /**
+     * Get all values.
      */
     public static function values(): array
     {

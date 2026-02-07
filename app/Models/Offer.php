@@ -4,21 +4,39 @@ namespace App\Models;
 
 use App\Enums\OfferValidity;
 use App\Enums\ShopCategory;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Builder;
-use Carbon\Carbon;
 
+/**
+ * Offer Model.
+ *
+ * Represents a shop's promotional offer with image/PDF.
+ *
+ * @property int $id
+ * @property int $shop_id
+ * @property string $media_url
+ * @property string $media_type (image|pdf)
+ * @property string|null $caption
+ * @property OfferValidity $validity_type
+ * @property Carbon $expires_at
+ * @property int $view_count (FR-OFR-06)
+ * @property int $location_tap_count (FR-OFR-06)
+ * @property bool $is_active
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ *
+ * @property-read Shop $shop
+ * @property-read float|null $distance_km (when using withDistance scope)
+ *
+ * @srs-ref FR-OFR-01 to FR-OFR-16
+ */
 class Offer extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
     protected $fillable = [
         'shop_id',
         'media_url',
@@ -31,17 +49,18 @@ class Offer extends Model
         'is_active',
     ];
 
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
     protected $casts = [
         'validity_type' => OfferValidity::class,
         'expires_at' => 'datetime',
         'view_count' => 'integer',
         'location_tap_count' => 'integer',
         'is_active' => 'boolean',
+    ];
+
+    protected $attributes = [
+        'view_count' => 0,
+        'location_tap_count' => 0,
+        'is_active' => true,
     ];
 
     /*
@@ -60,12 +79,12 @@ class Offer extends Model
 
     /*
     |--------------------------------------------------------------------------
-    | Scopes
+    | Query Scopes
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Scope to filter active offers.
+     * Scope: active and not expired offers.
      */
     public function scopeActive(Builder $query): Builder
     {
@@ -75,7 +94,7 @@ class Offer extends Model
     }
 
     /**
-     * Scope to filter expired offers.
+     * Scope: expired offers.
      */
     public function scopeExpired(Builder $query): Builder
     {
@@ -83,97 +102,180 @@ class Offer extends Model
     }
 
     /**
-     * Scope to filter by shop category.
+     * Scope: not expired (regardless of is_active).
+     */
+    public function scopeNotExpired(Builder $query): Builder
+    {
+        return $query->where('expires_at', '>', now());
+    }
+
+    /**
+     * Scope: from active shops only.
+     */
+    public function scopeFromActiveShops(Builder $query): Builder
+    {
+        return $query->whereHas('shop', fn(Builder $q) => $q->where('is_active', true));
+    }
+
+    /**
+     * Scope: filter by shop category.
+     *
+     * @srs-ref FR-OFR-10 - Display category list with offer counts
      */
     public function scopeByCategory(Builder $query, ShopCategory|string $category): Builder
     {
-        $categoryValue = $category instanceof ShopCategory ? $category->value : $category;
+        $value = $category instanceof ShopCategory ? $category->value : strtoupper($category);
 
-        return $query->whereHas('shop', function (Builder $q) use ($categoryValue) {
-            $q->where('category', $categoryValue);
-        });
+        return $query->whereHas('shop', fn(Builder $q) => $q->where('category', $value));
     }
 
     /**
-     * Scope to filter by multiple categories.
+     * Scope: offers near a location within radius.
+     *
+     * Uses MySQL ST_Distance_Sphere for accurate distance calculation.
+     *
+     * @srs-ref FR-OFR-11 - Query within configurable radius using spatial queries
      */
-    public function scopeByCategories(Builder $query, array $categories): Builder
-    {
-        $values = array_map(fn($cat) => $cat instanceof ShopCategory ? $cat->value : $cat, $categories);
-
-        return $query->whereHas('shop', function (Builder $q) use ($values) {
-            $q->whereIn('category', $values);
-        });
-    }
-
-    /**
-     * Scope to find offers near a location.
-     * Joins with shops table to filter by location.
-     */
-    public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
-    {
-        return $query->whereHas('shop', function (Builder $q) use ($latitude, $longitude, $radiusKm) {
-            $q->nearLocation($latitude, $longitude, $radiusKm);
-        });
-    }
-
-    /**
-     * Scope to select with distance from a point.
-     */
-    public function scopeWithDistanceFrom(Builder $query, float $latitude, float $longitude): Builder
+    public function scopeNearTo(Builder $query, float $lat, float $lng, float $radiusKm = 5): Builder
     {
         return $query
             ->join('shops', 'offers.shop_id', '=', 'shops.id')
-            ->selectRaw(
-                "offers.*, ST_Distance_Sphere(
+            ->whereRaw('
+                (ST_Distance_Sphere(
                     POINT(shops.longitude, shops.latitude),
                     POINT(?, ?)
-                ) / 1000 as distance_km",
-                [$longitude, $latitude]
-            );
-    }
-
-    /**
-     * Scope to order by distance from a point.
-     */
-    public function scopeOrderByDistance(Builder $query, float $latitude, float $longitude, string $direction = 'asc'): Builder
-    {
-        return $query
-            ->join('shops', 'offers.shop_id', '=', 'shops.id')
-            ->orderByRaw(
-                "ST_Distance_Sphere(
-                    POINT(shops.longitude, shops.latitude),
-                    POINT(?, ?)
-                ) {$direction}",
-                [$longitude, $latitude]
-            )
+                ) / 1000) <= ?
+            ', [$lng, $lat, $radiusKm])
             ->select('offers.*');
     }
 
     /**
-     * Scope to filter today's offers.
+     * Scope: add distance calculation to query.
+     *
+     * @srs-ref FR-OFR-12 - Sort by distance (nearest first)
+     */
+    public function scopeWithDistance(Builder $query, float $lat, float $lng): Builder
+    {
+        return $query
+            ->join('shops', 'offers.shop_id', '=', 'shops.id')
+            ->selectRaw('
+                offers.*,
+                (ST_Distance_Sphere(
+                    POINT(shops.longitude, shops.latitude),
+                    POINT(?, ?)
+                ) / 1000) as distance_km
+            ', [$lng, $lat]);
+    }
+
+    /**
+     * Scope: order by distance (nearest first).
+     *
+     * @srs-ref FR-OFR-12 - Sort by distance (nearest first)
+     */
+    public function scopeOrderByDistance(Builder $query, float $lat, float $lng): Builder
+    {
+        return $query->orderByRaw('
+            ST_Distance_Sphere(
+                POINT(shops.longitude, shops.latitude),
+                POINT(?, ?)
+            ) ASC
+        ', [$lng, $lat]);
+    }
+
+    /**
+     * Scope: filter by media type.
+     */
+    public function scopeOfType(Builder $query, string $mediaType): Builder
+    {
+        return $query->where('media_type', $mediaType);
+    }
+
+    /**
+     * Scope: created today.
      */
     public function scopeToday(Builder $query): Builder
     {
         return $query->whereDate('created_at', Carbon::today());
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Static Query Methods
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Scope to filter by media type.
+     * Browse offers for customer - main query method.
+     *
+     * Combines: active, from active shops, near location, sorted by distance.
+     *
+     * @srs-ref FR-OFR-11, FR-OFR-12
      */
-    public function scopeOfMediaType(Builder $query, string $mediaType): Builder
-    {
-        return $query->where('media_type', $mediaType);
+    public static function browse(
+        float $lat,
+        float $lng,
+        float $radiusKm = 5,
+        ?string $category = null,
+        int $limit = 10
+    ): \Illuminate\Database\Eloquent\Collection {
+        $query = static::query()
+            ->select('offers.*')
+            ->selectRaw('
+                (ST_Distance_Sphere(
+                    POINT(shops.longitude, shops.latitude),
+                    POINT(?, ?)
+                ) / 1000) as distance_km
+            ', [$lng, $lat])
+            ->join('shops', 'offers.shop_id', '=', 'shops.id')
+            ->where('offers.is_active', true)
+            ->where('offers.expires_at', '>', now())
+            ->where('shops.is_active', true)
+            ->havingRaw('distance_km <= ?', [$radiusKm])
+            ->orderBy('distance_km')
+            ->limit($limit)
+            ->with('shop');
+
+        if ($category && $category !== 'all') {
+            $query->where('shops.category', strtoupper($category));
+        }
+
+        return $query->get();
     }
 
     /**
-     * Scope to only include offers from active shops.
+     * Get offer counts by category near location.
+     *
+     * @srs-ref FR-OFR-10 - Display category list with offer counts per category
      */
-    public function scopeFromActiveShops(Builder $query): Builder
+    public static function countsByCategory(float $lat, float $lng, float $radiusKm = 5): array
     {
-        return $query->whereHas('shop', function (Builder $q) {
-            $q->active();
-        });
+        $results = \Illuminate\Support\Facades\DB::table('offers')
+            ->selectRaw('shops.category, COUNT(offers.id) as count')
+            ->join('shops', 'offers.shop_id', '=', 'shops.id')
+            ->where('offers.is_active', true)
+            ->where('offers.expires_at', '>', now())
+            ->where('shops.is_active', true)
+            ->whereRaw('
+                (ST_Distance_Sphere(
+                    POINT(shops.longitude, shops.latitude),
+                    POINT(?, ?)
+                ) / 1000) <= ?
+            ', [$lng, $lat, $radiusKm])
+            ->groupBy('shops.category')
+            ->get();
+
+        $counts = [];
+        $total = 0;
+
+        foreach ($results as $row) {
+            $key = strtolower($row->category);
+            $counts[$key] = (int) $row->count;
+            $total += $row->count;
+        }
+
+        $counts['all'] = $total;
+
+        return $counts;
     }
 
     /*
@@ -183,7 +285,7 @@ class Offer extends Model
     */
 
     /**
-     * Check if offer is active.
+     * Check if offer is active and not expired.
      */
     public function isActive(): bool
     {
@@ -199,7 +301,7 @@ class Offer extends Model
     }
 
     /**
-     * Check if offer is an image.
+     * Check if media is image.
      */
     public function isImage(): bool
     {
@@ -207,11 +309,19 @@ class Offer extends Model
     }
 
     /**
-     * Check if offer is a PDF.
+     * Check if media is PDF.
      */
     public function isPdf(): bool
     {
         return $this->media_type === 'pdf';
+    }
+
+    /**
+     * Get shop's category.
+     */
+    public function getCategory(): ?ShopCategory
+    {
+        return $this->shop?->category;
     }
 
     /**
@@ -226,29 +336,37 @@ class Offer extends Model
         return $this->expires_at->diffForHumans(['parts' => 2]);
     }
 
-    /**
-     * Get the shop's category.
-     */
-    public function getCategoryAttribute(): ?ShopCategory
-    {
-        return $this->shop?->category;
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Metrics (FR-OFR-06)
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Increment view count.
+     *
+     * @srs-ref FR-OFR-06 - Track offer view counts
      */
-    public function incrementViews(): void
+    public function recordView(): void
     {
         $this->increment('view_count');
     }
 
     /**
      * Increment location tap count.
+     *
+     * @srs-ref FR-OFR-06 - Track location tap metrics
      */
-    public function incrementLocationTaps(): void
+    public function recordLocationTap(): void
     {
         $this->increment('location_tap_count');
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Actions
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Deactivate the offer.
@@ -259,7 +377,18 @@ class Offer extends Model
     }
 
     /**
-     * Create a new offer for a shop.
+     * Extend validity.
+     */
+    public function extendValidity(OfferValidity $newValidity): void
+    {
+        $this->update([
+            'validity_type' => $newValidity,
+            'expires_at' => $newValidity->expiresAt(),
+        ]);
+    }
+
+    /**
+     * Create offer for shop (factory method).
      */
     public static function createForShop(
         Shop $shop,
@@ -268,38 +397,13 @@ class Offer extends Model
         OfferValidity $validity,
         ?string $caption = null
     ): self {
-        return self::create([
+        return static::create([
             'shop_id' => $shop->id,
             'media_url' => $mediaUrl,
             'media_type' => $mediaType,
             'caption' => $caption,
             'validity_type' => $validity,
             'expires_at' => $validity->expiresAt(),
-            'is_active' => true,
         ]);
-    }
-
-    /**
-     * Find offers for browsing by a customer.
-     */
-    public static function browseForCustomer(
-        float $latitude,
-        float $longitude,
-        float $radiusKm = 5,
-        ?ShopCategory $category = null,
-        int $limit = 10
-    ): \Illuminate\Database\Eloquent\Collection {
-        $query = self::query()
-            ->active()
-            ->fromActiveShops()
-            ->nearLocation($latitude, $longitude, $radiusKm)
-            ->with('shop')
-            ->latest();
-
-        if ($category) {
-            $query->byCategory($category);
-        }
-
-        return $query->limit($limit)->get();
     }
 }

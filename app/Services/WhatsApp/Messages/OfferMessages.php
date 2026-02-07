@@ -4,154 +4,139 @@ declare(strict_types=1);
 
 namespace App\Services\WhatsApp\Messages;
 
+use App\Enums\OfferValidity;
 use Carbon\Carbon;
 
 /**
- * Message templates for Offers module.
+ * Offer Messages - Short, bilingual, Kerala-friendly.
  *
- * Contains all user-facing messages for offer upload and browsing.
+ * DESIGN PRINCIPLES:
+ * - Every message MAX 2-3 lines
+ * - Malayalam + English mix (how Keralites actually text)
+ * - Clear next action
+ * - Minimal friction
  *
- * ENHANCEMENTS:
- * - Localization support (English + Malayalam)
- * - Better formatting with distance/time helpers
- * - Consistent emoji usage
- * - WhatsApp character limit awareness
- *
- * @see SRS Section 3.2 - Offers Management
+ * @srs-ref FR-OFR-01 to FR-OFR-06
  */
 class OfferMessages
 {
     /*
     |--------------------------------------------------------------------------
-    | Upload Flow Messages
+    | Upload Flow Messages (Simplified)
     |--------------------------------------------------------------------------
     */
 
-    public const UPLOAD_START = "📤 *Upload New Offer*\n\n" .
-        "Send an image or PDF of your offer.\n\n" .
-        "📸 Supported: JPG, PNG, PDF\n" .
-        "📏 Max size: 5MB\n\n" .
-        "_Tip: Clear photos get more views!_";
+    /**
+     * Step 1: Ask for image/PDF.
+     * FR-OFR-01: Accept image (JPEG, PNG) AND PDF uploads
+     */
+    public const ASK_IMAGE = "🛍️ Offer upload cheyyaam!\n\n" .
+        "📸 Photo or PDF ayakkuka";
 
-    public const UPLOAD_RECEIVED = "✅ Media received!\n\n" .
-        "Now add a caption (optional):\n" .
-        "• What's on offer?\n" .
-        "• Any special prices?\n\n" .
-        "Or type *skip* to continue without caption.";
+    /**
+     * Invalid media type error.
+     */
+    public const INVALID_MEDIA = "⚠️ JPEG, PNG, or PDF files mathram upload cheyyaan pattuu.\n\n" .
+        "📸 Photo or PDF ayakkuka";
 
-    public const ASK_CAPTION = "📝 *Add Caption*\n\n" .
-        "Describe your offer (max 500 chars):\n\n" .
-        "_Example: Fresh vegetables 20% off today! Tomatoes ₹30/kg, Onions ₹25/kg_\n\n" .
-        "Or type *skip* to continue.";
+    /**
+     * Media processing in progress.
+     */
+    public const PROCESSING = "⏳ Processing...";
 
-    public const ASK_VALIDITY = "⏰ *How Long?*\n\n" .
-        "How long should this offer be visible?";
+    /**
+     * Step 2: Ask validity.
+     * FR-OFR-04: Prompt validity period (Today / 3 Days / This Week)
+     */
+    public const ASK_VALIDITY = "✅ Photo saved!\n\n" .
+        "⏰ Evide vare valid?";
 
-    public const UPLOAD_CONFIRM = "📋 *Review Your Offer*\n\n" .
-        "{caption}\n\n" .
-        "⏰ Valid: {validity}\n" .
-        "👥 Reach: ~{reach} nearby customers\n\n" .
-        "Ready to publish?";
+    /**
+     * Invalid validity selection.
+     */
+    public const INVALID_VALIDITY = "👆 Button tap cheyyuka please";
 
-    public const UPLOAD_SUCCESS = "🎉 *Offer Published!*\n\n" .
-        "Your offer is now visible to customers within {radius}km.\n\n" .
-        "📊 Estimated reach: ~{reach} customers\n" .
-        "⏰ Expires: {expiry_date}\n\n" .
-        "_We'll notify you when customers view it._";
+    /**
+     * Step 3: Success message.
+     * FR-OFR-05: Confirm publication, show estimated customer reach
+     * FR-OFR-06: Track offer view counts and location tap metrics
+     */
+    public const SUCCESS = "✅ *Offer live aayi!* 🎉\n\n" .
+        "📊 ~{reach} customers nearby kaanum\n" .
+        "⏰ Valid till: {expiry}\n\n" .
+        "👀 Views: 0 | 📍 Taps: 0\n" .
+        "_Stats update cheythukond irikum_";
 
-    public const UPLOAD_CANCELLED = "❌ Upload cancelled.\n\n" .
-        "You can upload anytime from the main menu.";
+    /**
+     * Upload failed error.
+     */
+    public const UPLOAD_FAILED = "❌ Upload failed. Try again?\n\n" .
+        "📸 Photo or PDF ayakkuka";
 
-    public const MAX_OFFERS_REACHED = "⚠️ *Limit Reached*\n\n" .
-        "You have {max} active offers (maximum allowed).\n\n" .
-        "Delete an existing offer to upload a new one.";
+    /**
+     * Max offers reached.
+     */
+    public const MAX_OFFERS = "⚠️ Maximum {max} offers already active!\n\n" .
+        "Delete one to upload new.";
 
-    public const INVALID_MEDIA = "⚠️ *Invalid File*\n\n" .
-        "Please send an image (JPG, PNG) or PDF.\n" .
-        "Max size: 5MB";
-
-    public const CAPTION_TOO_LONG = "⚠️ Caption too long!\n\n" .
-        "Please keep it under 500 characters.";
+    /**
+     * Shop required error.
+     */
+    public const SHOP_REQUIRED = "⚠️ Shop owners mathram offers upload cheyyaan pattuu.\n\n" .
+        "Shop register cheyyuka first.";
 
     /*
     |--------------------------------------------------------------------------
-    | Browse Flow Messages (FR-OFR-10 to FR-OFR-16)
+    | Browse Flow Messages
     |--------------------------------------------------------------------------
     */
 
-    public const BROWSE_START = "🛍️ *Browse Offers*\n\n" .
-        "Select a category to see offers from nearby shops:";
+    public const BROWSE_START = "🛍️ *Nearby Offers*\n\n" .
+        "Category select cheyyuka:";
 
-    public const BROWSE_NO_LOCATION = "📍 *Location Needed*\n\n" .
-        "Share your location to see nearby offers.\n\n" .
-        "🔒 _Your exact location stays private._";
+    public const NO_OFFERS = "😕 Offers illa {radius}km-il.\n\n" .
+        "Try another category?";
 
-    public const SELECT_CATEGORY = "📦 *Select Category*\n\n" .
-        "What are you looking for?";
+    public const NO_LOCATION = "📍 Location share cheyyuka offers kaanaan.";
 
-    public const SELECT_RADIUS = "📍 *Search Distance*\n\n" .
-        "How far would you like to search?";
+    public const OFFERS_FOUND = "🛍️ *{category}*\n\n" .
+        "{count} offer(s) found:";
 
-    // FR-OFR-13: Display shop list with distance and validity
-    public const OFFERS_LIST_HEADER = "🛍️ *{category}*\n\n" .
-        "Found {count} offer(s) near you:";
-
-    public const NO_OFFERS_IN_CATEGORY = "😕 *No Offers Found*\n\n" .
-        "No offers in *{category}* within {radius}km.\n\n" .
-        "Try:\n" .
-        "• Different category\n" .
-        "• Larger search radius";
-
-    public const NO_OFFERS_NEARBY = "😕 *No Nearby Offers*\n\n" .
-        "No active offers within {radius}km.\n\n" .
-        "Try expanding your search radius.";
-
-    /*
-    |--------------------------------------------------------------------------
-    | Offer Display Messages (FR-OFR-14)
-    |--------------------------------------------------------------------------
-    */
-
+    /**
+     * Offer card display.
+     * FR-OFR-14: Send offer image with caption containing shop details
+     */
     public const OFFER_CARD = "🏪 *{shop_name}*\n" .
-        "📍 {distance} away\n" .
-        "⏰ Valid till {expiry}\n\n" .
-        "{caption}";
-
-    public const OFFER_CARD_NO_CAPTION = "🏪 *{shop_name}*\n" .
         "📍 {distance} away\n" .
         "⏰ Valid till {expiry}";
 
-    // FR-OFR-16: Send shop location
-    public const SHOP_LOCATION_SENT = "📍 *{shop_name}*\n\n" .
-        "Tap to open in Maps and get directions.";
-
-    public const SHOP_CONTACT = "📞 *Contact {shop_name}*\n\n" .
-        "Phone: {phone}\n\n" .
-        "_Tap number to call_";
+    /**
+     * Shop location sent.
+     * FR-OFR-16: Send shop location as WhatsApp location message
+     */
+    public const LOCATION_SENT = "📍 *{shop_name}*\n\n" .
+        "Maps-il open cheyyuka ➡️";
 
     /*
     |--------------------------------------------------------------------------
-    | Manage Offers Messages
+    | Manage Flow Messages
     |--------------------------------------------------------------------------
     */
 
-    public const MY_OFFERS_HEADER = "🏷️ *My Offers*\n\n" .
-        "You have {count} active offer(s):";
+    public const MY_OFFERS_HEADER = "🏷️ *Ninte Offers*\n\n" .
+        "{count} active offer(s):";
 
-    public const MY_OFFERS_EMPTY = "📭 *No Active Offers*\n\n" .
-        "Upload an offer to attract nearby customers!";
+    public const MY_OFFERS_EMPTY = "📭 Active offers illa.\n\n" .
+        "Upload cheyyuka!";
 
-    public const OFFER_STATS = "📊 *Offer Performance*\n\n" .
-        "👁️ Views: {views}\n" .
-        "📍 Location taps: {location_taps}\n" .
+    public const OFFER_STATS = "📊 *Stats*\n\n" .
+        "👀 Views: {views}\n" .
+        "📍 Location taps: {taps}\n" .
         "⏰ Expires: {expiry}";
 
-    public const DELETE_CONFIRM = "🗑️ *Delete Offer?*\n\n" .
-        "This cannot be undone.";
+    public const DELETE_CONFIRM = "🗑️ Offer delete cheyyano?";
 
-    public const OFFER_DELETED = "✅ Offer deleted.";
-
-    public const OFFER_EXPIRED = "⏰ This offer has expired.";
+    public const DELETED = "✅ Offer deleted.";
 
     /*
     |--------------------------------------------------------------------------
@@ -160,248 +145,103 @@ class OfferMessages
     */
 
     /**
-     * Validity selection buttons.
+     * Validity buttons.
+     * FR-OFR-04: Today / 3 Days / This Week
      */
-    public static function getValidityButtons(): array
+    public static function validityButtons(): array
+    {
+        return OfferValidity::toButtons();
+    }
+
+    /**
+     * Post-upload action buttons.
+     */
+    public static function successButtons(): array
     {
         return [
-            ['id' => 'today', 'title' => '📅 Today Only'],
-            ['id' => '3days', 'title' => '📆 3 Days'],
-            ['id' => 'week', 'title' => '🗓️ This Week'],
+            ['id' => 'upload_another', 'title' => '📸 Upload Another'],
+            ['id' => 'main_menu', 'title' => '🏠 Menu'],
         ];
     }
 
     /**
-     * Upload confirmation buttons.
+     * Offer action buttons.
+     * FR-OFR-15: Get Location and Call Shop action buttons
      */
-    public static function getConfirmButtons(): array
+    public static function offerActionButtons(): array
     {
         return [
-            ['id' => 'publish', 'title' => '✅ Publish'],
-            ['id' => 'edit', 'title' => '✏️ Edit Caption'],
-            ['id' => 'cancel', 'title' => '❌ Cancel'],
+            ['id' => 'get_location', 'title' => '📍 Get Location'],
+            ['id' => 'call_shop', 'title' => '📞 Call Shop'],
+            ['id' => 'back', 'title' => '⬅️ Back'],
         ];
     }
 
     /**
-     * Offer action buttons (FR-OFR-15).
+     * Manage offer buttons.
      */
-    public static function getOfferActionButtons(): array
+    public static function manageButtons(): array
     {
         return [
-            ['id' => 'location', 'title' => '📍 Get Location'],
-            ['id' => 'contact', 'title' => '📞 Call Shop'],
-            ['id' => 'back', 'title' => '⬅️ More Offers'],
-        ];
-    }
-
-    /**
-     * Offer management buttons.
-     */
-    public static function getManageButtons(): array
-    {
-        return [
-            ['id' => 'stats', 'title' => '📊 View Stats'],
+            ['id' => 'view_stats', 'title' => '📊 Stats'],
             ['id' => 'delete', 'title' => '🗑️ Delete'],
             ['id' => 'back', 'title' => '⬅️ Back'],
         ];
     }
 
     /**
-     * Radius selection buttons.
-     */
-    public static function getRadiusButtons(): array
-    {
-        return [
-            ['id' => '2', 'title' => '📍 2 km'],
-            ['id' => '5', 'title' => '📍 5 km'],
-            ['id' => '10', 'title' => '📍 10 km'],
-        ];
-    }
-
-    /**
      * Delete confirmation buttons.
      */
-    public static function getDeleteConfirmButtons(): array
+    public static function deleteConfirmButtons(): array
     {
         return [
             ['id' => 'confirm_delete', 'title' => '🗑️ Yes, Delete'],
-            ['id' => 'cancel_delete', 'title' => '❌ Keep It'],
+            ['id' => 'cancel', 'title' => '❌ No'],
         ];
     }
 
     /**
-     * Post-upload action buttons.
+     * Radius selection buttons.
      */
-    public static function getPostUploadButtons(): array
+    public static function radiusButtons(): array
     {
         return [
-            ['id' => 'upload_another', 'title' => '📤 Upload Another'],
-            ['id' => 'my_offers', 'title' => '🏷️ My Offers'],
-            ['id' => 'menu', 'title' => '🏠 Main Menu'],
-        ];
-    }
-
-    /**
-     * No offers found buttons.
-     */
-    public static function getNoOffersButtons(): array
-    {
-        return [
-            ['id' => 'change_radius', 'title' => '📍 Change Radius'],
-            ['id' => 'change_category', 'title' => '📦 Other Category'],
-            ['id' => 'menu', 'title' => '🏠 Main Menu'],
+            ['id' => 'radius_2', 'title' => '📍 2 km'],
+            ['id' => 'radius_5', 'title' => '📍 5 km'],
+            ['id' => 'radius_10', 'title' => '📍 10 km'],
         ];
     }
 
     /*
     |--------------------------------------------------------------------------
-    | List Configurations (Max 10 items per WhatsApp API)
+    | Formatting Helpers
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get category list sections with offer counts.
-     * FR-OFR-10: Display category list with offer counts per category.
+     * Format message with placeholders.
      */
-    public static function getCategorySections(array $categoryCounts = []): array
+    public static function format(string $template, array $data): string
     {
-        $categories = [
-            ['id' => 'all', 'icon' => '🔍', 'name' => 'All Categories'],
-            ['id' => 'grocery', 'icon' => '🛒', 'name' => 'Grocery'],
-            ['id' => 'electronics', 'icon' => '📱', 'name' => 'Electronics'],
-            ['id' => 'clothes', 'icon' => '👕', 'name' => 'Clothes'],
-            ['id' => 'medical', 'icon' => '💊', 'name' => 'Medical'],
-            ['id' => 'restaurant', 'icon' => '🍽️', 'name' => 'Restaurant'],
-            ['id' => 'furniture', 'icon' => '🪑', 'name' => 'Furniture'],
-            ['id' => 'beauty', 'icon' => '💄', 'name' => 'Beauty'],
-            ['id' => 'hardware', 'icon' => '🔧', 'name' => 'Hardware'],
-            ['id' => 'automotive', 'icon' => '🚗', 'name' => 'Automotive'],
-        ];
-
-        $rows = array_map(function ($cat) use ($categoryCounts) {
-            // Each category shows its own count (0 if no offers in that category)
-            $count = $categoryCounts[$cat['id']] ?? 0;
-            $countText = $count > 0 ? "{$count} offer" . ($count > 1 ? 's' : '') : 'No offers';
-
-            return [
-                'id' => $cat['id'],
-                'title' => "{$cat['icon']} {$cat['name']}",
-                'description' => $countText,
-            ];
-        }, $categories);
-
-        return [
-            [
-                'title' => 'Shop Categories',
-                'rows' => $rows,
-            ],
-        ];
-    }
-
-    /**
-     * Build offers list for display.
-     * FR-OFR-13: Display shop list with distance and validity information.
-     */
-    public static function buildOffersList(array $offers): array
-    {
-        $rows = [];
-
-        foreach ($offers as $index => $offer) {
-            $shop = $offer['shop'] ?? null;
-            $shopName = $shop['shop_name'] ?? 'Shop';
-            $distance = isset($offer['distance_km']) ? self::formatDistance($offer['distance_km']) : '';
-            $expiry = isset($offer['expires_at']) ? self::formatExpiry($offer['expires_at']) : '';
-
-            $rows[] = [
-                'id' => 'offer_' . ($offer['id'] ?? $index),
-                'title' => self::truncate($shopName, 24),
-                'description' => self::truncate("{$distance} • {$expiry}", 72),
-            ];
-        }
-
-        return [
-            [
-                'title' => 'Nearby Offers',
-                'rows' => array_slice($rows, 0, 10), // WhatsApp limit
-            ],
-        ];
-    }
-
-    /**
-     * Build my offers list for shop owner.
-     */
-    public static function buildMyOffersList(array $offers): array
-    {
-        $rows = [];
-
-        foreach ($offers as $index => $offer) {
-            $views = $offer['view_count'] ?? 0;
-            $caption = $offer['caption'] ?? 'Offer #' . ($index + 1);
-            $expiry = isset($offer['expires_at']) ? self::formatExpiry($offer['expires_at']) : 'N/A';
-
-            $rows[] = [
-                'id' => 'manage_' . ($offer['id'] ?? $index),
-                'title' => self::truncate($caption, 24),
-                'description' => self::truncate("👁️ {$views} views • Expires: {$expiry}", 72),
-            ];
-        }
-
-        return [
-            [
-                'title' => 'Your Active Offers',
-                'rows' => array_slice($rows, 0, 10),
-            ],
-        ];
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Helper Methods
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Format a message with placeholders.
-     */
-    public static function format(string $template, array $replacements): string
-    {
-        foreach ($replacements as $key => $value) {
+        foreach ($data as $key => $value) {
             $template = str_replace("{{$key}}", (string) $value, $template);
         }
-
         return $template;
     }
 
     /**
      * Format distance for display.
-     * FR-OFR-12: Sort results by distance (nearest first).
+     * FR-OFR-12: Sort by distance (nearest first)
      */
-    public static function formatDistance(float $distanceKm): string
+    public static function formatDistance(float $km): string
     {
-        if ($distanceKm < 0.1) {
+        if ($km < 0.1) {
             return 'Very close';
         }
-
-        if ($distanceKm < 1) {
-            $meters = round($distanceKm * 1000, -1); // Round to nearest 10m
-            return "{$meters}m";
+        if ($km < 1) {
+            return round($km * 1000) . 'm';
         }
-
-        return round($distanceKm, 1) . 'km';
-    }
-
-    /**
-     * Format validity for display.
-     */
-    public static function formatValidity(string $validityId): string
-    {
-        return match ($validityId) {
-            'today' => 'Today only',
-            '3days' => '3 days',
-            'week' => 'This week',
-            default => $validityId,
-        };
+        return round($km, 1) . 'km';
     }
 
     /**
@@ -437,112 +277,136 @@ class OfferMessages
     }
 
     /**
-     * Get human-readable category label.
+     * Truncate text for WhatsApp limits.
      */
-    public static function getCategoryLabel(string $categoryId): string
+    public static function truncate(string $text, int $max): string
     {
-        $labels = [
-            'grocery' => '🛒 Grocery',
-            'electronics' => '📱 Electronics',
-            'clothes' => '👕 Clothes',
-            'medical' => '💊 Medical',
-            'furniture' => '🪑 Furniture',
-            'mobile' => '📲 Mobile',
-            'appliances' => '🔌 Appliances',
-            'hardware' => '🔧 Hardware',
-            'restaurant' => '🍽️ Restaurant',
-            'bakery' => '🍞 Bakery',
-            'stationery' => '📚 Stationery',
-            'beauty' => '💄 Beauty',
-            'automotive' => '🚗 Automotive',
-            'jewelry' => '💍 Jewelry',
-            'sports' => '⚽ Sports',
-            'all' => '🔍 All',
-            'other' => '📦 Other',
-        ];
-
-        return $labels[strtolower($categoryId)] ?? ucfirst($categoryId);
+        if (mb_strlen($text) <= $max) {
+            return $text;
+        }
+        return mb_substr($text, 0, $max - 1) . '…';
     }
 
     /**
-     * Build offer card message for display.
-     * FR-OFR-14: Send offer image with caption containing shop details.
+     * Build offer card message.
+     * FR-OFR-14: Send offer image with caption containing shop details
      */
     public static function buildOfferCard(array $offer, float $distanceKm): string
     {
-        $shopName = $offer['shop']['shop_name'] ?? 'Shop';
-        $distance = self::formatDistance($distanceKm);
-        $expiry = self::formatExpiry($offer['expires_at'] ?? null);
-        $caption = $offer['caption'] ?? '';
-
-        $template = empty($caption) ? self::OFFER_CARD_NO_CAPTION : self::OFFER_CARD;
-
-        return self::format($template, [
-            'shop_name' => $shopName,
-            'distance' => $distance,
-            'expiry' => $expiry,
-            'caption' => $caption,
+        return self::format(self::OFFER_CARD, [
+            'shop_name' => $offer['shop']['shop_name'] ?? 'Shop',
+            'distance' => self::formatDistance($distanceKm),
+            'expiry' => self::formatExpiry($offer['expires_at'] ?? null),
         ]);
     }
 
     /**
-     * Truncate string to fit WhatsApp limits.
+     * Build success message with reach estimate.
+     * FR-OFR-05: Confirm publication, show estimated customer reach
      */
-    public static function truncate(string $text, int $maxLength): string
+    public static function buildSuccessMessage(int $reach, Carbon $expiry): string
     {
-        if (mb_strlen($text) <= $maxLength) {
-            return $text;
-        }
+        return self::format(self::SUCCESS, [
+            'reach' => $reach,
+            'expiry' => self::formatExpiry($expiry),
+        ]);
+    }
 
-        return mb_substr($text, 0, $maxLength - 1) . '…';
+    /**
+     * Build stats message.
+     * FR-OFR-06: Track offer view counts and location tap metrics
+     */
+    public static function buildStatsMessage(int $views, int $taps, Carbon $expiry): string
+    {
+        return self::format(self::OFFER_STATS, [
+            'views' => $views,
+            'taps' => $taps,
+            'expiry' => self::formatExpiry($expiry),
+        ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Localization Support
+    | Category List (for browse)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get message in specified language.
+     * Get category sections with offer counts.
+     * FR-OFR-10: Display category list with offer counts per category
      */
-    public static function get(string $key, string $lang = 'en'): string
+    public static function categorySections(array $counts = []): array
     {
-        $messages = match ($lang) {
-            'ml' => self::getMalayalamMessages(),
-            default => self::getEnglishMessages(),
-        };
+        $categories = [
+            ['id' => 'all', 'icon' => '🔍', 'name' => 'All'],
+            ['id' => 'grocery', 'icon' => '🛒', 'name' => 'Grocery'],
+            ['id' => 'electronics', 'icon' => '📱', 'name' => 'Electronics'],
+            ['id' => 'clothes', 'icon' => '👕', 'name' => 'Clothes'],
+            ['id' => 'medical', 'icon' => '💊', 'name' => 'Medical'],
+            ['id' => 'furniture', 'icon' => '🪑', 'name' => 'Furniture'],
+            ['id' => 'mobile', 'icon' => '📲', 'name' => 'Mobile'],
+            ['id' => 'appliances', 'icon' => '🔌', 'name' => 'Appliances'],
+            ['id' => 'hardware', 'icon' => '🔧', 'name' => 'Hardware'],
+        ];
 
-        return $messages[$key] ?? self::getEnglishMessages()[$key] ?? "Message not found: {$key}";
+        $rows = array_map(function ($cat) use ($counts) {
+            $count = $counts[$cat['id']] ?? 0;
+            $desc = $count > 0 ? "{$count} offer(s)" : 'No offers';
+
+            return [
+                'id' => $cat['id'],
+                'title' => self::truncate("{$cat['icon']} {$cat['name']}", 24),
+                'description' => $desc,
+            ];
+        }, $categories);
+
+        return [['title' => 'Categories', 'rows' => $rows]];
     }
 
     /**
-     * English messages.
+     * Build offers list for WhatsApp.
+     * FR-OFR-13: Display shop list with distance and validity
      */
-    protected static function getEnglishMessages(): array
+    public static function offersList(array $offers): array
     {
-        return [
-            'browse_start' => self::BROWSE_START,
-            'no_location' => self::BROWSE_NO_LOCATION,
-            'no_offers' => self::NO_OFFERS_IN_CATEGORY,
-            'shop_location' => self::SHOP_LOCATION_SENT,
-        ];
+        $rows = [];
+
+        foreach (array_slice($offers, 0, 10) as $offer) {
+            $shop = $offer['shop'] ?? [];
+            $shopName = $shop['shop_name'] ?? 'Shop';
+            $distance = isset($offer['distance_km'])
+                ? self::formatDistance($offer['distance_km'])
+                : '';
+            $expiry = self::formatExpiry($offer['expires_at'] ?? null);
+
+            $rows[] = [
+                'id' => 'offer_' . $offer['id'],
+                'title' => self::truncate($shopName, 24),
+                'description' => self::truncate("{$distance} • {$expiry}", 72),
+            ];
+        }
+
+        return [['title' => 'Offers', 'rows' => $rows]];
     }
 
     /**
-     * Malayalam messages.
+     * Build my offers list for shop owner.
      */
-    protected static function getMalayalamMessages(): array
+    public static function myOffersList(array $offers): array
     {
-        return [
-            'browse_start' => "🛍️ *ഓഫറുകൾ കാണുക*\n\n" .
-                "സമീപത്തുള്ള ഷോപ്പുകളിൽ നിന്നുള്ള ഓഫറുകൾ കാണാൻ ഒരു വിഭാഗം തിരഞ്ഞെടുക്കുക:",
-            'no_location' => "📍 *ലൊക്കേഷൻ ആവശ്യമാണ്*\n\n" .
-                "സമീപത്തുള്ള ഓഫറുകൾ കാണാൻ നിങ്ങളുടെ ലൊക്കേഷൻ പങ്കിടുക.",
-            'no_offers' => "😕 *ഓഫറുകൾ കണ്ടെത്തിയില്ല*\n\n" .
-                "{radius}km ഉള്ളിൽ *{category}* വിഭാഗത്തിൽ ഓഫറുകളില്ല.",
-            'shop_location' => "📍 *{shop_name}*\n\n" .
-                "മാപ്പിൽ തുറക്കാൻ ടാപ്പ് ചെയ്യുക.",
-        ];
+        $rows = [];
+
+        foreach (array_slice($offers, 0, 10) as $i => $offer) {
+            $views = $offer['view_count'] ?? 0;
+            $expiry = self::formatExpiry($offer['expires_at'] ?? null);
+
+            $rows[] = [
+                'id' => 'manage_' . $offer['id'],
+                'title' => self::truncate("Offer #" . ($i + 1), 24),
+                'description' => self::truncate("👀 {$views} views • {$expiry}", 72),
+            ];
+        }
+
+        return [['title' => 'Your Offers', 'rows' => $rows]];
     }
 }

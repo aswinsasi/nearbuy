@@ -1,125 +1,150 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Flow\Handlers;
 
+use App\Contracts\FlowHandlerInterface;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
 use App\Enums\OfferStep;
+use App\Enums\OfferValidity;
 use App\Models\ConversationSession;
 use App\Services\Media\MediaService;
 use App\Services\Offers\OfferService;
-use App\Services\WhatsApp\Messages\MessageTemplates;
+use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\Messages\OfferMessages;
+use App\Services\WhatsApp\WhatsAppService;
+use Illuminate\Support\Facades\Log;
 
 /**
- * ENHANCED Offer Upload Flow Handler.
+ * Offer Upload Flow Handler - Simplified 3-step flow.
  *
- * Key improvements:
- * 1. Extends AbstractFlowHandler for consistent menu buttons
- * 2. Uses sendTextWithMenu/sendButtonsWithMenu patterns
- * 3. Main Menu button on all messages
+ * FLOW (minimal friction):
+ * 1. ASK_IMAGE → "🛍️ Offer upload cheyyaam! Photo or PDF ayakkuka 📸"
+ * 2. ASK_VALIDITY → "⏰ Evide vare valid?" [Today] [3 Days] [This Week]
+ * 3. DONE → "✅ Offer live aayi! 🎉" + reach estimate + metrics
+ *
+ * No caption step, no confirmation step = Kerala shops just want to share posters fast.
+ *
+ * @srs-ref FR-OFR-01 - Accept image (JPEG, PNG) AND PDF uploads
+ * @srs-ref FR-OFR-02 - Download media using WhatsApp Media API
+ * @srs-ref FR-OFR-03 - Store in cloud storage with unique identifiers
+ * @srs-ref FR-OFR-04 - Prompt validity period (Today / 3 Days / This Week)
+ * @srs-ref FR-OFR-05 - Confirm publication, show estimated customer reach
+ * @srs-ref FR-OFR-06 - Track offer view counts and location tap metrics
  */
-class OfferUploadFlowHandler extends AbstractFlowHandler
+class OfferUploadFlowHandler implements FlowHandlerInterface
 {
     public function __construct(
-        \App\Services\Session\SessionManager $sessionManager,
-        \App\Services\WhatsApp\WhatsAppService $whatsApp,
+        protected SessionManager $sessionManager,
+        protected WhatsAppService $whatsApp,
         protected OfferService $offerService,
         protected MediaService $mediaService,
-    ) {
-        parent::__construct($sessionManager, $whatsApp);
-    }
+    ) {}
 
-    protected function getFlowType(): FlowType
+    /**
+     * {@inheritdoc}
+     */
+    public function getName(): string
     {
-        return FlowType::OFFERS_UPLOAD;
-    }
-
-    protected function getSteps(): array
-    {
-        return [
-            OfferStep::UPLOAD_IMAGE->value,
-            OfferStep::ADD_CAPTION->value,
-            OfferStep::SELECT_VALIDITY->value,
-            OfferStep::CONFIRM_UPLOAD->value,
-            OfferStep::UPLOAD_COMPLETE->value,
-        ];
+        return FlowType::OFFERS_UPLOAD->value;
     }
 
     /**
-     * Start the upload flow.
+     * {@inheritdoc}
+     */
+    public function canHandleStep(string $step): bool
+    {
+        $offerStep = OfferStep::tryFrom($step);
+        return $offerStep !== null && $offerStep->isUploadStep();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Entry Point
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Start upload flow.
      */
     public function start(ConversationSession $session): void
     {
-        // Verify user is a shop owner
         $user = $this->getUser($session);
 
+        // Check: is shop owner?
         if (!$user || !$user->isShopOwner()) {
-            $this->sendButtonsWithMenu(
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                "⚠️ *Shop Owner Required*\n\nOnly shop owners can upload offers.\n\nPlease register as a shop owner first.",
-                [['id' => 'register', 'title' => '📝 Register Shop']]
+                OfferMessages::SHOP_REQUIRED,
+                [
+                    ['id' => 'register_shop', 'title' => '🏪 Register Shop'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
             );
-            $this->goToMainMenu($session);
+            $this->sessionManager->resetToMainMenu($session);
             return;
         }
 
         $shop = $user->shop;
 
-        // Check if can upload more offers
+        // Check: max offers?
         if (!$this->offerService->canUploadOffer($shop)) {
             $maxOffers = config('nearbuy.offers.max_active_per_shop', 5);
-            $message = OfferMessages::format(OfferMessages::MAX_OFFERS_REACHED, [
-                'max' => $maxOffers,
-            ]);
-
-            $this->sendButtonsWithMenu(
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                $message,
-                [['id' => 'my_offers', 'title' => '🏷️ Manage Offers']]
+                OfferMessages::format(OfferMessages::MAX_OFFERS, ['max' => $maxOffers]),
+                [
+                    ['id' => 'my_offers', 'title' => '🏷️ My Offers'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
             );
-
-            $this->goToMainMenu($session);
+            $this->sessionManager->resetToMainMenu($session);
             return;
         }
 
-        // Clear temp data and start
-        $this->clearTemp($session);
-        $this->setTemp($session, 'shop_id', $shop->id);
+        // Clear temp data, store shop_id
+        $this->sessionManager->clearTempData($session);
+        $this->sessionManager->setTempData($session, 'shop_id', $shop->id);
 
+        // Start: Step 1 - ASK_IMAGE
         $this->sessionManager->setFlowStep(
             $session,
             FlowType::OFFERS_UPLOAD,
-            OfferStep::UPLOAD_IMAGE->value
+            OfferStep::ASK_IMAGE->value
         );
 
-        $this->askForMedia($session);
+        $this->promptAskImage($session);
+
+        Log::info('Offer upload started', [
+            'phone' => $this->maskPhone($session->phone),
+            'shop_id' => $shop->id,
+        ]);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Main Handler
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Handle incoming message.
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
-        // Handle common navigation (menu, cancel, etc.)
-        if ($this->handleCommonNavigation($message, $session)) {
-            return;
-        }
-
         $step = OfferStep::tryFrom($session->current_step);
 
-        if (!$step) {
-            $this->logError('Invalid offer upload step', ['step' => $session->current_step]);
+        if (!$step || !$step->isUploadStep()) {
             $this->start($session);
             return;
         }
 
         match ($step) {
-            OfferStep::UPLOAD_IMAGE => $this->handleMediaUpload($message, $session),
-            OfferStep::ADD_CAPTION => $this->handleCaptionInput($message, $session),
-            OfferStep::SELECT_VALIDITY => $this->handleValiditySelection($message, $session),
-            OfferStep::CONFIRM_UPLOAD => $this->handleConfirmation($message, $session),
-            OfferStep::UPLOAD_COMPLETE => $this->handlePostUpload($message, $session),
+            OfferStep::ASK_IMAGE => $this->handleImage($message, $session),
+            OfferStep::ASK_VALIDITY => $this->handleValidity($message, $session),
+            OfferStep::DONE => $this->handleDone($message, $session),
             default => $this->start($session),
         };
     }
@@ -132,68 +157,37 @@ class OfferUploadFlowHandler extends AbstractFlowHandler
         $step = OfferStep::tryFrom($session->current_step);
 
         match ($step) {
-            OfferStep::UPLOAD_IMAGE => $this->askForMedia($session, true),
-            OfferStep::ADD_CAPTION => $this->askForCaption($session, true),
-            OfferStep::SELECT_VALIDITY => $this->askForValidity($session, true),
-            OfferStep::CONFIRM_UPLOAD => $this->askForConfirmation($session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Get expected input type.
-     */
-    protected function getExpectedInputType(string $step): string
-    {
-        return match ($step) {
-            OfferStep::UPLOAD_IMAGE->value => 'media',
-            OfferStep::ADD_CAPTION->value => 'text',
-            OfferStep::SELECT_VALIDITY->value => 'button',
-            OfferStep::CONFIRM_UPLOAD->value => 'button',
-            default => 'button',
-        };
-    }
-
-    /**
-     * Re-prompt current step.
-     */
-    protected function promptCurrentStep(ConversationSession $session): void
-    {
-        $step = OfferStep::tryFrom($session->current_step);
-
-        match ($step) {
-            OfferStep::UPLOAD_IMAGE => $this->askForMedia($session),
-            OfferStep::ADD_CAPTION => $this->askForCaption($session),
-            OfferStep::SELECT_VALIDITY => $this->askForValidity($session),
-            OfferStep::CONFIRM_UPLOAD => $this->askForConfirmation($session),
+            OfferStep::ASK_IMAGE => $this->promptAskImage($session, true),
+            OfferStep::ASK_VALIDITY => $this->promptAskValidity($session, true),
             default => $this->start($session),
         };
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step Handlers
+    | Step 1: Image/PDF Upload (FR-OFR-01, FR-OFR-02, FR-OFR-03)
     |--------------------------------------------------------------------------
     */
 
-    protected function handleMediaUpload(IncomingMessage $message, ConversationSession $session): void
+    protected function handleImage(IncomingMessage $message, ConversationSession $session): void
     {
-        // Check for image or document
+        // FR-OFR-01: Accept image (JPEG, PNG) AND PDF uploads
         if (!$message->isImage() && !$message->isDocument()) {
-            $this->handleInvalidInput($message, $session);
+            $this->promptAskImage($session, true);
             return;
         }
 
-        $mediaId = $this->getMediaId($message);
+        $mediaId = $message->getMediaId();
 
         if (!$mediaId) {
-            $this->handleInvalidInput($message, $session);
+            $this->promptAskImage($session, true);
             return;
         }
 
-        // Download from WhatsApp and upload to S3
-        $this->sendTextWithMenu($session->phone, "⏳ Processing your media...");
+        // Show processing
+        $this->whatsApp->sendText($session->phone, OfferMessages::PROCESSING);
 
+        // FR-OFR-02: Download using WhatsApp Media API with authentication
         $result = $this->mediaService->downloadAndStore(
             mediaId: $mediaId,
             folder: 'offers',
@@ -201,374 +195,259 @@ class OfferUploadFlowHandler extends AbstractFlowHandler
         );
 
         if (!$result['success']) {
-            $this->logError('Offer media upload failed', [
-                'phone' => $session->phone,
-                'error' => $result['error'] ?? 'Unknown error',
+            Log::error('Offer media upload failed', [
+                'phone' => $this->maskPhone($session->phone),
+                'error' => $result['error'] ?? 'Unknown',
             ]);
 
-            $this->sendErrorWithOptions(
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                "❌ Failed to process media. Please try again.",
+                OfferMessages::UPLOAD_FAILED,
                 [
                     ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ]
             );
-            $this->askForMedia($session);
             return;
         }
 
-        // Validate media type
-        $mediaType = $this->mediaService->getMediaType($result['mime_type']);
+        // Validate media type (image or pdf only)
+        $mediaType = $this->mediaService->getMediaType($result['mime_type'] ?? '');
 
         if (!in_array($mediaType, ['image', 'pdf'])) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                OfferMessages::INVALID_MEDIA,
-                [
-                    ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
-                ]
-            );
-            $this->askForMedia($session);
+            $this->whatsApp->sendText($session->phone, OfferMessages::INVALID_MEDIA);
             return;
         }
 
-        // Store media info
+        // FR-OFR-03: Store in cloud storage with unique identifiers
         $this->sessionManager->mergeTempData($session, [
             'media_url' => $result['url'],
             'media_type' => $mediaType,
         ]);
 
-        $this->logInfo('Offer media uploaded', [
+        Log::info('Offer media uploaded', [
             'phone' => $this->maskPhone($session->phone),
             'url' => $result['url'],
             'type' => $mediaType,
         ]);
 
-        // Move to caption step
-        $this->nextStep($session, OfferStep::ADD_CAPTION->value);
-        $this->askForCaption($session);
+        // Move to Step 2: ASK_VALIDITY
+        $this->sessionManager->setStep($session, OfferStep::ASK_VALIDITY->value);
+        $this->promptAskValidity($session);
     }
 
-    protected function handleCaptionInput(IncomingMessage $message, ConversationSession $session): void
+    protected function promptAskImage(ConversationSession $session, bool $isRetry = false): void
     {
-        // Check for skip button
-        if ($this->isSkip($message)) {
-            $this->setTemp($session, 'caption', null);
-            $this->nextStep($session, OfferStep::SELECT_VALIDITY->value);
-            $this->askForValidity($session);
-            return;
-        }
+        $message = $isRetry ? OfferMessages::INVALID_MEDIA : OfferMessages::ASK_IMAGE;
 
-        if (!$message->isText()) {
-            $this->handleInvalidInput($message, $session);
-            return;
-        }
-
-        $text = trim($message->text ?? '');
-
-        // Check for skip text
-        if (strtolower($text) === 'skip') {
-            $this->setTemp($session, 'caption', null);
-        } else {
-            // Validate caption length
-            if (mb_strlen($text) > 500) {
-                $this->sendErrorWithOptions(
-                    $session->phone,
-                    OfferMessages::CAPTION_TOO_LONG,
-                    [
-                        ['id' => 'skip', 'title' => '⏭️ Skip Caption'],
-                        self::MENU_BUTTON,
-                    ]
-                );
-                $this->askForCaption($session);
-                return;
-            }
-
-            $this->setTemp($session, 'caption', $text);
-        }
-
-        // Move to validity selection
-        $this->nextStep($session, OfferStep::SELECT_VALIDITY->value);
-        $this->askForValidity($session);
+        // Just text - user needs to send media, not tap button
+        $this->whatsApp->sendText($session->phone, $message);
     }
 
-    protected function handleValiditySelection(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 2: Validity Selection (FR-OFR-04)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function handleValidity(IncomingMessage $message, ConversationSession $session): void
     {
         $validity = null;
 
-        if ($message->isInteractive()) {
-            $validity = $this->getSelectionId($message);
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            $validity = $this->matchValidity($text);
+        // From button
+        if ($message->isButtonReply()) {
+            $validity = OfferValidity::tryFrom($message->getSelectionId() ?? '');
         }
 
-        if (!in_array($validity, ['today', '3days', 'week'])) {
-            $this->handleInvalidInput($message, $session);
+        // From text
+        if (!$validity && $message->isText()) {
+            $validity = OfferValidity::fromText($message->text ?? '');
+        }
+
+        if (!$validity) {
+            $this->promptAskValidity($session, true);
             return;
         }
 
-        $this->setTemp($session, 'validity', $validity);
+        $this->sessionManager->setTempData($session, 'validity', $validity->value);
 
-        // Move to confirmation
-        $this->nextStep($session, OfferStep::CONFIRM_UPLOAD->value);
-        $this->askForConfirmation($session);
-    }
-
-    protected function handleConfirmation(IncomingMessage $message, ConversationSession $session): void
-    {
-        $action = null;
-
-        if ($message->isInteractive()) {
-            $action = $this->getSelectionId($message);
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (in_array($text, ['yes', 'publish', 'ok', '1'])) {
-                $action = 'publish';
-            } elseif (in_array($text, ['edit', 'change', '2'])) {
-                $action = 'edit';
-            } elseif (in_array($text, ['no', 'cancel', '3'])) {
-                $action = 'cancel';
-            }
-        }
-
-        match ($action) {
-            'publish' => $this->publishOffer($session),
-            'edit' => $this->restartUpload($session),
-            'cancel' => $this->cancelUpload($session),
-            default => $this->handleInvalidInput($message, $session),
-        };
-    }
-
-    protected function handlePostUpload(IncomingMessage $message, ConversationSession $session): void
-    {
-        $action = null;
-
-        if ($message->isInteractive()) {
-            $action = $this->getSelectionId($message);
-        }
-
-        match ($action) {
-            'upload_another' => $this->start($session),
-            'my_offers' => $this->goToMyOffers($session),
-            default => $this->goToMainMenu($session),
-        };
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Prompt Methods
-    |--------------------------------------------------------------------------
-    */
-
-    protected function askForMedia(ConversationSession $session, bool $isRetry = false): void
-    {
-        $message = $isRetry ? OfferMessages::INVALID_MEDIA : OfferMessages::UPLOAD_START;
-
-        $this->sendButtonsWithMenu(
-            $session->phone,
-            $message,
-            []
-        );
-    }
-
-    protected function askForCaption(ConversationSession $session, bool $isRetry = false): void
-    {
-        $message = $isRetry
-            ? "Please type a caption or tap Skip."
-            : OfferMessages::ASK_CAPTION;
-
-        $this->sendButtonsWithMenu(
-            $session->phone,
-            $message,
-            [['id' => 'skip', 'title' => '⏭️ Skip Caption']]
-        );
-    }
-
-    protected function askForValidity(ConversationSession $session, bool $isRetry = false): void
-    {
-        $message = $isRetry
-            ? "Please select how long this offer should be valid:"
-            : OfferMessages::ASK_VALIDITY;
-
-        $this->sendButtonsWithMenu(
-            $session->phone,
-            $message,
-            OfferMessages::getValidityButtons()
-        );
-    }
-
-    protected function askForConfirmation(ConversationSession $session): void
-    {
-        $caption = $this->getTemp($session, 'caption');
-        $validity = $this->getTemp($session, 'validity');
-        $mediaUrl = $this->getTemp($session, 'media_url');
-        $mediaType = $this->getTemp($session, 'media_type');
-
-        // Calculate estimated reach
-        $user = $this->getUser($session);
-        $shop = $user->shop;
-        $radius = config('nearbuy.offers.default_radius_km', 5);
-        $reach = $this->offerService->calculateEstimatedReach($shop, $radius);
-
-        $displayCaption = $caption ?: '(No caption)';
-
-        $message = OfferMessages::format(OfferMessages::UPLOAD_CONFIRM, [
-            'caption' => $displayCaption,
-            'validity' => OfferMessages::formatValidity($validity),
-            'reach' => $reach,
+        Log::info('Offer validity selected', [
+            'phone' => $this->maskPhone($session->phone),
+            'validity' => $validity->value,
         ]);
 
-        // Send the media preview first
-        if ($mediaType === 'image') {
-            $this->sendImage($session->phone, $mediaUrl);
-        } else {
-            $this->sendDocument($session->phone, $mediaUrl, 'Offer.pdf');
-        }
+        // Directly publish (no confirmation step = less friction)
+        $this->publishOffer($session, $validity);
+    }
 
-        // Then send confirmation buttons with menu
-        $this->sendButtons(
+    protected function promptAskValidity(ConversationSession $session, bool $isRetry = false): void
+    {
+        $message = $isRetry ? OfferMessages::INVALID_VALIDITY : OfferMessages::ASK_VALIDITY;
+
+        // FR-OFR-04: Today / 3 Days / This Week buttons
+        $this->whatsApp->sendButtons(
             $session->phone,
             $message,
-            [
-                ['id' => 'publish', 'title' => '✅ Publish'],
-                ['id' => 'edit', 'title' => '✏️ Edit'],
-                ['id' => 'cancel', 'title' => '❌ Cancel'],
-            ],
-            null,
-            MessageTemplates::GLOBAL_FOOTER
+            OfferMessages::validityButtons()
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Action Methods
+    | Step 3: Publish & Done (FR-OFR-05, FR-OFR-06)
     |--------------------------------------------------------------------------
     */
 
-    protected function publishOffer(ConversationSession $session): void
+    protected function publishOffer(ConversationSession $session, OfferValidity $validity): void
     {
         try {
             $user = $this->getUser($session);
             $shop = $user->shop;
 
+            // Create offer with view_count=0, location_tap_count=0 (FR-OFR-06)
             $offer = $this->offerService->createOffer($shop, [
-                'media_url' => $this->getTemp($session, 'media_url'),
-                'media_type' => $this->getTemp($session, 'media_type'),
-                'caption' => $this->getTemp($session, 'caption'),
-                'validity' => $this->getTemp($session, 'validity'),
+                'media_url' => $this->sessionManager->getTempData($session, 'media_url'),
+                'media_type' => $this->sessionManager->getTempData($session, 'media_type'),
+                'validity' => $validity->value,
             ]);
 
-            $radius = config('nearbuy.offers.default_radius_km', 5);
-            $reach = $this->offerService->calculateEstimatedReach($shop, $radius);
+            // FR-OFR-05: Calculate estimated customer reach
+            $radiusKm = config('nearbuy.offers.default_radius_km', 5);
+            $reach = $this->offerService->calculateEstimatedReach($shop, $radiusKm);
 
-            $message = OfferMessages::format(OfferMessages::UPLOAD_SUCCESS, [
-                'radius' => $radius,
-                'reach' => $reach,
-                'expiry_date' => OfferMessages::formatExpiry($offer->expires_at),
-            ]);
+            // Build success message
+            $successMessage = OfferMessages::buildSuccessMessage($reach, $offer->expires_at);
 
-            $this->sendButtonsWithMenu(
+            // Send success with action buttons
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                $message,
-                [
-                    ['id' => 'upload_another', 'title' => '📤 Upload Another'],
-                    ['id' => 'my_offers', 'title' => '🏷️ My Offers'],
-                ]
+                $successMessage,
+                OfferMessages::successButtons()
             );
 
             // Clear temp data
-            $this->clearTemp($session);
+            $this->sessionManager->clearTempData($session);
 
-            // Update step
-            $this->nextStep($session, OfferStep::UPLOAD_COMPLETE->value);
+            // Mark as DONE
+            $this->sessionManager->setStep($session, OfferStep::DONE->value);
 
-            $this->logInfo('Offer published', [
+            Log::info('Offer published', [
                 'offer_id' => $offer->id,
                 'shop_id' => $shop->id,
-                'phone' => $this->maskPhone($session->phone),
+                'validity' => $validity->value,
+                'reach' => $reach,
             ]);
 
         } catch (\Exception $e) {
-            $this->logError('Offer publish failed', [
+            Log::error('Offer publish failed', [
                 'error' => $e->getMessage(),
                 'phone' => $this->maskPhone($session->phone),
             ]);
 
-            $this->sendErrorWithOptions(
+            // Cleanup uploaded media
+            $mediaUrl = $this->sessionManager->getTempData($session, 'media_url');
+            if ($mediaUrl) {
+                $this->mediaService->deleteFromStorage($mediaUrl);
+            }
+
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                "❌ Failed to publish offer: " . $e->getMessage() . "\n\nPlease try again.",
+                OfferMessages::UPLOAD_FAILED,
                 [
                     ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ]
             );
-
-            $this->restartUpload($session);
         }
     }
 
-    protected function restartUpload(ConversationSession $session): void
+    protected function handleDone(IncomingMessage $message, ConversationSession $session): void
     {
-        // Delete uploaded media if exists
-        $mediaUrl = $this->getTemp($session, 'media_url');
-        if ($mediaUrl) {
-            $this->mediaService->deleteFromStorage($mediaUrl);
+        $action = null;
+
+        if ($message->isButtonReply()) {
+            $action = $message->getSelectionId();
         }
 
-        $this->sendTextWithMenu(
-            $session->phone,
-            "🔄 Let's start over. Your previous upload has been cleared."
-        );
-
-        $this->start($session);
-    }
-
-    protected function cancelUpload(ConversationSession $session): void
-    {
-        // Delete uploaded media if exists
-        $mediaUrl = $this->getTemp($session, 'media_url');
-        if ($mediaUrl) {
-            $this->mediaService->deleteFromStorage($mediaUrl);
-        }
-
-        $this->clearTemp($session);
-
-        $this->sendTextWithMenu($session->phone, OfferMessages::UPLOAD_CANCELLED);
-
-        $this->goToMainMenu($session);
+        match ($action) {
+            'upload_another' => $this->start($session),
+            'my_offers' => $this->goToMyOffers($session),
+            default => $this->sessionManager->resetToMainMenu($session),
+        };
     }
 
     protected function goToMyOffers(ConversationSession $session): void
     {
-        $this->goToFlow($session, FlowType::OFFERS_MANAGE, OfferStep::SHOW_MY_OFFERS->value);
-        app(OfferManageFlowHandler::class)->start($session);
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::OFFERS_MANAGE,
+            OfferStep::SHOW_MY_OFFERS->value
+        );
+
+        // Let the manage handler take over
+        // app(OfferManageFlowHandler::class)->start($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Helper Methods
+    | Interface Methods
     |--------------------------------------------------------------------------
     */
 
-    protected function matchValidity(string $text): ?string
+    /**
+     * {@inheritdoc}
+     */
+    public function getExpectedInputType(string $step): string
     {
-        $map = [
-            'today' => ['today', '1', 'one day', '24', '24 hour'],
-            '3days' => ['3', '3 day', 'three', '72'],
-            'week' => ['week', '7', 'seven'],
-        ];
+        $offerStep = OfferStep::tryFrom($step);
+        return $offerStep?->expectedInput() ?? 'text';
+    }
 
-        foreach ($map as $validity => $keywords) {
-            foreach ($keywords as $keyword) {
-                if (str_contains($text, $keyword)) {
-                    return $validity;
-                }
+    /**
+     * {@inheritdoc}
+     */
+    public function handleTimeout(ConversationSession $session): void
+    {
+        $step = OfferStep::tryFrom($session->current_step);
+
+        // If media was uploaded but not completed, cleanup
+        if ($step === OfferStep::ASK_VALIDITY) {
+            $mediaUrl = $this->sessionManager->getTempData($session, 'media_url');
+            if ($mediaUrl) {
+                $this->mediaService->deleteFromStorage($mediaUrl);
             }
         }
 
-        return null;
+        $this->whatsApp->sendText(
+            $session->phone,
+            "⏰ Upload timeout. Type *offer* to start again."
+        );
+
+        $this->sessionManager->clearTempData($session);
+        $this->sessionManager->resetToMainMenu($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    protected function getUser(ConversationSession $session): ?\App\Models\User
+    {
+        if ($session->user_id) {
+            return \App\Models\User::find($session->user_id);
+        }
+
+        return \App\Models\User::where('phone', $session->phone)->first();
+    }
+
+    protected function maskPhone(string $phone): string
+    {
+        $len = strlen($phone);
+        if ($len < 6) {
+            return str_repeat('*', $len);
+        }
+        return substr($phone, 0, 3) . str_repeat('*', $len - 6) . substr($phone, -3);
     }
 }
