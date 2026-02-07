@@ -4,24 +4,24 @@ namespace App\Services\Flow\Handlers;
 
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
-use App\Enums\UserType;
 use App\Models\ConversationSession;
 use App\Services\Flow\FlowRouter;
 use App\Services\WhatsApp\Messages\MainMenuTemplate;
-use App\Services\WhatsApp\Messages\MessageTemplates;
 
 /**
- * ENHANCED Main Menu Handler.
+ * Main Menu Handler - The heart of NearBuy navigation.
  *
- * Key improvements:
- * 1. Better user experience with contextual greetings
- * 2. Proper handling of all menu selections
- * 3. Quick action buttons for common tasks
- * 4. About and Help information
- * 5. Fish seller support
- * 6. Job worker support (Njaanum Panikkar)
+ * FIRST IMPRESSION MATTERS - This is what users see when they open NearBuy.
  *
- * @srs-ref Section 3 - Jobs Marketplace Module
+ * Features:
+ * - Personalized greeting: "Hii [Name]! 👋"
+ * - Role-based quick actions at top
+ * - All 6 core services always visible
+ * - Graceful re-entry from any state
+ * - Malayalam + English quick commands
+ *
+ * @srs-ref Section 6.2 - Unified Menu Structure
+ * @srs-ref NFR-U-04 - Main menu accessible from any flow state
  */
 class MainMenuHandler extends AbstractFlowHandler
 {
@@ -48,14 +48,13 @@ class MainMenuHandler extends AbstractFlowHandler
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
-        $step = $session->current_step;
-
-        // Check for "more" button to show full menu
+        // Handle interactive responses (button/list selections)
         if ($message->isInteractive()) {
             $selection = $this->getSelectionId($message);
 
+            // Handle special menu options
             if ($selection === 'more') {
-                $this->showFullMenu($session);
+                $this->showMainMenu($session);
                 return;
             }
 
@@ -64,118 +63,97 @@ class MainMenuHandler extends AbstractFlowHandler
                 return;
             }
 
-            // Handle menu selection
-            $this->handleMenuSelection($selection, $session);
-            return;
-        }
-
-        // Handle text commands
-        if ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-
-            // Quick text commands
-            $quickAction = match ($text) {
-                'browse', 'offers' => 'browse_offers',
-                'search', 'find' => 'search_product',
-                'agree', 'agreement' => 'create_agreement',
-                'upload' => 'upload_offer',
-                'about' => 'about',
-                'help', '?' => 'help',
-                // Fish-related quick commands
-                'fish', 'meen', 'pacha', 'pachameen', 'fresh fish' => 'fish_browse',
-                'catch', 'post catch' => 'fish_post_catch',
-                'stock', 'update stock' => 'fish_update_stock',
-                'alerts', 'fish alerts' => 'fish_subscribe',
-                'my catches', 'catches' => 'fish_my_catches',
-                // Job-related quick commands
-                'jobs', 'job' => 'job_menu',
-                'work', 'find work' => 'job_browse',
-                'task', 'post task' => 'job_post',
-                'tasks', 'my tasks' => 'job_poster_menu',
-                'worker', 'my jobs' => 'job_worker_menu',
-                'panikkar', 'njaanum' => 'job_menu',
-                'become worker', 'register worker' => 'job_worker_register',
-                default => null,
-            };
-
-            if ($quickAction === 'about') {
-                $this->showAbout($session);
-                return;
-            }
-
-            if ($quickAction === 'help') {
+            if ($selection === 'help') {
                 $this->showHelp($session);
                 return;
             }
 
-            if ($quickAction) {
-                $this->handleMenuSelection($quickAction, $session);
+            // Route to selected flow
+            $this->handleMenuSelection($selection, $session);
+            return;
+        }
+
+        // Handle text commands (English + Malayalam)
+        if ($message->isText()) {
+            $text = mb_strtolower(trim($message->text ?? ''));
+
+            // Check for quick commands
+            $action = $this->parseQuickCommand($text);
+
+            if ($action === 'about') {
+                $this->showAbout($session);
+                return;
+            }
+
+            if ($action === 'help') {
+                $this->showHelp($session);
+                return;
+            }
+
+            if ($action) {
+                $this->handleMenuSelection($action, $session);
                 return;
             }
         }
 
-        // Default: show main menu
+        // Default: show main menu (handles "menu", "hi", random text, etc.)
         $this->showMainMenu($session);
     }
 
     /**
-     * Show the main menu.
+     * Show the main menu with personalized greeting.
      */
     protected function showMainMenu(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
-        // Get contextual greeting
+        // Build menu components
+        $header = MainMenuTemplate::getHeader();
         $body = MainMenuTemplate::getBody($user);
-
-        // Build menu sections
+        $buttonText = MainMenuTemplate::getButtonText();
         $sections = MainMenuTemplate::buildListSections($user);
+        $footer = MainMenuTemplate::getFooter();
 
         // Update session state
-        $this->nextStep($session, 'awaiting_selection');
+        $this->setStep($session, 'awaiting_selection');
 
         // Send list message
-        $this->sendListWithFooter(
+        $this->sendList(
             $session->phone,
             $body,
-            MainMenuTemplate::getButtonText(),
+            $buttonText,
             $sections,
-            MainMenuTemplate::getHeader()
+            $header,
+            $footer
         );
+
+        $this->logInfo('Main menu shown', [
+            'user_type' => $user?->type?->value ?? 'guest',
+            'has_fish_seller' => $user?->fishSeller !== null,
+            'has_job_worker' => $user?->jobWorker !== null,
+        ]);
     }
 
     /**
-     * Show full menu (when user clicks "More Options").
-     */
-    protected function showFullMenu(ConversationSession $session): void
-    {
-        $this->showMainMenu($session);
-    }
-
-    /**
-     * Show quick buttons (alternative to list for returning users).
+     * Show quick buttons instead of full list (for returning users).
      */
     protected function showQuickMenu(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
-        // Time-based greeting for returning users
         $greeting = $user
-            ? MainMenuTemplate::getTimeBasedGreeting($user->name ?? 'there')
-            : "👋 Welcome!";
-
-        $body = $greeting . "\n\nQuick actions:";
+            ? MainMenuTemplate::getTimeBasedGreeting($user->name ?? 'Friend')
+            : "🙏 Swaagatham!";
 
         $buttons = MainMenuTemplate::buildQuickButtons($user);
 
-        $this->nextStep($session, 'awaiting_selection');
+        $this->setStep($session, 'awaiting_selection');
 
-        $this->sendButtonsWithMenu(
+        $this->sendButtons(
             $session->phone,
-            $body,
+            $greeting . "\n\nEntha vendathu?",
             $buttons,
-            MainMenuTemplate::getHeader(),
-            false // Don't add extra menu button
+            MainMenuTemplate::getHeader()
         );
     }
 
@@ -184,14 +162,13 @@ class MainMenuHandler extends AbstractFlowHandler
      */
     protected function showAbout(ConversationSession $session): void
     {
-        $aboutMessage = MainMenuTemplate::getAboutMessage();
-
-        $this->sendButtonsWithMenu(
+        $this->sendButtons(
             $session->phone,
-            $aboutMessage,
+            MainMenuTemplate::getAboutMessage(),
             [
                 ['id' => 'register', 'title' => '📝 Register Free'],
                 ['id' => 'browse_offers', 'title' => '🛍️ Browse'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ]
         );
     }
@@ -201,24 +178,144 @@ class MainMenuHandler extends AbstractFlowHandler
      */
     protected function showHelp(ConversationSession $session): void
     {
-        $helpMessage = MainMenuTemplate::getHelpMessage();
-
-        $this->sendTextWithMenu($session->phone, $helpMessage);
+        $this->sendTextWithMenu(
+            $session->phone,
+            MainMenuTemplate::getHelpMessage()
+        );
     }
 
     /**
-     * Handle menu selection and route to appropriate flow.
+     * Handle menu selection - route to appropriate flow.
      */
     protected function handleMenuSelection(string $selectionId, ConversationSession $session): void
     {
-        // Delegate to FlowRouter which handles special cases like my_requests
+        // Delegate to FlowRouter
         app(FlowRouter::class)->handleMenuSelection($selectionId, $session);
+    }
+
+    /**
+     * Parse quick text commands (English + Malayalam).
+     *
+     * @return string|null Action ID or null
+     */
+    protected function parseQuickCommand(string $text): ?string
+    {
+        // Normalize: remove extra spaces, convert to lowercase
+        $text = preg_replace('/\s+/', ' ', trim(mb_strtolower($text)));
+
+        // English commands
+        $englishCommands = [
+            // Offers
+            'offers' => 'browse_offers',
+            'browse' => 'browse_offers',
+            'deals' => 'browse_offers',
+            'shop' => 'browse_offers',
+            'shops' => 'browse_offers',
+
+            // Search
+            'search' => 'search_product',
+            'find' => 'search_product',
+            'product' => 'search_product',
+
+            // Fish
+            'fish' => 'fish_browse',
+            'meen' => 'fish_browse',
+            'pacha' => 'fish_browse',
+            'fresh fish' => 'fish_browse',
+            'catch' => 'fish_post_catch',
+            'post catch' => 'fish_post_catch',
+            'stock' => 'fish_update_stock',
+            'update stock' => 'fish_update_stock',
+
+            // Jobs
+            'jobs' => 'job_browse',
+            'job' => 'job_browse',
+            'work' => 'job_browse',
+            'task' => 'job_post',
+            'tasks' => 'job_poster_menu',
+            'worker' => 'job_worker_menu',
+            'my jobs' => 'job_worker_menu',
+
+            // Flash Deals
+            'flash' => 'flash_deals',
+            'flash deals' => 'flash_deals',
+            'flash deal' => 'flash_deals',
+
+            // Agreements
+            'agreement' => 'create_agreement',
+            'agree' => 'create_agreement',
+            'karar' => 'create_agreement',
+            'loan' => 'create_agreement',
+            'my agreements' => 'my_agreements',
+
+            // Upload
+            'upload' => 'upload_offer',
+            'post' => 'upload_offer',
+            'new offer' => 'upload_offer',
+
+            // Settings
+            'settings' => 'settings',
+            'profile' => 'settings',
+
+            // Help/About
+            'help' => 'help',
+            '?' => 'help',
+            'about' => 'about',
+            'info' => 'about',
+
+            // Register
+            'register' => 'register',
+            'signup' => 'register',
+            'sign up' => 'register',
+        ];
+
+        // Malayalam commands (romanized)
+        $malayalamCommands = [
+            // Fish
+            'pachameen' => 'fish_browse',
+            'meen' => 'fish_browse',
+            'മീൻ' => 'fish_browse',
+            'പച്ച' => 'fish_browse',
+
+            // Jobs
+            'pani' => 'job_browse',
+            'panikkar' => 'job_browse',
+            'njaanum' => 'job_browse',
+            'പണി' => 'job_browse',
+
+            // Agreements
+            'karar' => 'create_agreement',
+            'കരാർ' => 'create_agreement',
+
+            // General
+            'sahayam' => 'help',
+            'സഹായം' => 'help',
+        ];
+
+        // Check English first
+        if (isset($englishCommands[$text])) {
+            return $englishCommands[$text];
+        }
+
+        // Check Malayalam
+        if (isset($malayalamCommands[$text])) {
+            return $malayalamCommands[$text];
+        }
+
+        // Check if text contains any keyword
+        foreach ($englishCommands as $keyword => $action) {
+            if (str_contains($text, $keyword)) {
+                return $action;
+            }
+        }
+
+        return null;
     }
 
     /**
      * Get expected input type for steps.
      */
-    protected function getExpectedInputType(string $step): string
+    public function getExpectedInputType(string $step): string
     {
         return match ($step) {
             'awaiting_selection' => 'list',

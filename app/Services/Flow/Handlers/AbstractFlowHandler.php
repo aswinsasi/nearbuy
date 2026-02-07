@@ -14,41 +14,69 @@ use App\Services\WhatsApp\Messages\MessageTemplates;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Abstract base class for flow handlers.
+ * Abstract base class for all flow handlers.
  *
- * ENHANCED VERSION - Key improvements:
- * 1. sendWithMenu() - Auto-adds Main Menu button to every response
- * 2. sendTextWithMenu() - Text message with menu button option
- * 3. sendErrorWithButtons() - Interactive error handling
- * 4. Consistent footer on all messages
- * 5. Better input validation with button prompts
+ * Provides common methods that ALL handlers inherit:
+ * - Message sending (text, buttons, list, image, document, location)
+ * - Session management (step, temp data, navigation)
+ * - Input validation and extraction
+ * - Error handling
+ * - Logging
+ *
+ * @srs-ref Section 7.1 Flow Controllers
+ * @srs-ref NFR-U-04 Main menu accessible from any flow state
  */
 abstract class AbstractFlowHandler implements FlowHandlerInterface
 {
-    /**
-     * Default footer added to all messages
-     */
-    protected const DEFAULT_FOOTER = MessageTemplates::GLOBAL_FOOTER;
+    /*
+    |--------------------------------------------------------------------------
+    | Constants
+    |--------------------------------------------------------------------------
+    */
 
-    /**
-     * Main menu button definition
-     */
     protected const MENU_BUTTON = ['id' => 'main_menu', 'title' => '🏠 Menu'];
-
-    /**
-     * Cancel button definition
-     */
     protected const CANCEL_BUTTON = ['id' => 'cancel', 'title' => '❌ Cancel'];
+    protected const BACK_BUTTON = ['id' => 'back', 'title' => '⬅️ Back'];
+    protected const SKIP_BUTTON = ['id' => 'skip', 'title' => '⏭️ Skip'];
+    protected const RETRY_BUTTON = ['id' => 'retry', 'title' => '🔄 Try Again'];
+    protected const DONE_BUTTON = ['id' => 'done', 'title' => '✅ Done'];
 
     /**
-     * Back button definition
+     * Cross-flow navigation button IDs that route to other flows.
      */
-    protected const BACK_BUTTON = ['id' => 'back', 'title' => '⬅️ Back'];
+    protected const CROSS_FLOW_BUTTONS = [
+        'main_menu', 'menu', 'home',
+        'register', 'browse_offers', 'upload_offer', 'my_offers',
+        'search_product', 'my_requests', 'product_requests',
+        'create_agreement', 'my_agreements', 'pending_agreements',
+        'fish_browse', 'fish_alerts', 'fish_post_catch', 'fish_seller_menu',
+        'job_browse', 'job_post', 'job_worker_menu', 'job_poster_menu',
+        'flash_deal_create', 'flash_deal_manage',
+        'settings',
+    ];
+
+    /*
+    |--------------------------------------------------------------------------
+    | Properties
+    |--------------------------------------------------------------------------
+    */
+
+    protected SessionManager $sessionManager;
+    protected WhatsAppService $whatsApp;
 
     public function __construct(
-        protected SessionManager $sessionManager,
-        protected WhatsAppService $whatsApp,
-    ) {}
+        SessionManager $sessionManager,
+        WhatsAppService $whatsApp,
+    ) {
+        $this->sessionManager = $sessionManager;
+        $this->whatsApp = $whatsApp;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Abstract Methods (Must implement in subclasses)
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Get the flow type this handler manages.
@@ -57,8 +85,16 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
 
     /**
      * Get the available steps for this flow.
+     *
+     * @return array<string> List of step names
      */
     abstract protected function getSteps(): array;
+
+    /*
+    |--------------------------------------------------------------------------
+    | Interface Implementation
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Get the flow name.
@@ -78,86 +114,147 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
 
     /**
      * Handle invalid input for the current step.
-     * 
-     * ENHANCED: Now uses interactive buttons instead of plain text
      */
     public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
     {
-        $step = $session->current_step;
-        $expectedType = $this->getExpectedInputType($step);
+        $expectedType = $this->getExpectedInputType($session->current_step);
+        $this->sendError($session->phone, $expectedType);
+    }
 
-        $errorMessage = ErrorTemplate::invalidInput($expectedType);
-
-        // Send error with retry and menu buttons
-        $this->sendErrorWithOptions(
+    /**
+     * Handle timeout recovery.
+     */
+    public function handleTimeout(ConversationSession $session): void
+    {
+        $this->sendTextWithMenu(
             $session->phone,
-            $errorMessage,
-            $this->getRetryOptionsForStep($step)
+            "⏰ Your session timed out.\n\nWould you like to start over?"
         );
+        $this->goToMenu($session);
     }
 
     /**
-     * Get the expected input type for a step.
+     * Get expected input type for a step.
+     * Override in subclasses for specific step types.
      */
-    protected function getExpectedInputType(string $step): string
+    public function getExpectedInputType(string $step): string
     {
-        return 'text'; // Override in subclasses
-    }
-
-    /**
-     * Get retry options based on step type.
-     */
-    protected function getRetryOptionsForStep(string $step): array
-    {
-        $expectedType = $this->getExpectedInputType($step);
-
-        return match ($expectedType) {
-            'button' => [
-                ['id' => 'retry', 'title' => '🔄 Show Options'],
-                self::MENU_BUTTON,
-            ],
-            'list' => [
-                ['id' => 'retry', 'title' => '🔄 Show List'],
-                self::MENU_BUTTON,
-            ],
-            'location' => [
-                ['id' => 'retry', 'title' => '📍 Share Location'],
-                self::MENU_BUTTON,
-            ],
-            default => [
-                ['id' => 'retry', 'title' => '🔄 Try Again'],
-                self::MENU_BUTTON,
-            ],
-        };
-    }
-
-    /**
-     * Re-prompt the current step.
-     */
-    protected function promptCurrentStep(ConversationSession $session): void
-    {
-        // Override in subclasses to re-send the current prompt
+        return 'text';
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Session Helpers
+    | Session Accessors
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Move to the next step.
+     * Get the phone number from session.
      */
-    protected function nextStep(ConversationSession $session, string $step): void
+    protected function getPhone(ConversationSession $session): string
     {
-        $this->sessionManager->setStep($session, $step);
+        return $session->phone;
     }
 
     /**
-     * Move to a different flow.
+     * Get the associated user.
      */
-    protected function goToFlow(ConversationSession $session, FlowType $flow, string $step = null): void
+    protected function getUser(ConversationSession $session): ?User
     {
+        return $this->sessionManager->getUser($session);
+    }
+
+    /**
+     * Get current step.
+     */
+    protected function getStep(ConversationSession $session): string
+    {
+        return $session->current_step ?? '';
+    }
+
+    /**
+     * Get current flow.
+     */
+    protected function getFlow(ConversationSession $session): string
+    {
+        return $session->current_flow ?? '';
+    }
+
+    /**
+     * Get language preference.
+     */
+    protected function getLanguage(ConversationSession $session): string
+    {
+        return $session->language ?? 'en';
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step Management
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Set the current step.
+     */
+    protected function setStep(ConversationSession $session, string $step): void
+    {
+        $this->sessionManager->setStep($session, $step);
+        $this->logStep($step);
+    }
+
+    /**
+     * Set flow and step together.
+     */
+    protected function setFlowStep(ConversationSession $session, FlowType $flow, string $step): void
+    {
+        $this->sessionManager->setFlowStep($session, $flow, $step);
+        $this->logStep($step, $flow->value);
+    }
+
+    /**
+     * Move to next step (saves previous step for goBack).
+     */
+    protected function nextStep(ConversationSession $session, string $step): void
+    {
+        $this->sessionManager->savePreviousStep($session);
+        $this->setStep($session, $step);
+    }
+
+    /**
+     * Go back to previous step.
+     */
+    protected function goBack(ConversationSession $session): void
+    {
+        $this->sessionManager->goBack($session);
+    }
+
+    /**
+     * Go to main menu.
+     *
+     * @srs-ref NFR-U-04 Main menu accessible from any flow state
+     */
+    protected function goToMenu(ConversationSession $session): void
+    {
+        $this->clearTempData($session);
+        $this->sessionManager->resetToMainMenu($session);
+    }
+
+    /**
+     * Complete flow and return to menu.
+     */
+    protected function completeFlow(ConversationSession $session): void
+    {
+        $this->clearTempData($session);
+        $this->sessionManager->completeFlow($session);
+    }
+
+    /**
+     * Go to a different flow.
+     */
+    protected function goToFlow(ConversationSession $session, FlowType $flow, ?string $step = null): void
+    {
+        $this->clearTempData($session);
         $this->sessionManager->setFlowStep(
             $session,
             $flow,
@@ -165,246 +262,88 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         );
     }
 
-    /**
-     * Return to main menu.
-     */
-    protected function goToMainMenu(ConversationSession $session): void
-    {
-        $this->sessionManager->resetToMainMenu($session);
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Temp Data Management
+    |--------------------------------------------------------------------------
+    */
 
     /**
-     * Store temp data.
+     * Set temp data value.
      */
-    protected function setTemp(ConversationSession $session, string $key, mixed $value): void
+    protected function setTempData(ConversationSession $session, string $key, mixed $value): void
     {
         $this->sessionManager->setTempData($session, $key, $value);
     }
 
     /**
-     * Get temp data.
+     * Get temp data value.
      */
-    protected function getTemp(ConversationSession $session, string $key, mixed $default = null): mixed
+    protected function getTempData(ConversationSession $session, string $key, mixed $default = null): mixed
     {
         return $this->sessionManager->getTempData($session, $key, $default);
     }
 
     /**
+     * Check if temp data has key.
+     */
+    protected function hasTempData(ConversationSession $session, string $key): bool
+    {
+        return $this->sessionManager->hasTempData($session, $key);
+    }
+
+    /**
+     * Get all temp data.
+     */
+    protected function getAllTempData(ConversationSession $session): array
+    {
+        return $this->sessionManager->getAllTempData($session);
+    }
+
+    /**
+     * Merge temp data.
+     */
+    protected function mergeTempData(ConversationSession $session, array $data): void
+    {
+        $this->sessionManager->mergeTempData($session, $data);
+    }
+
+    /**
+     * Remove temp data key.
+     */
+    protected function removeTempData(ConversationSession $session, string $key): void
+    {
+        $this->sessionManager->removeTempData($session, $key);
+    }
+
+    /**
      * Clear all temp data.
      */
-    protected function clearTemp(ConversationSession $session): void
+    protected function clearTempData(ConversationSession $session): void
     {
         $this->sessionManager->clearTempData($session);
     }
 
-    /**
-     * Get the user for this session.
-     */
-    protected function getUser(ConversationSession $session): ?User
-    {
-        return $this->sessionManager->getUser($session);
-    }
-
     /*
     |--------------------------------------------------------------------------
-    | ENHANCED Message Helpers - WITH MENU BUTTON
+    | Message Sending — Core
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Send text message with Main Menu button.
-     * 
-     * This is the PRIMARY method to use for text responses.
-     * Ensures users always have a way back to menu.
-     */
-    protected function sendTextWithMenu(
-        string $to,
-        string $body,
-        ?string $header = null
-    ): array {
-        return $this->sendButtons(
-            $to,
-            $body,
-            [self::MENU_BUTTON],
-            $header,
-            self::DEFAULT_FOOTER
-        );
-    }
-
-    /**
-     * Send buttons WITH automatic menu option.
-     * 
-     * Automatically adds menu button if space allows (max 3 buttons).
-     * If buttons array has 3 items, sends as-is.
-     * If buttons array has 2 items, adds menu button.
-     * If buttons array has 1 item, adds menu button.
-     */
-    protected function sendButtonsWithMenu(
-        string $to,
-        string $body,
-        array $buttons,
-        ?string $header = null,
-        bool $addMenu = true
-    ): array {
-        // Auto-add menu button if space allows
-        if ($addMenu && count($buttons) < 3) {
-            $buttons[] = self::MENU_BUTTON;
-        }
-
-        return $this->sendButtons($to, $body, $buttons, $header, self::DEFAULT_FOOTER);
-    }
-
-    /**
-     * Send buttons with Back + Menu options.
-     * 
-     * For multi-step flows where user might want to go back.
-     */
-    protected function sendButtonsWithBackAndMenu(
-        string $to,
-        string $body,
-        array $buttons,
-        ?string $header = null
-    ): array {
-        // Add back and menu if space allows
-        if (count($buttons) < 2) {
-            $buttons[] = self::BACK_BUTTON;
-        }
-        if (count($buttons) < 3) {
-            $buttons[] = self::MENU_BUTTON;
-        }
-
-        return $this->sendButtons($to, $body, $buttons, $header, self::DEFAULT_FOOTER);
-    }
-
-    /**
-     * Send list message with consistent footer.
-     */
-    protected function sendListWithFooter(
-        string $to,
-        string $body,
-        string $buttonText,
-        array $sections,
-        ?string $header = null
-    ): array {
-        return $this->sendList($to, $body, $buttonText, $sections, $header, self::DEFAULT_FOOTER);
-    }
-
-    /**
-     * Send error message with action buttons.
-     * 
-     * ENHANCED: Errors now have actionable options.
-     */
-    protected function sendErrorWithOptions(
-        string $to,
-        string $message,
-        ?array $buttons = null
-    ): array {
-        $buttons = $buttons ?? [
-            ['id' => 'retry', 'title' => '🔄 Try Again'],
-            self::MENU_BUTTON,
-        ];
-
-        return $this->sendButtons($to, $message, $buttons, null, self::DEFAULT_FOOTER);
-    }
-
-    /**
-     * Send success message with next action buttons.
-     */
-    protected function sendSuccessWithActions(
-        string $to,
-        string $message,
-        array $nextActions,
-        ?string $header = null
-    ): array {
-        // Ensure we have menu option
-        if (count($nextActions) < 3) {
-            $nextActions[] = self::MENU_BUTTON;
-        }
-
-        return $this->sendButtons($to, $message, $nextActions, $header, self::DEFAULT_FOOTER);
-    }
-
-    /**
-     * Request location with consistent styling.
-     */
-    protected function requestLocationWithMenu(string $to, string $body): array
-    {
-        // First send the location request
-        $result = $this->requestLocation($to, $body);
-
-        // Then send a follow-up with menu option (in case they want to cancel)
-        // Only if they're in a flow where they might want to bail
-        // This is handled by the flow handler itself
-
-        return $result;
-    }
-
-    /**
-     * Send image with caption and menu button option.
-     */
-    protected function sendImageWithMenu(
-        string $to,
-        string $url,
-        ?string $caption = null,
-        ?array $followUpButtons = null
-    ): array {
-        // Send the image first
-        $imageResult = $this->sendImage($to, $url, $caption);
-
-        // If there are follow-up buttons, send them separately
-        if ($followUpButtons) {
-            $this->sendButtonsWithMenu(
-                $to,
-                "What would you like to do next?",
-                $followUpButtons
-            );
-        }
-
-        return $imageResult;
-    }
-
-    /**
-     * Send document with caption and follow-up options.
-     */
-    protected function sendDocumentWithFollowUp(
-        string $to,
-        string $url,
-        ?string $filename = null,
-        ?string $caption = null,
-        ?array $followUpButtons = null
-    ): array {
-        // Send the document
-        $docResult = $this->sendDocument($to, $url, $filename, $caption);
-
-        // Send follow-up buttons if provided
-        if ($followUpButtons) {
-            $this->sendButtonsWithMenu(
-                $to,
-                "Document sent! What's next?",
-                $followUpButtons
-            );
-        } else {
-            // Always provide menu option after document
-            $this->sendTextWithMenu($to, "📄 Document sent successfully!");
-        }
-
-        return $docResult;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Original Message Helpers (kept for backward compatibility)
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Send a text message (without menu button).
-     * 
-     * Use sendTextWithMenu() instead for most cases.
+     * Send text message.
      */
     protected function sendText(string $to, string $body): array
     {
         return $this->whatsApp->sendText($to, $body);
+    }
+
+    /**
+     * Send text with main menu button.
+     */
+    protected function sendTextWithMenu(string $to, string $body, ?string $header = null): array
+    {
+        return $this->sendButtons($to, $body, [self::MENU_BUTTON], $header);
     }
 
     /**
@@ -417,11 +356,50 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         ?string $header = null,
         ?string $footer = null
     ): array {
-        return $this->whatsApp->sendButtons($to, $body, $buttons, $header, $footer ?? self::DEFAULT_FOOTER);
+        return $this->whatsApp->sendButtons(
+            $to,
+            $body,
+            $buttons,
+            $header,
+            $footer ?? MessageTemplates::GLOBAL_FOOTER
+        );
     }
 
     /**
-     * Send a list message.
+     * Send buttons with automatic menu option.
+     */
+    protected function sendButtonsWithMenu(
+        string $to,
+        string $body,
+        array $buttons,
+        ?string $header = null
+    ): array {
+        if (count($buttons) < 3) {
+            $buttons[] = self::MENU_BUTTON;
+        }
+        return $this->sendButtons($to, $body, $buttons, $header);
+    }
+
+    /**
+     * Send buttons with back and menu.
+     */
+    protected function sendButtonsWithBackAndMenu(
+        string $to,
+        string $body,
+        array $buttons,
+        ?string $header = null
+    ): array {
+        if (count($buttons) < 2) {
+            $buttons[] = self::BACK_BUTTON;
+        }
+        if (count($buttons) < 3) {
+            $buttons[] = self::MENU_BUTTON;
+        }
+        return $this->sendButtons($to, $body, $buttons, $header);
+    }
+
+    /**
+     * Send list message.
      */
     protected function sendList(
         string $to,
@@ -431,15 +409,48 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         ?string $header = null,
         ?string $footer = null
     ): array {
-        return $this->whatsApp->sendList($to, $body, $buttonText, $sections, $header, $footer ?? self::DEFAULT_FOOTER);
+        return $this->whatsApp->sendList(
+            $to,
+            $body,
+            $buttonText,
+            $sections,
+            $header,
+            $footer ?? MessageTemplates::GLOBAL_FOOTER
+        );
     }
 
     /**
-     * Request location.
+     * Send image.
      */
-    protected function requestLocation(string $to, string $body): array
+    protected function sendImage(string $to, string $url, ?string $caption = null): array
     {
-        return $this->whatsApp->requestLocation($to, $body);
+        return $this->whatsApp->sendImage($to, $url, $caption);
+    }
+
+    /**
+     * Send image with follow-up buttons.
+     */
+    protected function sendImageWithButtons(
+        string $to,
+        string $url,
+        ?string $caption,
+        array $buttons
+    ): array {
+        $result = $this->sendImage($to, $url, $caption);
+        $this->sendButtonsWithMenu($to, "What would you like to do?", $buttons);
+        return $result;
+    }
+
+    /**
+     * Send document.
+     */
+    protected function sendDocument(
+        string $to,
+        string $url,
+        ?string $filename = null,
+        ?string $caption = null
+    ): array {
+        return $this->whatsApp->sendDocument($to, $url, $filename, $caption);
     }
 
     /**
@@ -456,154 +467,127 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Send image.
+     * Request location from user.
      */
-    protected function sendImage(string $to, string $url, ?string $caption = null): array
+    protected function requestLocation(string $to, string $body): array
     {
-        return $this->whatsApp->sendImage($to, $url, $caption);
-    }
-
-    /**
-     * Send document.
-     */
-    protected function sendDocument(
-        string $to,
-        string $url,
-        ?string $filename = null,
-        ?string $caption = null
-    ): array {
-        return $this->whatsApp->sendDocument($to, $url, $filename, $caption);
-    }
-
-    /**
-     * Send an error message.
-     * 
-     * DEPRECATED: Use sendErrorWithOptions() instead.
-     */
-    protected function sendError(string $to, string $message): array
-    {
-        return $this->sendErrorWithOptions($to, $message);
-    }
-
-    /**
-     * Send error with retry buttons.
-     * 
-     * DEPRECATED: Use sendErrorWithOptions() instead.
-     */
-    protected function sendErrorWithRetry(string $to, string $message): array
-    {
-        return $this->sendErrorWithOptions($to, $message, [
-            ['id' => 'retry', 'title' => '🔄 Try Again'],
-            self::MENU_BUTTON,
-        ]);
-    }
-
-    /**
-     * Format a template message.
-     */
-    protected function formatMessage(string $template, array $replacements): string
-    {
-        return MessageTemplates::format($template, $replacements);
+        return $this->whatsApp->requestLocation($to, $body);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Validation Helpers
+    | Error Handling
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Validate phone number format.
+     * Send error message with retry options.
      */
-    protected function validatePhone(string $phone): bool
+    protected function sendError(string $to, string $type = 'generic'): array
     {
-        // Remove any non-numeric characters
-        $cleaned = preg_replace('/[^0-9]/', '', $phone);
+        $error = ErrorTemplate::get($type);
 
-        // Check length (10-15 digits for international)
-        if (strlen($cleaned) < 10 || strlen($cleaned) > 15) {
-            return false;
-        }
-
-        return true;
+        return $this->sendButtons(
+            $to,
+            $error['message'],
+            $error['buttons'] ?? [self::RETRY_BUTTON, self::MENU_BUTTON]
+        );
     }
 
     /**
-     * Normalize phone number (add country code if missing).
+     * Send custom error with buttons.
      */
-    protected function normalizePhone(string $phone): string
+    protected function sendErrorWithButtons(string $to, string $message, ?array $buttons = null): array
     {
-        $cleaned = preg_replace('/[^0-9]/', '', $phone);
-
-        // If 10 digits and starts with valid Indian mobile prefix, add 91
-        if (strlen($cleaned) === 10 && in_array($cleaned[0], ['6', '7', '8', '9'])) {
-            return '91' . $cleaned;
-        }
-
-        return $cleaned;
+        return $this->sendButtons(
+            $to,
+            $message,
+            $buttons ?? [self::RETRY_BUTTON, self::MENU_BUTTON]
+        );
     }
 
     /**
-     * Validate amount.
+     * Send validation error.
      */
-    protected function validateAmount(string $amount): ?float
+    protected function sendValidationError(string $to, string $field): array
     {
-        // Remove currency symbols and whitespace
-        $cleaned = preg_replace('/[^0-9.]/', '', $amount);
+        $error = ErrorTemplate::validation($field);
 
-        if (!is_numeric($cleaned)) {
-            return null;
-        }
-
-        $value = (float) $cleaned;
-
-        // Check reasonable range
-        if ($value <= 0 || $value > 100000000) {
-            return null;
-        }
-
-        return $value;
-    }
-
-    /**
-     * Validate date string (DD/MM/YYYY format).
-     */
-    protected function validateDate(string $date): ?\Carbon\Carbon
-    {
-        try {
-            $parsed = \Carbon\Carbon::createFromFormat('d/m/Y', trim($date));
-
-            if ($parsed && $parsed->isValid() && $parsed->isFuture()) {
-                return $parsed;
-            }
-
-            return null;
-        } catch (\Exception $e) {
-            return null;
-        }
-    }
-
-    /**
-     * Validate name.
-     */
-    protected function validateName(string $name): bool
-    {
-        $length = mb_strlen(trim($name));
-        return $length >= 2 && $length <= 100;
-    }
-
-    /**
-     * Validate description.
-     */
-    protected function validateDescription(string $description, int $minLength = 10, int $maxLength = 500): bool
-    {
-        $length = mb_strlen(trim($description));
-        return $length >= $minLength && $length <= $maxLength;
+        return $this->sendButtons(
+            $to,
+            $error['message'],
+            $error['buttons'] ?? [self::RETRY_BUTTON, self::MENU_BUTTON]
+        );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Input Extraction Helpers
+    | Success Messages
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Send success with next actions.
+     */
+    protected function sendSuccess(string $to, string $message, array $nextActions, ?string $header = null): array
+    {
+        if (count($nextActions) < 3) {
+            $nextActions[] = self::MENU_BUTTON;
+        }
+        return $this->sendButtons($to, $message, $nextActions, $header);
+    }
+
+    /**
+     * Send completion message and return to menu.
+     */
+    protected function sendCompletionAndMenu(
+        ConversationSession $session,
+        string $message,
+        ?array $nextActions = null
+    ): void {
+        $buttons = $nextActions ?? [];
+        $buttons[] = self::MENU_BUTTON;
+
+        $this->sendButtons(
+            $session->phone,
+            $message,
+            array_slice($buttons, 0, 3)
+        );
+
+        $this->completeFlow($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Menu Hint
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Append menu hint to message.
+     *
+     * @srs-ref NFR-U-04 Main menu accessible from any flow state
+     */
+    protected function appendMenuHint(string $message, string $lang = 'en'): string
+    {
+        $hint = $lang === 'ml'
+            ? MessageTemplates::MENU_HINT_ML
+            : MessageTemplates::MENU_HINT_EN;
+
+        return $message . "\n\n" . $hint;
+    }
+
+    /**
+     * Send message with menu hint appended.
+     */
+    protected function sendWithMenuHint(string $to, string $message, string $lang = 'en'): array
+    {
+        return $this->sendText($to, $this->appendMenuHint($message, $lang));
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Input Extraction
     |--------------------------------------------------------------------------
     */
 
@@ -624,7 +608,23 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Get location from message.
+     * Get button ID.
+     */
+    protected function getButtonId(IncomingMessage $message): ?string
+    {
+        return $message->getButtonId();
+    }
+
+    /**
+     * Get list selection ID.
+     */
+    protected function getListId(IncomingMessage $message): ?string
+    {
+        return $message->getListId();
+    }
+
+    /**
+     * Get location coordinates.
      */
     protected function getLocation(IncomingMessage $message): ?array
     {
@@ -632,29 +632,30 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Get media ID from message.
+     * Get media ID.
      */
     protected function getMediaId(IncomingMessage $message): ?string
     {
         return $message->getMediaId();
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Input Checks
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Check if input is "skip".
+     * Check if user wants to skip.
      */
     protected function isSkip(IncomingMessage $message): bool
     {
-        // Check for skip button press
         if ($message->isInteractive()) {
-            $id = $this->getSelectionId($message);
-            return in_array($id, ['skip', 'skip_image', 'skip_caption']);
+            return in_array($this->getSelectionId($message), ['skip', 'skip_image', 'skip_step']);
         }
-
-        // Check for skip text
         if ($message->isText()) {
             return strtolower(trim($message->text ?? '')) === 'skip';
         }
-
         return false;
     }
 
@@ -666,11 +667,9 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         if ($message->isInteractive()) {
             return $this->getSelectionId($message) === 'back';
         }
-
         if ($message->isText()) {
             return strtolower(trim($message->text ?? '')) === 'back';
         }
-
         return false;
     }
 
@@ -680,10 +679,8 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
     protected function isMainMenu(IncomingMessage $message): bool
     {
         if ($message->isInteractive()) {
-            $id = $this->getSelectionId($message);
-            return in_array($id, ['main_menu', 'menu', 'home']);
+            return in_array($this->getSelectionId($message), ['main_menu', 'menu', 'home']);
         }
-
         return false;
     }
 
@@ -695,11 +692,9 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         if ($message->isInteractive()) {
             return $this->getSelectionId($message) === 'cancel';
         }
-
         if ($message->isText()) {
             return strtolower(trim($message->text ?? '')) === 'cancel';
         }
-
         return false;
     }
 
@@ -711,52 +706,53 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
         if ($message->isInteractive()) {
             return $this->getSelectionId($message) === 'retry';
         }
-
         return false;
     }
 
-/**
-     * Cross-flow navigation button IDs.
-     * These buttons can appear in any flow and should route to the appropriate flow.
+    /**
+     * Check if this is a cross-flow navigation button.
      */
-    protected const CROSS_FLOW_BUTTONS = [
-        'register',
-        'browse_offers',
-        'upload_offer',
-        'my_offers',
-        'search_product',
-        'my_requests',
-        'product_requests',
-        'create_agreement',
-        'my_agreements',
-        'pending_agreements',
-        'settings',
-        'new_agreement',
-        'more_requests',
-    ];
+    protected function isCrossFlowNavigation(IncomingMessage $message): bool
+    {
+        if (!$message->isInteractive()) {
+            return false;
+        }
+
+        $id = $this->getSelectionId($message);
+        return $id && in_array($id, self::CROSS_FLOW_BUTTONS);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Common Navigation Handler
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Handle common navigation inputs.
-     * 
+     *
      * Returns true if navigation was handled (caller should return).
-     * Returns false if input should be processed normally.
-     * 
-     * ENHANCED: Now handles cross-flow navigation buttons and product response buttons.
      */
     protected function handleCommonNavigation(IncomingMessage $message, ConversationSession $session): bool
     {
         // Main menu
         if ($this->isMainMenu($message)) {
-            $this->goToMainMenu($session);
-            app(\App\Services\Flow\FlowRouter::class)->startFlow($session, FlowType::MAIN_MENU);
+            $this->goToMenu($session);
+            app(\App\Services\Flow\FlowRouter::class)->goToMainMenu($session);
             return true;
         }
 
         // Cancel
         if ($this->isCancel($message)) {
-            $this->clearTemp($session);
             $this->sendTextWithMenu($session->phone, "❌ *Cancelled*\n\nAction cancelled.");
-            $this->goToMainMenu($session);
+            $this->goToMenu($session);
+            return true;
+        }
+
+        // Back
+        if ($this->isBack($message)) {
+            $this->goBack($session);
+            $this->promptCurrentStep($session);
             return true;
         }
 
@@ -766,17 +762,10 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
             return true;
         }
 
-        // Product response buttons (respond_yes_X, respond_no_X) - for shops responding to requests
-        $productResponse = $this->parseProductResponseButton($message);
-        if ($productResponse) {
-            $this->handleProductResponseButton($session, $productResponse['action'], $productResponse['request_id']);
-            return true;
-        }
-
-        // Cross-flow navigation buttons (my_agreements, my_requests, browse_offers, etc.)
+        // Cross-flow navigation
         if ($this->isCrossFlowNavigation($message)) {
             $selectionId = $this->getSelectionId($message);
-            $this->clearTemp($session);
+            $this->clearTempData($session);
             app(\App\Services\Flow\FlowRouter::class)->handleMenuSelection($selectionId, $session);
             return true;
         }
@@ -785,70 +774,143 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Check if message is a cross-flow navigation button.
+     * Re-prompt the current step.
+     * Override in subclasses to re-send the appropriate prompt.
      */
-    protected function isCrossFlowNavigation(IncomingMessage $message): bool
+    protected function promptCurrentStep(ConversationSession $session): void
     {
-        if (!$message->isInteractive()) {
-            return false;
-        }
-
-        $selectionId = $this->getSelectionId($message);
-        
-        if (!$selectionId) {
-            return false;
-        }
-
-        return in_array($selectionId, self::CROSS_FLOW_BUTTONS);
-    }
-
-    /**
-     * Check if message is a product response button (respond_yes_X, respond_no_X).
-     * Returns ['action' => 'yes'|'no', 'request_id' => int] or null.
-     */
-    protected function parseProductResponseButton(IncomingMessage $message): ?array
-    {
-        if (!$message->isInteractive()) {
-            return null;
-        }
-
-        $selectionId = $this->getSelectionId($message);
-        
-        if (!$selectionId) {
-            return null;
-        }
-
-        // Match respond_yes_123 or respond_no_123
-        if (preg_match('/^respond_(yes|no)_(\d+)$/', $selectionId, $matches)) {
-            return [
-                'action' => $matches[1],
-                'request_id' => (int) $matches[2],
-            ];
-        }
-
-        return null;
-    }
-
-    /**
-     * Handle product response button from notification.
-     */
-    protected function handleProductResponseButton(ConversationSession $session, string $action, int $requestId): void
-    {
-        $this->clearTemp($session);
-        
-        // Store the request ID for the response flow
-        $this->setTemp($session, 'respond_request_id', $requestId);
-        
-        // Get the handler and start with specific request
-        $handler = app(\App\Services\Flow\Handlers\ProductResponseFlowHandler::class);
-        $handler->startWithRequest($session, $requestId, $action);
+        // Default: do nothing. Subclasses should override.
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Logging Helpers
+    | Validation Helpers
     |--------------------------------------------------------------------------
     */
+
+    /**
+     * Validate phone number.
+     */
+    protected function validatePhone(string $phone): bool
+    {
+        $cleaned = preg_replace('/[^0-9]/', '', $phone);
+        return strlen($cleaned) >= 10 && strlen($cleaned) <= 15;
+    }
+
+    /**
+     * Normalize phone number (add India country code if needed).
+     */
+    protected function normalizePhone(string $phone): string
+    {
+        $cleaned = preg_replace('/[^0-9]/', '', $phone);
+
+        if (strlen($cleaned) === 10 && in_array($cleaned[0], ['6', '7', '8', '9'])) {
+            return '91' . $cleaned;
+        }
+
+        return $cleaned;
+    }
+
+    /**
+     * Validate amount.
+     */
+    protected function validateAmount(string $amount): ?float
+    {
+        $cleaned = preg_replace('/[^0-9.]/', '', $amount);
+
+        if (!is_numeric($cleaned)) {
+            return null;
+        }
+
+        $value = (float) $cleaned;
+
+        if ($value <= 0 || $value > 100000000) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * Validate name.
+     */
+    protected function validateName(string $name): bool
+    {
+        $length = mb_strlen(trim($name));
+        return $length >= 2 && $length <= 100;
+    }
+
+    /**
+     * Validate description.
+     */
+    protected function validateDescription(string $description, int $min = 5, int $max = 500): bool
+    {
+        $length = mb_strlen(trim($description));
+        return $length >= $min && $length <= $max;
+    }
+
+    /**
+     * Validate date (DD/MM/YYYY).
+     */
+    protected function validateDate(string $date): ?\Carbon\Carbon
+    {
+        try {
+            $parsed = \Carbon\Carbon::createFromFormat('d/m/Y', trim($date));
+            return ($parsed && $parsed->isValid() && $parsed->isFuture()) ? $parsed : null;
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Formatting Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Format amount in Indian rupees.
+     */
+    protected function formatAmount(float $amount): string
+    {
+        return '₹' . number_format($amount, 0, '.', ',');
+    }
+
+    /**
+     * Format distance.
+     */
+    protected function formatDistance(float $km): string
+    {
+        if ($km < 1) {
+            return round($km * 1000) . 'm';
+        }
+        return round($km, 1) . 'km';
+    }
+
+    /**
+     * Format template message.
+     */
+    protected function formatMessage(string $template, array $replacements): string
+    {
+        return MessageTemplates::format($template, $replacements);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logging
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Log step change.
+     */
+    protected function logStep(string $step, ?string $flow = null): void
+    {
+        Log::debug("[{$this->getName()}] Step: {$step}", [
+            'flow' => $flow ?? $this->getName(),
+            'step' => $step,
+        ]);
+    }
 
     /**
      * Log info.
@@ -867,14 +929,21 @@ abstract class AbstractFlowHandler implements FlowHandlerInterface
     }
 
     /**
-     * Mask phone number for logging.
+     * Log debug.
+     */
+    protected function logDebug(string $message, array $context = []): void
+    {
+        Log::debug("[{$this->getName()}] {$message}", $context);
+    }
+
+    /**
+     * Mask phone for logging.
      */
     protected function maskPhone(string $phone): string
     {
         if (strlen($phone) < 6) {
             return $phone;
         }
-
         return substr($phone, 0, 3) . '****' . substr($phone, -3);
     }
 }

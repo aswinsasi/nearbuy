@@ -8,60 +8,63 @@ use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Middleware to verify WhatsApp webhook signatures.
+ * Middleware to verify WhatsApp webhook signatures (NFR-S-02).
  *
- * WhatsApp sends a X-Hub-Signature-256 header with each webhook request.
- * This header contains a HMAC-SHA256 hash of the request payload signed
- * with your app secret. We verify this signature to ensure the request
- * actually came from Meta/WhatsApp and wasn't tampered with.
+ * Security Measures:
+ * - HMAC-SHA256 signature verification
+ * - Timing-safe comparison to prevent timing attacks
+ * - Request body integrity verification
+ * - Detailed logging for security auditing
+ *
+ * WhatsApp sends X-Hub-Signature-256 header with each webhook request.
+ * We verify this to ensure the request came from Meta and wasn't tampered with.
  *
  * @see https://developers.facebook.com/docs/graph-api/webhooks/getting-started#verification-requests
  */
 class VerifyWhatsAppWebhook
 {
     /**
+     * Signature header name.
+     */
+    private const SIGNATURE_HEADER = 'X-Hub-Signature-256';
+
+    /**
+     * Signature prefix.
+     */
+    private const SIGNATURE_PREFIX = 'sha256=';
+
+    /**
      * Handle an incoming request.
-     *
-     * @param Request $request
-     * @param Closure $next
-     * @return Response
      */
     public function handle(Request $request, Closure $next): Response
     {
+        // Skip verification for GET requests (webhook verification)
+        if ($request->isMethod('GET')) {
+            return $next($request);
+        }
+
         // Skip verification in test mode or when explicitly disabled
         if ($this->shouldSkipVerification()) {
             return $next($request);
         }
 
-        // Get the signature from the request header
-        $signature = $request->header('X-Hub-Signature-256');
+        // Verify signature
+        $verificationResult = $this->verifyRequest($request);
 
-        if (empty($signature)) {
-            Log::warning('WhatsApp Webhook: Missing X-Hub-Signature-256 header', [
+        if (!$verificationResult['valid']) {
+            Log::warning('WhatsApp Webhook: Signature verification failed', [
+                'reason' => $verificationResult['reason'],
                 'ip' => $request->ip(),
                 'user_agent' => $request->userAgent(),
             ]);
 
             return response()->json([
-                'error' => 'Missing signature header',
-            ], Response::HTTP_UNAUTHORIZED);
-        }
-
-        // Verify the signature
-        if (!$this->verifySignature($request, $signature)) {
-            Log::warning('WhatsApp Webhook: Invalid signature', [
-                'ip' => $request->ip(),
-                'user_agent' => $request->userAgent(),
-                'signature' => substr($signature, 0, 20) . '...',
-            ]);
-
-            return response()->json([
-                'error' => 'Invalid signature',
+                'error' => 'Signature verification failed',
             ], Response::HTTP_FORBIDDEN);
         }
 
-        // Log successful verification (optional, can be noisy in production)
-        if (config('whatsapp.logging.log_webhooks')) {
+        // Log successful verification (debug level)
+        if (config('whatsapp.logging.log_webhooks', false)) {
             Log::debug('WhatsApp Webhook: Signature verified', [
                 'ip' => $request->ip(),
             ]);
@@ -72,8 +75,6 @@ class VerifyWhatsAppWebhook
 
     /**
      * Check if signature verification should be skipped.
-     *
-     * @return bool
      */
     private function shouldSkipVerification(): bool
     {
@@ -98,40 +99,109 @@ class VerifyWhatsAppWebhook
     }
 
     /**
-     * Verify the webhook signature.
+     * Verify the webhook request.
      *
-     * The signature is in the format: sha256=<hex_digest>
-     * We compute our own hash using the app secret and compare.
-     *
-     * @param Request $request
-     * @param string $signature
-     * @return bool
+     * @return array{valid: bool, reason: string|null}
      */
-    private function verifySignature(Request $request, string $signature): bool
+    private function verifyRequest(Request $request): array
     {
+        // Get signature from header
+        $signature = $request->header(self::SIGNATURE_HEADER);
+
+        if (empty($signature)) {
+            return [
+                'valid' => false,
+                'reason' => 'missing_signature_header',
+            ];
+        }
+
+        // Validate signature format
+        if (!str_starts_with($signature, self::SIGNATURE_PREFIX)) {
+            return [
+                'valid' => false,
+                'reason' => 'invalid_signature_format',
+            ];
+        }
+
+        // Get app secret
         $appSecret = config('whatsapp.webhook.app_secret');
 
         if (empty($appSecret)) {
             Log::error('WhatsApp Webhook: App secret not configured');
-            return false;
+            return [
+                'valid' => false,
+                'reason' => 'missing_app_secret',
+            ];
         }
 
-        // Extract the hash from the signature header
-        // Format: "sha256=<hex_hash>"
-        if (!str_starts_with($signature, 'sha256=')) {
-            Log::warning('WhatsApp Webhook: Invalid signature format');
-            return false;
+        // Extract hash from signature
+        $expectedHash = substr($signature, strlen(self::SIGNATURE_PREFIX));
+
+        // Validate hash format (should be hex)
+        if (!ctype_xdigit($expectedHash) || strlen($expectedHash) !== 64) {
+            return [
+                'valid' => false,
+                'reason' => 'invalid_hash_format',
+            ];
         }
 
-        $expectedHash = substr($signature, 7); // Remove "sha256=" prefix
-
-        // Get the raw request body
+        // Get raw request body
         $payload = $request->getContent();
 
-        // Compute the expected signature
+        if (empty($payload)) {
+            return [
+                'valid' => false,
+                'reason' => 'empty_payload',
+            ];
+        }
+
+        // Compute expected signature
         $computedHash = hash_hmac('sha256', $payload, $appSecret);
 
-        // Use timing-safe comparison to prevent timing attacks
+        // Use timing-safe comparison
+        if (!hash_equals($expectedHash, $computedHash)) {
+            return [
+                'valid' => false,
+                'reason' => 'signature_mismatch',
+            ];
+        }
+
+        return [
+            'valid' => true,
+            'reason' => null,
+        ];
+    }
+
+    /**
+     * Verify a signature manually (useful for testing).
+     *
+     * @param string $payload  Raw request body
+     * @param string $signature  Signature from header
+     * @param string $appSecret  App secret
+     * @return bool
+     */
+    public static function verifySignature(string $payload, string $signature, string $appSecret): bool
+    {
+        if (!str_starts_with($signature, self::SIGNATURE_PREFIX)) {
+            return false;
+        }
+
+        $expectedHash = substr($signature, strlen(self::SIGNATURE_PREFIX));
+        $computedHash = hash_hmac('sha256', $payload, $appSecret);
+
         return hash_equals($expectedHash, $computedHash);
+    }
+
+    /**
+     * Generate a signature for testing purposes.
+     *
+     * @param string $payload  Raw request body
+     * @param string $appSecret  App secret
+     * @return string  Signature in format "sha256=<hex>"
+     */
+    public static function generateSignature(string $payload, string $appSecret): string
+    {
+        $hash = hash_hmac('sha256', $payload, $appSecret);
+        return self::SIGNATURE_PREFIX . $hash;
     }
 }

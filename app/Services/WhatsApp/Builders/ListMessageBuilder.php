@@ -4,34 +4,43 @@ namespace App\Services\WhatsApp\Builders;
 
 use App\DTOs\ListItem;
 use App\DTOs\ListSection;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Builder for WhatsApp interactive list messages.
  *
- * WhatsApp allows maximum 10 sections with 10 items each.
+ * UX Guards:
+ * - Max 10 items enforced; auto-paginated with "More ➡️" item
+ * - Item titles auto-truncated at 24 chars with "…"
+ * - Item descriptions auto-truncated at 72 chars with "…"
+ * - addPaginationSupport() for large datasets
+ * - All truncations logged for developer review
  *
  * @example
+ * // Basic usage
  * $message = ListMessageBuilder::create('919876543210')
  *     ->header('Shop Categories')
  *     ->body('Select a category to browse offers:')
- *     ->footer('Scroll for more options')
  *     ->buttonText('View Categories')
  *     ->addSection('Popular', [
  *         ['id' => 'grocery', 'title' => '🛒 Grocery', 'description' => 'Daily essentials'],
- *         ['id' => 'electronics', 'title' => '📱 Electronics', 'description' => 'Phones & gadgets'],
  *     ])
- *     ->addSection('More', [
- *         ['id' => 'clothing', 'title' => '👕 Clothing', 'description' => 'Fashion & apparel'],
- *     ])
+ *     ->build();
+ *
+ * // Auto-paginated large list
+ * $message = ListMessageBuilder::create($phone)
+ *     ->body('Nearby shops with offers:')
+ *     ->buttonText('View Shops')
+ *     ->addPaginationSupport($allShopItems, page: 1)
  *     ->build();
  */
 class ListMessageBuilder
 {
     private string $to;
     private ?string $header = null;
-    private string $body;
+    private string $body = '';
     private ?string $footer = null;
-    private string $buttonText;
+    private string $buttonText = '';
     private array $sections = [];
     private ?string $replyTo = null;
 
@@ -41,17 +50,38 @@ class ListMessageBuilder
     public const MAX_SECTIONS = 10;
 
     /**
-     * Maximum total items across all sections.
+     * Maximum total items across all sections (WhatsApp hard limit).
      */
     public const MAX_TOTAL_ITEMS = 10;
 
     /**
-     * Maximum lengths.
+     * Items per page when auto-paginating (9 items + 1 "More" item).
+     */
+    public const ITEMS_PER_PAGE = 9;
+
+    /**
+     * Maximum lengths — WhatsApp enforced.
      */
     public const MAX_HEADER_LENGTH = 60;
     public const MAX_BODY_LENGTH = 1024;
     public const MAX_FOOTER_LENGTH = 60;
     public const MAX_BUTTON_TEXT_LENGTH = 20;
+
+    /**
+     * Maximum lengths — NearBuy UX targets for readability.
+     */
+    public const MAX_ITEM_TITLE_LENGTH = 24;
+    public const MAX_ITEM_DESCRIPTION_LENGTH = 72;
+
+    /**
+     * Truncation indicator.
+     */
+    private const TRUNCATION_SUFFIX = '…';
+
+    /**
+     * Pagination "More" item ID prefix.
+     */
+    private const MORE_ITEM_ID_PREFIX = 'page_next_';
 
     public function __construct(string $to)
     {
@@ -129,6 +159,11 @@ class ListMessageBuilder
     /**
      * Add a section with items.
      *
+     * Item titles and descriptions are auto-sanitized:
+     * - Titles truncated at 24 chars
+     * - Descriptions truncated at 72 chars
+     * - Truncations logged as warnings
+     *
      * @param string $title Section title
      * @param array<int, array{id: string, title: string, description?: string}> $items
      */
@@ -140,16 +175,12 @@ class ListMessageBuilder
             );
         }
 
-        $listItems = array_map(
-            fn(array $item) => ListItem::make(
-                $item['id'],
-                ListItem::truncateTitle($item['title']),
-                isset($item['description']) ? ListItem::truncateDescription($item['description']) : null
-            ),
+        $sanitizedItems = array_map(
+            fn(array $item) => $this->buildSanitizedListItem($item),
             $items
         );
 
-        $this->sections[] = ListSection::make($title, $listItems);
+        $this->sections[] = ListSection::make($title, $sanitizedItems);
         return $this;
     }
 
@@ -169,13 +200,20 @@ class ListMessageBuilder
     }
 
     /**
-     * Set sections from array.
+     * Set sections from array with auto-sanitization.
      *
      * @param array<int, array{title: string, rows: array}> $sections
      */
     public function sections(array $sections): self
     {
-        $this->sections = ListSection::fromArrayMultiple($sections);
+        $this->sections = [];
+
+        foreach ($sections as $section) {
+            $title = $section['title'] ?? '';
+            $rows = $section['rows'] ?? [];
+            $this->addSection($title, $rows);
+        }
+
         return $this;
     }
 
@@ -190,6 +228,76 @@ class ListMessageBuilder
     }
 
     /**
+     * Add items with automatic pagination support.
+     *
+     * If $allItems has more than 10 entries:
+     * - Shows 9 items for the requested page
+     * - Adds a "More ➡️" item that triggers the next page
+     * - Logs pagination info for debugging
+     *
+     * Your flow controller should handle the "page_next_X" button ID
+     * by calling this method again with the next page number.
+     *
+     * @param array<int, array{id: string, title: string, description?: string}> $allItems Full item list
+     * @param int $page Current page (1-based)
+     * @param string $sectionTitle Optional section title
+     * @return self
+     */
+    public function addPaginationSupport(array $allItems, int $page = 1, string $sectionTitle = ''): self
+    {
+        $totalItems = count($allItems);
+        $totalPages = (int) ceil($totalItems / self::ITEMS_PER_PAGE);
+        $page = max(1, min($page, $totalPages)); // Clamp to valid range
+
+        $offset = ($page - 1) * self::ITEMS_PER_PAGE;
+        $pageItems = array_slice($allItems, $offset, self::ITEMS_PER_PAGE);
+        $hasMore = ($page < $totalPages);
+
+        Log::info('WhatsApp ListMessage: pagination', [
+            'to' => $this->to,
+            'total_items' => $totalItems,
+            'page' => $page,
+            'total_pages' => $totalPages,
+            'showing' => count($pageItems),
+            'has_more' => $hasMore,
+        ]);
+
+        // Add the "More" navigation item if there are more pages
+        if ($hasMore) {
+            $remaining = $totalItems - ($offset + count($pageItems));
+            $nextPage = $page + 1;
+
+            $pageItems[] = [
+                'id' => self::MORE_ITEM_ID_PREFIX . $nextPage,
+                'title' => "More ➡️ ({$remaining} left)",
+                'description' => "Page {$nextPage} of {$totalPages}",
+            ];
+        }
+
+        // Update footer with page indicator
+        if ($totalPages > 1) {
+            $this->footer("Page {$page} of {$totalPages}");
+        }
+
+        return $this->addSection($sectionTitle, $pageItems);
+    }
+
+    /**
+     * Check if a list item ID is a pagination "next page" trigger.
+     *
+     * @return int|null The next page number, or null if not a pagination ID
+     */
+    public static function parsePaginationId(string $itemId): ?int
+    {
+        if (str_starts_with($itemId, self::MORE_ITEM_ID_PREFIX)) {
+            $page = (int) substr($itemId, strlen(self::MORE_ITEM_ID_PREFIX));
+            return $page > 0 ? $page : null;
+        }
+
+        return null;
+    }
+
+    /**
      * Set message to reply to.
      */
     public function replyTo(string $messageId): self
@@ -200,6 +308,8 @@ class ListMessageBuilder
 
     /**
      * Build the message payload.
+     *
+     * Validates total item count and auto-trims excess items with warning.
      */
     public function build(): array
     {
@@ -215,17 +325,18 @@ class ListMessageBuilder
             throw new \InvalidArgumentException('At least one section with items is required');
         }
 
-        // Validate total items
-        $totalItems = array_reduce(
-            $this->sections,
-            fn(int $carry, ListSection $section) => $carry + $section->count(),
-            0
-        );
+        // Count total items and enforce limit
+        $totalItems = $this->countTotalItems();
 
         if ($totalItems > self::MAX_TOTAL_ITEMS) {
-            throw new \InvalidArgumentException(
-                "Total items across all sections must not exceed " . self::MAX_TOTAL_ITEMS
-            );
+            Log::warning('WhatsApp ListMessage: items exceed max, auto-trimming', [
+                'to' => $this->to,
+                'total_items' => $totalItems,
+                'max_allowed' => self::MAX_TOTAL_ITEMS,
+                'hint' => 'Use addPaginationSupport() for large lists',
+            ]);
+
+            $this->trimItemsToLimit();
         }
 
         $interactive = [
@@ -275,5 +386,127 @@ class ListMessageBuilder
     public function getTo(): string
     {
         return $this->to;
+    }
+
+    /**
+     * Get total item count across all sections (for inspection/testing).
+     */
+    public function getTotalItemCount(): int
+    {
+        return $this->countTotalItems();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Internal Guards & Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Build a sanitized ListItem from a raw array.
+     *
+     * Applies title and description truncation with logging.
+     */
+    private function buildSanitizedListItem(array $item): ListItem
+    {
+        $id = $item['id'];
+        $title = $this->sanitizeItemTitle($item['title'], $id);
+        $description = isset($item['description'])
+            ? $this->sanitizeItemDescription($item['description'], $id)
+            : null;
+
+        return ListItem::make($id, $title, $description);
+    }
+
+    /**
+     * Sanitize and auto-truncate an item title (max 24 chars).
+     */
+    private function sanitizeItemTitle(string $title, string $itemId): string
+    {
+        if (mb_strlen($title) <= self::MAX_ITEM_TITLE_LENGTH) {
+            return $title;
+        }
+
+        Log::warning('WhatsApp ListMessage: item title auto-truncated', [
+            'to' => $this->to,
+            'item_id' => $itemId,
+            'original_title' => $title,
+            'original_length' => mb_strlen($title),
+            'max_allowed' => self::MAX_ITEM_TITLE_LENGTH,
+        ]);
+
+        return mb_substr($title, 0, self::MAX_ITEM_TITLE_LENGTH - mb_strlen(self::TRUNCATION_SUFFIX))
+             . self::TRUNCATION_SUFFIX;
+    }
+
+    /**
+     * Sanitize and auto-truncate an item description (max 72 chars).
+     */
+    private function sanitizeItemDescription(string $description, string $itemId): string
+    {
+        if (mb_strlen($description) <= self::MAX_ITEM_DESCRIPTION_LENGTH) {
+            return $description;
+        }
+
+        Log::warning('WhatsApp ListMessage: item description auto-truncated', [
+            'to' => $this->to,
+            'item_id' => $itemId,
+            'original_length' => mb_strlen($description),
+            'max_allowed' => self::MAX_ITEM_DESCRIPTION_LENGTH,
+        ]);
+
+        return mb_substr($description, 0, self::MAX_ITEM_DESCRIPTION_LENGTH - mb_strlen(self::TRUNCATION_SUFFIX))
+             . self::TRUNCATION_SUFFIX;
+    }
+
+    /**
+     * Count total items across all sections.
+     */
+    private function countTotalItems(): int
+    {
+        return array_reduce(
+            $this->sections,
+            fn(int $carry, ListSection $section) => $carry + $section->count(),
+            0
+        );
+    }
+
+    /**
+     * Trim items to respect the 10-item WhatsApp limit.
+     *
+     * Keeps items from earlier sections first. When the limit is
+     * reached, remaining sections are dropped entirely.
+     *
+     * This is a safety net — prefer using addPaginationSupport()
+     * so users can actually see all items.
+     */
+    private function trimItemsToLimit(): void
+    {
+        $kept = 0;
+        $trimmedSections = [];
+
+        foreach ($this->sections as $section) {
+            $sectionCount = $section->count();
+
+            if ($kept >= self::MAX_TOTAL_ITEMS) {
+                // Skip entire section
+                break;
+            }
+
+            $available = self::MAX_TOTAL_ITEMS - $kept;
+
+            if ($sectionCount <= $available) {
+                // Section fits entirely
+                $trimmedSections[] = $section;
+                $kept += $sectionCount;
+            } else {
+                // Partial section — take what fits
+                $trimmedSections[] = $section->take($available);
+                $kept += $available;
+                break;
+            }
+        }
+
+        $this->sections = $trimmedSections;
     }
 }

@@ -3,206 +3,336 @@
 namespace App\Enums;
 
 /**
- * Available conversation flow types in NearBuy.
+ * All conversation flow types in NearBuy.
+ *
+ * COMPLETE LIST supporting:
+ * - Registration (customer + shop)
+ * - Offers (upload, browse, manage)
+ * - Product Search (customer search, shop response)
+ * - Agreements (create, confirm, list)
+ * - Fish/Pacha Meen (seller reg, catch post, subscription, browse, manage, stock update, seller menu)
+ * - Jobs/Njaanum Panikkar (worker reg, job post, apply, selection, execution, worker menu, poster menu)
+ * - Flash Mob Deals (create, claim, manage)
+ * - Settings
  *
  * @srs-ref Section 7.1 High-Level Architecture - Flow Controllers
- * @srs-ref Section 3 - Jobs Marketplace Module (Njaanum Panikkar)
- * 
- * UPDATED: JOB_WORKER_MENU and JOB_POSTER_MENU now point to dedicated handlers
+ * @srs-ref Section 2 - Pacha Meen Module
+ * @srs-ref Section 3 - Njaanum Panikkar Module
+ * @srs-ref Section 4 - Flash Mob Deals Module
  */
 enum FlowType: string
 {
-    case REGISTRATION = 'registration';
+    /*
+    |--------------------------------------------------------------------------
+    | Core Flows
+    |--------------------------------------------------------------------------
+    */
+
     case MAIN_MENU = 'main_menu';
+    case REGISTRATION = 'registration';
+    case SETTINGS = 'settings';
+
+    /*
+    |--------------------------------------------------------------------------
+    | Offers Flows
+    |--------------------------------------------------------------------------
+    */
+
     case OFFERS_BROWSE = 'offers_browse';
     case OFFERS_UPLOAD = 'offers_upload';
     case OFFERS_MANAGE = 'offers_manage';
+
+    /*
+    |--------------------------------------------------------------------------
+    | Product Search Flows
+    |--------------------------------------------------------------------------
+    */
+
     case PRODUCT_SEARCH = 'product_search';
     case PRODUCT_RESPOND = 'product_respond';
+
+    /*
+    |--------------------------------------------------------------------------
+    | Agreement Flows
+    |--------------------------------------------------------------------------
+    */
+
     case AGREEMENT_CREATE = 'agreement_create';
     case AGREEMENT_CONFIRM = 'agreement_confirm';
     case AGREEMENT_LIST = 'agreement_list';
-    case SETTINGS = 'settings';
 
     /*
     |--------------------------------------------------------------------------
     | Pacha Meen (Fish Alert) Flows
     |--------------------------------------------------------------------------
-    |
-    | @srs-ref Pacha Meen Module
+    | @srs-ref Section 2 - Pacha Meen Module
     */
+
     case FISH_SELLER_REGISTER = 'fish_seller_register';
     case FISH_POST_CATCH = 'fish_post_catch';
-    case FISH_STOCK_UPDATE = 'fish_stock_update';
     case FISH_SUBSCRIBE = 'fish_subscribe';
     case FISH_BROWSE = 'fish_browse';
     case FISH_MANAGE_SUBSCRIPTION = 'fish_manage_subscription';
+    case FISH_STOCK_UPDATE = 'fish_stock_update';
     case FISH_SELLER_MENU = 'fish_seller_menu';
 
     /*
     |--------------------------------------------------------------------------
-    | Njaanum Panikkar (Basic Jobs Marketplace) Flows
+    | Njaanum Panikkar (Jobs Marketplace) Flows
     |--------------------------------------------------------------------------
-    |
-    | @srs-ref Section 3 - Jobs Marketplace Module
+    | @srs-ref Section 3 - Njaanum Panikkar Module
     */
+
     case JOB_WORKER_REGISTER = 'job_worker_register';
     case JOB_POST = 'job_post';
     case JOB_BROWSE = 'job_browse';
-    case JOB_WORKER_MENU = 'job_worker_menu';
-    case JOB_POSTER_MENU = 'job_poster_menu';
-    case JOB_APPLICATIONS = 'job_applications';
     case JOB_APPLICATION = 'job_application';
     case JOB_SELECTION = 'job_selection';
     case JOB_EXECUTION = 'job_execution';
+    case JOB_WORKER_MENU = 'job_worker_menu';
+    case JOB_POSTER_MENU = 'job_poster_menu';
+    case JOB_APPLICATIONS = 'job_applications';
+
+    /*
+    |--------------------------------------------------------------------------
+    | Flash Mob Deals Flows
+    |--------------------------------------------------------------------------
+    | @srs-ref Section 4 - Flash Mob Deals Module
+    */
+
+    case FLASH_DEAL_CREATE = 'flash_deal_create';
+    case FLASH_DEAL_CLAIM = 'flash_deal_claim';
+    case FLASH_DEAL_MANAGE = 'flash_deal_manage';
+
+    /*
+    |--------------------------------------------------------------------------
+    | Display Methods
+    |--------------------------------------------------------------------------
+    */
 
     /**
-     * Get the display label.
+     * Get display label.
      */
     public function label(): string
     {
         return match ($this) {
-            self::REGISTRATION => 'Registration',
+            // Core
             self::MAIN_MENU => 'Main Menu',
+            self::REGISTRATION => 'Registration',
+            self::SETTINGS => 'Settings',
+            // Offers
             self::OFFERS_BROWSE => 'Browse Offers',
             self::OFFERS_UPLOAD => 'Upload Offer',
             self::OFFERS_MANAGE => 'Manage Offers',
+            // Products
             self::PRODUCT_SEARCH => 'Product Search',
             self::PRODUCT_RESPOND => 'Respond to Request',
+            // Agreements
             self::AGREEMENT_CREATE => 'Create Agreement',
             self::AGREEMENT_CONFIRM => 'Confirm Agreement',
             self::AGREEMENT_LIST => 'My Agreements',
-            self::SETTINGS => 'Settings',
-            // Fish flows
+            // Fish
             self::FISH_SELLER_REGISTER => 'Fish Seller Registration',
             self::FISH_POST_CATCH => 'Post Fish Catch',
-            self::FISH_STOCK_UPDATE => 'Update Fish Stock',
             self::FISH_SUBSCRIBE => 'Fish Alert Subscription',
             self::FISH_BROWSE => 'Browse Fresh Fish',
             self::FISH_MANAGE_SUBSCRIPTION => 'Manage Fish Alerts',
-            self::FISH_SELLER_MENU => 'Fish Seller Menu',
-            // Job flows
+            self::FISH_STOCK_UPDATE => 'Update Fish Stock',
+            self::FISH_SELLER_MENU => 'Fish Seller Dashboard',
+            // Jobs
             self::JOB_WORKER_REGISTER => 'Worker Registration',
             self::JOB_POST => 'Post Task',
             self::JOB_BROWSE => 'Browse Tasks',
-            self::JOB_WORKER_MENU => 'Worker Dashboard',
-            self::JOB_POSTER_MENU => 'Task Poster Menu',
-            self::JOB_APPLICATIONS => 'Job Applications',
             self::JOB_APPLICATION => 'Apply for Job',
             self::JOB_SELECTION => 'Select Worker',
             self::JOB_EXECUTION => 'Task Execution',
+            self::JOB_WORKER_MENU => 'Worker Dashboard',
+            self::JOB_POSTER_MENU => 'My Posted Tasks',
+            self::JOB_APPLICATIONS => 'View Applications',
+            // Flash Deals
+            self::FLASH_DEAL_CREATE => 'Create Flash Deal',
+            self::FLASH_DEAL_CLAIM => 'Claim Flash Deal',
+            self::FLASH_DEAL_MANAGE => 'Manage Flash Deals',
         };
     }
 
     /**
-     * Get the emoji icon for this flow.
+     * Get emoji icon.
      */
     public function icon(): string
     {
         return match ($this) {
-            self::REGISTRATION => '📝',
+            // Core
             self::MAIN_MENU => '🏠',
-            self::OFFERS_BROWSE => '🏷️',
+            self::REGISTRATION => '📝',
+            self::SETTINGS => '⚙️',
+            // Offers
+            self::OFFERS_BROWSE => '🛍️',
             self::OFFERS_UPLOAD => '📤',
-            self::OFFERS_MANAGE => '⚙️',
+            self::OFFERS_MANAGE => '📊',
+            // Products
             self::PRODUCT_SEARCH => '🔍',
             self::PRODUCT_RESPOND => '📦',
+            // Agreements
             self::AGREEMENT_CREATE => '📝',
             self::AGREEMENT_CONFIRM => '✅',
             self::AGREEMENT_LIST => '📋',
-            self::SETTINGS => '⚙️',
-            // Fish flows
+            // Fish
             self::FISH_SELLER_REGISTER => '🐟',
             self::FISH_POST_CATCH => '🎣',
-            self::FISH_STOCK_UPDATE => '📦',
             self::FISH_SUBSCRIBE => '🔔',
             self::FISH_BROWSE => '🐟',
             self::FISH_MANAGE_SUBSCRIPTION => '⚙️',
+            self::FISH_STOCK_UPDATE => '📦',
             self::FISH_SELLER_MENU => '🐟',
-            // Job flows
+            // Jobs
             self::JOB_WORKER_REGISTER => '👷',
             self::JOB_POST => '📋',
             self::JOB_BROWSE => '🔍',
-            self::JOB_WORKER_MENU => '👷',
-            self::JOB_POSTER_MENU => '📋',
-            self::JOB_APPLICATIONS => '📝',
             self::JOB_APPLICATION => '✋',
             self::JOB_SELECTION => '👆',
             self::JOB_EXECUTION => '✅',
+            self::JOB_WORKER_MENU => '👷',
+            self::JOB_POSTER_MENU => '📋',
+            self::JOB_APPLICATIONS => '📝',
+            // Flash Deals
+            self::FLASH_DEAL_CREATE => '⚡',
+            self::FLASH_DEAL_CLAIM => '🎯',
+            self::FLASH_DEAL_MANAGE => '📊',
         };
     }
 
     /**
-     * Get the labeled icon (icon + label).
+     * Get icon + label.
      */
     public function labeledIcon(): string
     {
         return $this->icon() . ' ' . $this->label();
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Handler Mapping
+    |--------------------------------------------------------------------------
+    */
+
     /**
      * Get the handler class name.
-     *
-     * UPDATED: JOB_WORKER_MENU and JOB_POSTER_MENU now use dedicated handlers.
      */
     public function handlerClass(): string
     {
+        $baseNamespace = 'App\\Services\\Flow\\Handlers\\';
+
         return match ($this) {
-            self::REGISTRATION => \App\Services\Flow\Handlers\RegistrationFlowHandler::class,
-            self::MAIN_MENU => \App\Services\Flow\Handlers\MainMenuHandler::class,
-            self::OFFERS_BROWSE => \App\Services\Flow\Handlers\OfferBrowseFlowHandler::class,
-            self::OFFERS_UPLOAD => \App\Services\Flow\Handlers\OfferUploadFlowHandler::class,
-            self::OFFERS_MANAGE => \App\Services\Flow\Handlers\OfferManageFlowHandler::class,
-            self::PRODUCT_SEARCH => \App\Services\Flow\Handlers\ProductSearchFlowHandler::class,
-            self::PRODUCT_RESPOND => \App\Services\Flow\Handlers\ProductResponseFlowHandler::class,
-            self::AGREEMENT_CREATE => \App\Services\Flow\Handlers\AgreementCreateFlowHandler::class,
-            self::AGREEMENT_CONFIRM => \App\Services\Flow\Handlers\AgreementConfirmFlowHandler::class,
-            self::AGREEMENT_LIST => \App\Services\Flow\Handlers\AgreementListFlowHandler::class,
-            self::SETTINGS => \App\Services\Flow\Handlers\SettingsFlowHandler::class,
-            // Fish flows - in Fish subdirectory
-            self::FISH_SELLER_REGISTER => \App\Services\Flow\Handlers\Fish\FishSellerRegistrationFlowHandler::class,
-            self::FISH_POST_CATCH => \App\Services\Flow\Handlers\Fish\FishCatchPostFlowHandler::class,
-            self::FISH_STOCK_UPDATE => \App\Services\Flow\Handlers\Fish\FishStockUpdateFlowHandler::class,
-            self::FISH_SUBSCRIBE => \App\Services\Flow\Handlers\Fish\FishSubscriptionFlowHandler::class,
-            self::FISH_BROWSE => \App\Services\Flow\Handlers\Fish\FishBrowseFlowHandler::class,
-            self::FISH_MANAGE_SUBSCRIPTION => \App\Services\Flow\Handlers\Fish\FishManageSubscriptionHandler::class,
-            self::FISH_SELLER_MENU => \App\Services\Flow\Handlers\Fish\FishSellerMenuHandler::class,
-            // Job flows - in Jobs subdirectory
-            self::JOB_WORKER_REGISTER => \App\Services\Flow\Handlers\Jobs\JobWorkerRegistrationFlowHandler::class,
-            self::JOB_POST => \App\Services\Flow\Handlers\Jobs\JobPostFlowHandler::class,
-            // JOB_BROWSE uses JobApplicationFlowHandler to browse and view jobs
-            self::JOB_BROWSE => \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler::class,
-            // UPDATED: Dedicated handlers for worker and poster menus
-            self::JOB_WORKER_MENU => \App\Services\Flow\Handlers\Jobs\JobWorkerMenuFlowHandler::class,
-            self::JOB_POSTER_MENU => \App\Services\Flow\Handlers\Jobs\JobPosterMenuFlowHandler::class,
-            // JOB_APPLICATIONS uses JobSelectionFlowHandler to view applications
-            self::JOB_APPLICATIONS => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
-            self::JOB_APPLICATION => \App\Services\Flow\Handlers\Jobs\JobApplicationFlowHandler::class,
-            self::JOB_SELECTION => \App\Services\Flow\Handlers\Jobs\JobSelectionFlowHandler::class,
-            self::JOB_EXECUTION => \App\Services\Flow\Handlers\Jobs\JobExecutionFlowHandler::class,
+            // Core
+            self::MAIN_MENU => $baseNamespace . 'MainMenuHandler',
+            self::REGISTRATION => $baseNamespace . 'RegistrationFlowHandler',
+            self::SETTINGS => $baseNamespace . 'SettingsFlowHandler',
+            // Offers
+            self::OFFERS_BROWSE => $baseNamespace . 'OfferBrowseFlowHandler',
+            self::OFFERS_UPLOAD => $baseNamespace . 'OfferUploadFlowHandler',
+            self::OFFERS_MANAGE => $baseNamespace . 'OfferManageFlowHandler',
+            // Products
+            self::PRODUCT_SEARCH => $baseNamespace . 'ProductSearchFlowHandler',
+            self::PRODUCT_RESPOND => $baseNamespace . 'ProductResponseFlowHandler',
+            // Agreements
+            self::AGREEMENT_CREATE => $baseNamespace . 'AgreementCreateFlowHandler',
+            self::AGREEMENT_CONFIRM => $baseNamespace . 'AgreementConfirmFlowHandler',
+            self::AGREEMENT_LIST => $baseNamespace . 'AgreementListFlowHandler',
+            // Fish - in Fish subdirectory
+            self::FISH_SELLER_REGISTER => $baseNamespace . 'Fish\\FishSellerRegistrationFlowHandler',
+            self::FISH_POST_CATCH => $baseNamespace . 'Fish\\FishCatchPostFlowHandler',
+            self::FISH_SUBSCRIBE => $baseNamespace . 'Fish\\FishSubscriptionFlowHandler',
+            self::FISH_BROWSE => $baseNamespace . 'Fish\\FishBrowseFlowHandler',
+            self::FISH_MANAGE_SUBSCRIPTION => $baseNamespace . 'Fish\\FishManageSubscriptionHandler',
+            self::FISH_STOCK_UPDATE => $baseNamespace . 'Fish\\FishStockUpdateFlowHandler',
+            self::FISH_SELLER_MENU => $baseNamespace . 'Fish\\FishSellerMenuHandler',
+            // Jobs - in Jobs subdirectory
+            self::JOB_WORKER_REGISTER => $baseNamespace . 'Jobs\\JobWorkerRegistrationFlowHandler',
+            self::JOB_POST => $baseNamespace . 'Jobs\\JobPostFlowHandler',
+            self::JOB_BROWSE => $baseNamespace . 'Jobs\\JobBrowseFlowHandler',
+            self::JOB_APPLICATION => $baseNamespace . 'Jobs\\JobApplicationFlowHandler',
+            self::JOB_SELECTION => $baseNamespace . 'Jobs\\JobSelectionFlowHandler',
+            self::JOB_EXECUTION => $baseNamespace . 'Jobs\\JobExecutionFlowHandler',
+            self::JOB_WORKER_MENU => $baseNamespace . 'Jobs\\JobWorkerMenuFlowHandler',
+            self::JOB_POSTER_MENU => $baseNamespace . 'Jobs\\JobPosterMenuFlowHandler',
+            self::JOB_APPLICATIONS => $baseNamespace . 'Jobs\\JobApplicationsFlowHandler',
+            // Flash Deals - in FlashDeals subdirectory
+            self::FLASH_DEAL_CREATE => $baseNamespace . 'FlashDeals\\FlashDealCreateFlowHandler',
+            self::FLASH_DEAL_CLAIM => $baseNamespace . 'FlashDeals\\FlashDealClaimFlowHandler',
+            self::FLASH_DEAL_MANAGE => $baseNamespace . 'FlashDeals\\FlashDealManageFlowHandler',
         };
     }
 
     /**
-     * Check if this flow requires authentication (registered user).
-     *
-     * @srs-ref FR-REG-01 New user detection
+     * Get initial step for this flow.
+     */
+    public function initialStep(): string
+    {
+        return match ($this) {
+            // Core
+            self::MAIN_MENU => 'show_menu',
+            self::REGISTRATION => 'ask_type',
+            self::SETTINGS => 'show_settings',
+            // Offers
+            self::OFFERS_BROWSE => 'select_category',
+            self::OFFERS_UPLOAD => 'upload_image',
+            self::OFFERS_MANAGE => 'show_offers',
+            // Products
+            self::PRODUCT_SEARCH => 'ask_category',
+            self::PRODUCT_RESPOND => 'view_request',
+            // Agreements
+            self::AGREEMENT_CREATE => 'ask_direction',
+            self::AGREEMENT_CONFIRM => 'show_pending',
+            self::AGREEMENT_LIST => 'show_list',
+            // Fish
+            self::FISH_SELLER_REGISTER => 'select_type',
+            self::FISH_POST_CATCH => 'select_fish',
+            self::FISH_SUBSCRIBE => 'select_location',
+            self::FISH_BROWSE => 'show_nearby',
+            self::FISH_MANAGE_SUBSCRIPTION => 'show_subscription',
+            self::FISH_STOCK_UPDATE => 'select_catch',
+            self::FISH_SELLER_MENU => 'show_menu',
+            // Jobs
+            self::JOB_WORKER_REGISTER => 'ask_name',
+            self::JOB_POST => 'select_category',
+            self::JOB_BROWSE => 'show_nearby',
+            self::JOB_APPLICATION => 'view_details',
+            self::JOB_SELECTION => 'view_applications',
+            self::JOB_EXECUTION => 'arrival_photo',
+            self::JOB_WORKER_MENU => 'show_menu',
+            self::JOB_POSTER_MENU => 'show_tasks',
+            self::JOB_APPLICATIONS => 'show_applications',
+            // Flash Deals
+            self::FLASH_DEAL_CREATE => 'ask_title',
+            self::FLASH_DEAL_CLAIM => 'show_deal',
+            self::FLASH_DEAL_MANAGE => 'show_deals',
+        };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization Methods
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Check if this flow requires authentication.
      */
     public function requiresAuth(): bool
     {
         return match ($this) {
             self::REGISTRATION => false,
             self::MAIN_MENU => false,
-            self::FISH_BROWSE => false,  // Allow browsing without auth
-            self::JOB_BROWSE => false,   // Allow browsing jobs without auth
+            self::FISH_BROWSE => false,
+            self::JOB_BROWSE => false,
+            self::FLASH_DEAL_CLAIM => false, // Can browse without auth
             default => true,
         };
     }
 
     /**
-     * Check if this flow is for shop owners only.
-     *
-     * @srs-ref Section 2.3.2 Shop Owners
+     * Check if this flow is shop-only.
      */
     public function isShopOnly(): bool
     {
@@ -210,13 +340,13 @@ enum FlowType: string
             self::OFFERS_UPLOAD,
             self::OFFERS_MANAGE,
             self::PRODUCT_RESPOND,
+            self::FLASH_DEAL_CREATE,
+            self::FLASH_DEAL_MANAGE,
         ]);
     }
 
     /**
-     * Check if this flow is for fish sellers only.
-     *
-     * @srs-ref Pacha Meen Module
+     * Check if this flow is fish-seller-only.
      */
     public function isFishSellerOnly(): bool
     {
@@ -228,9 +358,7 @@ enum FlowType: string
     }
 
     /**
-     * Check if this flow is for job workers only.
-     *
-     * @srs-ref Njaanum Panikkar Module - Section 3.2
+     * Check if this flow is job-worker-only.
      */
     public function isJobWorkerOnly(): bool
     {
@@ -241,9 +369,7 @@ enum FlowType: string
     }
 
     /**
-     * Check if this flow is for customers only.
-     *
-     * @srs-ref Section 2.3.1 Customers
+     * Check if this flow is customer-only.
      */
     public function isCustomerOnly(): bool
     {
@@ -254,363 +380,166 @@ enum FlowType: string
     }
 
     /**
-     * Check if this is a fish-related flow.
-     *
-     * @srs-ref Pacha Meen Module
-     */
-    public function isFishFlow(): bool
-    {
-        return in_array($this, [
-            self::FISH_SELLER_REGISTER,
-            self::FISH_POST_CATCH,
-            self::FISH_STOCK_UPDATE,
-            self::FISH_SUBSCRIBE,
-            self::FISH_BROWSE,
-            self::FISH_MANAGE_SUBSCRIPTION,
-            self::FISH_SELLER_MENU,
-        ]);
-    }
-
-    /**
-     * Check if this is a job-related flow.
-     *
-     * @srs-ref Njaanum Panikkar Module
-     */
-    public function isJobFlow(): bool
-    {
-        return in_array($this, [
-            self::JOB_WORKER_REGISTER,
-            self::JOB_POST,
-            self::JOB_BROWSE,
-            self::JOB_WORKER_MENU,
-            self::JOB_POSTER_MENU,
-            self::JOB_APPLICATIONS,
-            self::JOB_APPLICATION,
-            self::JOB_SELECTION,
-            self::JOB_EXECUTION,
-        ]);
-    }
-
-    /**
-     * Check if this flow is available to all users.
+     * Check if this flow is universal (available to all users).
      */
     public function isUniversal(): bool
     {
         return in_array($this, [
             self::REGISTRATION,
             self::MAIN_MENU,
+            self::SETTINGS,
             self::AGREEMENT_CREATE,
             self::AGREEMENT_CONFIRM,
             self::AGREEMENT_LIST,
-            self::SETTINGS,
             self::FISH_BROWSE,
             self::FISH_SUBSCRIBE,
             self::FISH_SELLER_REGISTER,
-            // Job universal flows
+            self::FISH_MANAGE_SUBSCRIPTION,
             self::JOB_WORKER_REGISTER,
             self::JOB_BROWSE,
             self::JOB_POST,
-            self::JOB_POSTER_MENU, // Added: Anyone can view their posted jobs
+            self::JOB_POSTER_MENU,
+            self::JOB_APPLICATION,
+            self::FLASH_DEAL_CLAIM,
         ]);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Flow Category Methods
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Get the initial step for this flow.
+     * Check if this is a fish-related flow.
      */
-    public function initialStep(): string
+    public function isFishFlow(): bool
     {
-        return match ($this) {
-            self::REGISTRATION => RegistrationStep::ASK_TYPE->value,
-            self::MAIN_MENU => 'show_menu',
-            self::OFFERS_BROWSE => OfferStep::SELECT_CATEGORY->value,
-            self::OFFERS_UPLOAD => OfferStep::UPLOAD_IMAGE->value,
-            self::OFFERS_MANAGE => 'show_offers',
-            self::PRODUCT_SEARCH => ProductSearchStep::ASK_CATEGORY->value,
-            self::PRODUCT_RESPOND => ProductSearchStep::VIEW_REQUEST->value,
-            self::AGREEMENT_CREATE => AgreementStep::ASK_DIRECTION->value,
-            self::AGREEMENT_CONFIRM => AgreementStep::SHOW_PENDING->value,
-            self::AGREEMENT_LIST => AgreementStep::SHOW_LIST->value,
-            self::SETTINGS => 'show_settings',
-            // Fish flows
-            self::FISH_SELLER_REGISTER => 'select_type',
-            self::FISH_POST_CATCH => FishCatchStep::SELECT_FISH->value,
-            self::FISH_STOCK_UPDATE => 'select_catch',
-            self::FISH_SUBSCRIBE => FishSubscriptionStep::SELECT_LOCATION->value,
-            self::FISH_BROWSE => 'show_nearby',
-            self::FISH_MANAGE_SUBSCRIPTION => 'show_subscription',
-            self::FISH_SELLER_MENU => 'show_menu',
-            // Job flows
-            self::JOB_WORKER_REGISTER => JobWorkerRegistrationStep::ASK_NAME->value,
-            self::JOB_POST => JobPostingStep::SELECT_CATEGORY->value,
-            self::JOB_BROWSE => 'show_nearby',
-            // UPDATED: Dedicated initial steps for menu handlers
-            self::JOB_WORKER_MENU => 'worker_menu',
-            self::JOB_POSTER_MENU => 'poster_menu',
-            self::JOB_APPLICATIONS => 'show_applications',
-            self::JOB_APPLICATION => JobApplicationStep::VIEW_DETAILS->value,
-            self::JOB_SELECTION => 'view_applications',
-            self::JOB_EXECUTION => JobExecutionStep::ARRIVAL_PHOTO->value,
-        };
+        return in_array($this, self::fishFlows());
     }
 
     /**
-     * Get the initial FlowStep enum for this flow.
+     * Check if this is a job-related flow.
      */
-    public function initialFlowStep(): ?FlowStep
+    public function isJobFlow(): bool
     {
-        return match ($this) {
-            self::REGISTRATION => FlowStep::REG_ASK_NAME,
-            self::MAIN_MENU => FlowStep::MAIN_MENU,
-            self::OFFERS_BROWSE => FlowStep::OFFERS_SELECT_CATEGORY,
-            self::OFFERS_UPLOAD => FlowStep::OFFERS_UPLOAD_IMAGE,
-            self::OFFERS_MANAGE => FlowStep::OFFERS_MANAGE,
-            self::PRODUCT_SEARCH => FlowStep::PRODUCT_ASK_CATEGORY,
-            self::PRODUCT_RESPOND => FlowStep::PRODUCT_VIEW_REQUEST,
-            self::AGREEMENT_CREATE => FlowStep::AGREE_ASK_DIRECTION,
-            self::AGREEMENT_CONFIRM => FlowStep::AGREE_CONFIRM_RECEIVED,
-            self::AGREEMENT_LIST => FlowStep::AGREE_VIEW_LIST,
-            self::SETTINGS => FlowStep::SETTINGS_MENU,
-            // Fish flows - return null as they use their own step enums
-            self::FISH_SELLER_REGISTER,
-            self::FISH_POST_CATCH,
-            self::FISH_STOCK_UPDATE,
-            self::FISH_SUBSCRIBE,
-            self::FISH_BROWSE,
-            self::FISH_MANAGE_SUBSCRIPTION,
-            self::FISH_SELLER_MENU => null,
-            // Job flows - return null as they use their own step enums
-            self::JOB_WORKER_REGISTER,
-            self::JOB_POST,
-            self::JOB_BROWSE,
-            self::JOB_WORKER_MENU,
-            self::JOB_POSTER_MENU,
-            self::JOB_APPLICATIONS,
-            self::JOB_APPLICATION,
-            self::JOB_SELECTION,
-            self::JOB_EXECUTION => null,
-        };
+        return in_array($this, self::jobFlows());
     }
 
     /**
-     * Get menu item configuration for this flow.
-     *
-     * @return array{id: string, title: string, description: string}|null
+     * Check if this is a flash-deal-related flow.
      */
-    public function menuItem(): ?array
+    public function isFlashDealFlow(): bool
     {
-        return match ($this) {
-            self::OFFERS_BROWSE => [
-                'id' => 'menu_offers',
-                'title' => '🏷️ Browse Offers',
-                'description' => 'See offers from nearby shops',
-            ],
-            self::PRODUCT_SEARCH => [
-                'id' => 'menu_search',
-                'title' => '🔍 Find Product',
-                'description' => 'Search for products nearby',
-            ],
-            self::AGREEMENT_CREATE => [
-                'id' => 'menu_agreement',
-                'title' => '📝 New Agreement',
-                'description' => 'Create a payment agreement',
-            ],
-            self::AGREEMENT_LIST => [
-                'id' => 'menu_my_agreements',
-                'title' => '📋 My Agreements',
-                'description' => 'View your agreements',
-            ],
-            self::SETTINGS => [
-                'id' => 'menu_settings',
-                'title' => '⚙️ Settings',
-                'description' => 'Manage your preferences',
-            ],
-            // Shop-only menu items
-            self::OFFERS_UPLOAD => [
-                'id' => 'menu_upload_offer',
-                'title' => '📤 Upload Offer',
-                'description' => 'Post a new offer',
-            ],
-            self::OFFERS_MANAGE => [
-                'id' => 'menu_manage_offers',
-                'title' => '📊 My Offers',
-                'description' => 'Manage your offers',
-            ],
-            // Fish menu items - for customers
-            self::FISH_BROWSE => [
-                'id' => 'menu_fish_browse',
-                'title' => '🐟 Fresh Fish',
-                'description' => 'Browse fresh fish nearby',
-            ],
-            self::FISH_SUBSCRIBE => [
-                'id' => 'menu_fish_subscribe',
-                'title' => '🔔 Fish Alerts',
-                'description' => 'Get notified when fish arrives',
-            ],
-            self::FISH_MANAGE_SUBSCRIPTION => [
-                'id' => 'menu_fish_manage',
-                'title' => '⚙️ Manage Alerts',
-                'description' => 'Manage your fish alerts',
-            ],
-            // Fish seller menu items
-            self::FISH_SELLER_REGISTER => [
-                'id' => 'menu_fish_seller_register',
-                'title' => '🐟 Become Fish Seller',
-                'description' => 'Register as a fish seller',
-            ],
-            self::FISH_POST_CATCH => [
-                'id' => 'menu_fish_post',
-                'title' => '🎣 Post Catch',
-                'description' => 'Post your fresh catch',
-            ],
-            self::FISH_STOCK_UPDATE => [
-                'id' => 'menu_fish_stock',
-                'title' => '📦 Update Stock',
-                'description' => 'Update catch availability',
-            ],
-            self::FISH_SELLER_MENU => [
-                'id' => 'menu_fish_dashboard',
-                'title' => '🐟 Seller Dashboard',
-                'description' => 'View your fish seller dashboard',
-            ],
-            // Job menu items - for workers
-            self::JOB_WORKER_REGISTER => [
-                'id' => 'menu_job_worker_register',
-                'title' => '👷 Become Worker',
-                'description' => 'Register to do tasks for others',
-            ],
-            self::JOB_BROWSE => [
-                'id' => 'menu_job_browse',
-                'title' => '🔍 Browse Tasks',
-                'description' => 'Find tasks near you',
-            ],
-            self::JOB_WORKER_MENU => [
-                'id' => 'menu_job_worker_dashboard',
-                'title' => '👷 Worker Dashboard',
-                'description' => 'View your worker dashboard',
-            ],
-            // Job menu items - for task posters
-            self::JOB_POST => [
-                'id' => 'menu_job_post',
-                'title' => '📋 Post Task',
-                'description' => 'Post a task for workers',
-            ],
-            self::JOB_POSTER_MENU => [
-                'id' => 'menu_job_poster_dashboard',
-                'title' => '📋 My Posted Tasks',
-                'description' => 'View and manage your posted tasks',
-            ],
-            self::JOB_APPLICATIONS => [
-                'id' => 'menu_job_applications',
-                'title' => '📝 Applications',
-                'description' => 'View worker applications',
-            ],
-            default => null,
-        };
+        return in_array($this, self::flashDealFlows());
     }
 
     /**
-     * Get button configuration for main menu.
-     *
-     * @return array{id: string, title: string}|null
+     * Check if this is an agreement-related flow.
      */
-    public function menuButton(): ?array
+    public function isAgreementFlow(): bool
     {
-        $item = $this->menuItem();
-        if (!$item) {
-            return null;
-        }
-
-        return [
-            'id' => $item['id'],
-            'title' => substr($item['title'], 0, 20), // WhatsApp button title limit
-        ];
+        return in_array($this, self::agreementFlows());
     }
+
+    /**
+     * Check if this is an offer-related flow.
+     */
+    public function isOfferFlow(): bool
+    {
+        return in_array($this, self::offerFlows());
+    }
+
+    /**
+     * Check if this is a product-related flow.
+     */
+    public function isProductFlow(): bool
+    {
+        return in_array($this, self::productFlows());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Timeout & Estimation
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Get timeout in minutes for this flow.
-     *
-     * @srs-ref NFR-U-01 Registration within 5 interactions
-     * @srs-ref FR-PRD-06 Request expiration time (default 2 hours)
      */
     public function timeout(): int
     {
         return match ($this) {
-            self::REGISTRATION => 60,    // 1 hour
-            self::PRODUCT_SEARCH => 120, // 2 hours (FR-PRD-06)
-            self::PRODUCT_RESPOND => 120,
-            self::AGREEMENT_CREATE => 30,
-            self::AGREEMENT_CONFIRM => 30,
+            self::REGISTRATION => 60,
+            self::PRODUCT_SEARCH, self::PRODUCT_RESPOND => 120,
+            self::AGREEMENT_CREATE, self::AGREEMENT_CONFIRM => 30,
             self::OFFERS_UPLOAD => 30,
             self::SETTINGS => 15,
-            // Fish flows
             self::FISH_SELLER_REGISTER => 30,
             self::FISH_POST_CATCH => 15,
             self::FISH_STOCK_UPDATE => 10,
-            self::FISH_SUBSCRIBE => 15,
-            self::FISH_BROWSE => 30,
-            self::FISH_MANAGE_SUBSCRIPTION => 15,
-            self::FISH_SELLER_MENU => 15,
-            // Job flows
+            self::FISH_SUBSCRIBE, self::FISH_MANAGE_SUBSCRIPTION => 15,
+            self::FISH_BROWSE, self::FISH_SELLER_MENU => 30,
             self::JOB_WORKER_REGISTER => 30,
             self::JOB_POST => 30,
-            self::JOB_BROWSE => 30,
-            self::JOB_WORKER_MENU => 30, // Extended for profile editing
-            self::JOB_POSTER_MENU => 30, // Extended for job management
+            self::JOB_BROWSE, self::JOB_WORKER_MENU, self::JOB_POSTER_MENU => 30,
+            self::JOB_APPLICATION, self::JOB_SELECTION => 30,
             self::JOB_APPLICATIONS => 30,
-            self::JOB_APPLICATION => 15,
-            self::JOB_SELECTION => 30,
             self::JOB_EXECUTION => 60,
+            self::FLASH_DEAL_CREATE => 30,
+            self::FLASH_DEAL_CLAIM => 15,
+            self::FLASH_DEAL_MANAGE => 30,
             default => config('nearbuy.session.timeout_minutes', 30),
         };
     }
 
     /**
      * Get estimated steps count for this flow.
-     *
-     * @srs-ref NFR-U-01 Registration flow shall complete within 5 interactions
      */
     public function estimatedSteps(): int
     {
         return match ($this) {
-            self::REGISTRATION => 5,     // NFR-U-01: within 5 interactions
+            self::REGISTRATION => 5,
             self::OFFERS_BROWSE => 3,
             self::OFFERS_UPLOAD => 4,
+            self::OFFERS_MANAGE => 2,
             self::PRODUCT_SEARCH => 4,
             self::PRODUCT_RESPOND => 4,
             self::AGREEMENT_CREATE => 8,
             self::AGREEMENT_CONFIRM => 2,
             self::AGREEMENT_LIST => 2,
-            self::SETTINGS => 2,
-            // Fish flows
             self::FISH_SELLER_REGISTER => 5,
             self::FISH_POST_CATCH => 6,
-            self::FISH_STOCK_UPDATE => 2,
             self::FISH_SUBSCRIBE => 5,
             self::FISH_BROWSE => 3,
             self::FISH_MANAGE_SUBSCRIPTION => 3,
+            self::FISH_STOCK_UPDATE => 2,
             self::FISH_SELLER_MENU => 1,
-            // Job flows
             self::JOB_WORKER_REGISTER => 7,
-            self::JOB_POST => 13, // Updated: +1 for custom category step
+            self::JOB_POST => 12,
             self::JOB_BROWSE => 3,
-            self::JOB_WORKER_MENU => 4, // Updated: profile view + edit
-            self::JOB_POSTER_MENU => 4, // Updated: job list + detail + actions
-            self::JOB_APPLICATIONS => 3,
             self::JOB_APPLICATION => 5,
             self::JOB_SELECTION => 4,
             self::JOB_EXECUTION => 5,
+            self::JOB_WORKER_MENU => 4,
+            self::JOB_POSTER_MENU => 4,
+            self::JOB_APPLICATIONS => 3,
+            self::FLASH_DEAL_CREATE => 8,
+            self::FLASH_DEAL_CLAIM => 3,
+            self::FLASH_DEAL_MANAGE => 3,
             default => 1,
         };
     }
 
     /**
-     * Get the description of this flow.
+     * Get description of this flow.
      */
     public function description(): string
     {
         return match ($this) {
-            self::REGISTRATION => 'Register as a customer or shop owner',
             self::MAIN_MENU => 'Access all NearBuy features',
+            self::REGISTRATION => 'Register as customer or shop owner',
+            self::SETTINGS => 'Manage preferences and profile',
             self::OFFERS_BROWSE => 'Browse daily offers from nearby shops',
             self::OFFERS_UPLOAD => 'Upload promotional offers for your shop',
             self::OFFERS_MANAGE => 'View and manage your active offers',
@@ -619,25 +548,138 @@ enum FlowType: string
             self::AGREEMENT_CREATE => 'Create a digital payment agreement',
             self::AGREEMENT_CONFIRM => 'Confirm a pending agreement',
             self::AGREEMENT_LIST => 'View and manage your agreements',
-            self::SETTINGS => 'Manage your preferences and profile',
-            // Fish flows
             self::FISH_SELLER_REGISTER => 'Register as a fish seller',
             self::FISH_POST_CATCH => 'Post your fresh fish catch',
-            self::FISH_STOCK_UPDATE => 'Update fish stock availability',
             self::FISH_SUBSCRIBE => 'Subscribe to fresh fish alerts',
             self::FISH_BROWSE => 'Browse fresh fish nearby',
             self::FISH_MANAGE_SUBSCRIPTION => 'Manage your fish alert preferences',
+            self::FISH_STOCK_UPDATE => 'Update fish stock availability',
             self::FISH_SELLER_MENU => 'Fish seller dashboard and options',
-            // Job flows
             self::JOB_WORKER_REGISTER => 'Register to become a job worker',
             self::JOB_POST => 'Post a task for workers',
             self::JOB_BROWSE => 'Browse available tasks nearby',
-            self::JOB_WORKER_MENU => 'View and edit your worker profile',
-            self::JOB_POSTER_MENU => 'View and manage your posted tasks',
-            self::JOB_APPLICATIONS => 'View and manage worker applications',
             self::JOB_APPLICATION => 'Apply for a job as a worker',
             self::JOB_SELECTION => 'Select a worker for your task',
             self::JOB_EXECUTION => 'Track and complete assigned tasks',
+            self::JOB_WORKER_MENU => 'View and edit your worker profile',
+            self::JOB_POSTER_MENU => 'View and manage your posted tasks',
+            self::JOB_APPLICATIONS => 'View worker applications',
+            self::FLASH_DEAL_CREATE => 'Create a time-limited flash deal',
+            self::FLASH_DEAL_CLAIM => 'Claim a flash deal before it expires',
+            self::FLASH_DEAL_MANAGE => 'Manage your flash deals',
+        };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Menu Configuration
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get menu item configuration.
+     *
+     * @return array{id: string, title: string, description: string}|null
+     */
+    public function menuItem(): ?array
+    {
+        return match ($this) {
+            self::OFFERS_BROWSE => [
+                'id' => 'browse_offers',
+                'title' => '🛍️ Browse Offers',
+                'description' => 'See offers from nearby shops',
+            ],
+            self::PRODUCT_SEARCH => [
+                'id' => 'search_product',
+                'title' => '🔍 Find Product',
+                'description' => 'Search for products nearby',
+            ],
+            self::AGREEMENT_CREATE => [
+                'id' => 'create_agreement',
+                'title' => '📝 New Agreement',
+                'description' => 'Create a payment agreement',
+            ],
+            self::AGREEMENT_LIST => [
+                'id' => 'my_agreements',
+                'title' => '📋 My Agreements',
+                'description' => 'View your agreements',
+            ],
+            self::SETTINGS => [
+                'id' => 'settings',
+                'title' => '⚙️ Settings',
+                'description' => 'Manage your preferences',
+            ],
+            self::OFFERS_UPLOAD => [
+                'id' => 'upload_offer',
+                'title' => '📤 Upload Offer',
+                'description' => 'Post a new offer',
+            ],
+            self::OFFERS_MANAGE => [
+                'id' => 'my_offers',
+                'title' => '📊 My Offers',
+                'description' => 'Manage your offers',
+            ],
+            self::FISH_BROWSE => [
+                'id' => 'fish_browse',
+                'title' => '🐟 Fresh Fish',
+                'description' => 'Browse fresh fish nearby',
+            ],
+            self::FISH_SUBSCRIBE => [
+                'id' => 'fish_alerts',
+                'title' => '🔔 Fish Alerts',
+                'description' => 'Get notified when fish arrives',
+            ],
+            self::FISH_SELLER_REGISTER => [
+                'id' => 'fish_seller_register',
+                'title' => '🐟 Become Fish Seller',
+                'description' => 'Register as a fish seller',
+            ],
+            self::FISH_POST_CATCH => [
+                'id' => 'fish_post_catch',
+                'title' => '🎣 Post Catch',
+                'description' => 'Post your fresh catch',
+            ],
+            self::FISH_SELLER_MENU => [
+                'id' => 'fish_seller_menu',
+                'title' => '🐟 Seller Dashboard',
+                'description' => 'Fish seller options',
+            ],
+            self::JOB_BROWSE => [
+                'id' => 'job_browse',
+                'title' => '🔍 Browse Tasks',
+                'description' => 'Find tasks near you',
+            ],
+            self::JOB_WORKER_REGISTER => [
+                'id' => 'job_worker_register',
+                'title' => '👷 Become Worker',
+                'description' => 'Register to do tasks',
+            ],
+            self::JOB_POST => [
+                'id' => 'job_post',
+                'title' => '📋 Post Task',
+                'description' => 'Post a task for workers',
+            ],
+            self::JOB_WORKER_MENU => [
+                'id' => 'job_worker_menu',
+                'title' => '👷 Worker Dashboard',
+                'description' => 'Your worker profile & jobs',
+            ],
+            self::JOB_POSTER_MENU => [
+                'id' => 'job_poster_menu',
+                'title' => '📋 My Posted Tasks',
+                'description' => 'View your posted tasks',
+            ],
+            self::FLASH_DEAL_CREATE => [
+                'id' => 'flash_deal_create',
+                'title' => '⚡ Create Flash Deal',
+                'description' => 'Create time-limited deal',
+            ],
+            self::FLASH_DEAL_MANAGE => [
+                'id' => 'flash_deal_manage',
+                'title' => '📊 My Flash Deals',
+                'description' => 'Manage your flash deals',
+            ],
+            default => null,
         };
     }
 
@@ -649,14 +691,16 @@ enum FlowType: string
         return !in_array($this, [
             self::REGISTRATION,
             self::MAIN_MENU,
-            self::AGREEMENT_CONFIRM, // Triggered by incoming confirmation
-            self::PRODUCT_RESPOND,   // Triggered by incoming request
-            self::JOB_EXECUTION,     // Triggered by job assignment
+            self::AGREEMENT_CONFIRM,
+            self::PRODUCT_RESPOND,
+            self::JOB_EXECUTION,
+            self::JOB_SELECTION,
+            self::JOB_APPLICATION,
         ]);
     }
 
     /**
-     * Check if this flow handles notifications/incoming triggers.
+     * Check if this flow is triggered by external event.
      */
     public function isTriggeredFlow(): bool
     {
@@ -664,11 +708,18 @@ enum FlowType: string
             self::AGREEMENT_CONFIRM,
             self::PRODUCT_RESPOND,
             self::JOB_EXECUTION,
-            self::JOB_APPLICATIONS,
-            self::JOB_APPLICATION,
             self::JOB_SELECTION,
+            self::JOB_APPLICATION,
+            self::JOB_APPLICATIONS,
+            self::FLASH_DEAL_CLAIM,
         ]);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Static Helpers
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Get all values as array.
@@ -679,144 +730,49 @@ enum FlowType: string
     }
 
     /**
-     * Get flows available for a user type.
-     *
-     * @param string $userType 'customer', 'shop', 'fish_seller', or 'job_worker'
-     * @return array<self>
+     * Get all fish-related flows.
      */
-    public static function forUserType(string $userType): array
-    {
-        return array_filter(self::cases(), function (self $flow) use ($userType) {
-            if ($flow->isUniversal()) {
-                return true;
-            }
-            if ($userType === 'shop' && $flow->isShopOnly()) {
-                return true;
-            }
-            if ($userType === 'customer' && $flow->isCustomerOnly()) {
-                return true;
-            }
-            if ($userType === 'fish_seller' && $flow->isFishSellerOnly()) {
-                return true;
-            }
-            if ($userType === 'job_worker' && $flow->isJobWorkerOnly()) {
-                return true;
-            }
-            return false;
-        });
-    }
-
-    /**
-     * Get menu items for a user type.
-     *
-     * @param string $userType 'customer', 'shop', 'fish_seller', or 'job_worker'
-     * @return array<array{id: string, title: string, description: string}>
-     */
-    public static function menuItemsForUserType(string $userType): array
-    {
-        $flows = self::forUserType($userType);
-
-        return array_values(array_filter(
-            array_map(fn(self $flow) => $flow->menuItem(), $flows)
-        ));
-    }
-
-    /**
-     * Get customer menu items.
-     *
-     * @return array<array{id: string, title: string, description: string}>
-     */
-    public static function customerMenuItems(): array
+    public static function fishFlows(): array
     {
         return [
-            self::OFFERS_BROWSE->menuItem(),
-            self::PRODUCT_SEARCH->menuItem(),
-            self::FISH_BROWSE->menuItem(),
-            self::FISH_SUBSCRIBE->menuItem(),
-            self::JOB_BROWSE->menuItem(),
-            self::JOB_POST->menuItem(),
-            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
-            self::AGREEMENT_CREATE->menuItem(),
-            self::AGREEMENT_LIST->menuItem(),
-            self::SETTINGS->menuItem(),
+            self::FISH_SELLER_REGISTER,
+            self::FISH_POST_CATCH,
+            self::FISH_SUBSCRIBE,
+            self::FISH_BROWSE,
+            self::FISH_MANAGE_SUBSCRIPTION,
+            self::FISH_STOCK_UPDATE,
+            self::FISH_SELLER_MENU,
         ];
     }
 
     /**
-     * Get shop owner menu items.
-     *
-     * @return array<array{id: string, title: string, description: string}>
+     * Get all job-related flows.
      */
-    public static function shopMenuItems(): array
+    public static function jobFlows(): array
     {
         return [
-            self::OFFERS_UPLOAD->menuItem(),
-            self::OFFERS_MANAGE->menuItem(),
-            self::OFFERS_BROWSE->menuItem(),
-            self::PRODUCT_SEARCH->menuItem(),
-            self::FISH_BROWSE->menuItem(),
-            self::JOB_BROWSE->menuItem(),
-            self::JOB_POST->menuItem(),
-            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
-            self::AGREEMENT_CREATE->menuItem(),
-            self::AGREEMENT_LIST->menuItem(),
-            self::SETTINGS->menuItem(),
+            self::JOB_WORKER_REGISTER,
+            self::JOB_POST,
+            self::JOB_BROWSE,
+            self::JOB_APPLICATION,
+            self::JOB_SELECTION,
+            self::JOB_EXECUTION,
+            self::JOB_WORKER_MENU,
+            self::JOB_POSTER_MENU,
+            self::JOB_APPLICATIONS,
         ];
     }
 
     /**
-     * Get fish seller menu items.
-     *
-     * @return array<array{id: string, title: string, description: string}>
+     * Get all flash-deal-related flows.
      */
-    public static function fishSellerMenuItems(): array
+    public static function flashDealFlows(): array
     {
         return [
-            self::FISH_POST_CATCH->menuItem(),
-            self::FISH_STOCK_UPDATE->menuItem(),
-            self::FISH_SELLER_MENU->menuItem(),
-            self::FISH_BROWSE->menuItem(),
-            self::JOB_BROWSE->menuItem(),
-            self::JOB_POST->menuItem(),
-            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
-            self::AGREEMENT_CREATE->menuItem(),
-            self::AGREEMENT_LIST->menuItem(),
-            self::SETTINGS->menuItem(),
+            self::FLASH_DEAL_CREATE,
+            self::FLASH_DEAL_CLAIM,
+            self::FLASH_DEAL_MANAGE,
         ];
-    }
-
-    /**
-     * Get job worker menu items.
-     *
-     * @srs-ref Njaanum Panikkar Module - Section 3.2
-     * @return array<array{id: string, title: string, description: string}>
-     */
-    public static function jobWorkerMenuItems(): array
-    {
-        return [
-            self::JOB_BROWSE->menuItem(),
-            self::JOB_WORKER_MENU->menuItem(),
-            self::JOB_POST->menuItem(),
-            self::JOB_POSTER_MENU->menuItem(), // Added: View posted tasks
-            self::FISH_BROWSE->menuItem(),
-            self::AGREEMENT_CREATE->menuItem(),
-            self::AGREEMENT_LIST->menuItem(),
-            self::SETTINGS->menuItem(),
-        ];
-    }
-
-    /**
-     * Find flow by menu item ID.
-     */
-    public static function fromMenuId(string $menuId): ?self
-    {
-        foreach (self::cases() as $flow) {
-            $item = $flow->menuItem();
-            if ($item && $item['id'] === $menuId) {
-                return $flow;
-            }
-        }
-        return null;
     }
 
     /**
@@ -855,40 +811,67 @@ enum FlowType: string
     }
 
     /**
-     * Get all fish-related flows.
-     *
-     * @srs-ref Pacha Meen Module
+     * Get flows for user type.
      */
-    public static function fishFlows(): array
+    public static function forUserType(string $userType): array
     {
-        return [
-            self::FISH_SELLER_REGISTER,
-            self::FISH_POST_CATCH,
-            self::FISH_STOCK_UPDATE,
-            self::FISH_SUBSCRIBE,
-            self::FISH_BROWSE,
-            self::FISH_MANAGE_SUBSCRIPTION,
-            self::FISH_SELLER_MENU,
-        ];
+        return array_filter(self::cases(), function (self $flow) use ($userType) {
+            if ($flow->isUniversal()) return true;
+            if ($userType === 'shop' && $flow->isShopOnly()) return true;
+            if ($userType === 'customer' && $flow->isCustomerOnly()) return true;
+            if ($userType === 'fish_seller' && $flow->isFishSellerOnly()) return true;
+            if ($userType === 'job_worker' && $flow->isJobWorkerOnly()) return true;
+            return false;
+        });
     }
 
     /**
-     * Get all job-related flows.
-     *
-     * @srs-ref Njaanum Panikkar Module
+     * Find flow by menu item ID.
      */
-    public static function jobFlows(): array
+    public static function fromMenuId(string $menuId): ?self
     {
-        return [
-            self::JOB_WORKER_REGISTER,
-            self::JOB_POST,
-            self::JOB_BROWSE,
-            self::JOB_WORKER_MENU,
-            self::JOB_POSTER_MENU,
-            self::JOB_APPLICATIONS,
-            self::JOB_APPLICATION,
-            self::JOB_SELECTION,
-            self::JOB_EXECUTION,
-        ];
+        foreach (self::cases() as $flow) {
+            $item = $flow->menuItem();
+            if ($item && $item['id'] === $menuId) {
+                return $flow;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Get customer menu items.
+     */
+    public static function customerMenuItems(): array
+    {
+        return array_filter([
+            self::OFFERS_BROWSE->menuItem(),
+            self::PRODUCT_SEARCH->menuItem(),
+            self::FISH_BROWSE->menuItem(),
+            self::FISH_SUBSCRIBE->menuItem(),
+            self::JOB_BROWSE->menuItem(),
+            self::JOB_POST->menuItem(),
+            self::AGREEMENT_CREATE->menuItem(),
+            self::AGREEMENT_LIST->menuItem(),
+            self::SETTINGS->menuItem(),
+        ]);
+    }
+
+    /**
+     * Get shop owner menu items.
+     */
+    public static function shopMenuItems(): array
+    {
+        return array_filter([
+            self::OFFERS_UPLOAD->menuItem(),
+            self::OFFERS_MANAGE->menuItem(),
+            self::FLASH_DEAL_CREATE->menuItem(),
+            self::FLASH_DEAL_MANAGE->menuItem(),
+            self::OFFERS_BROWSE->menuItem(),
+            self::PRODUCT_SEARCH->menuItem(),
+            self::AGREEMENT_CREATE->menuItem(),
+            self::AGREEMENT_LIST->menuItem(),
+            self::SETTINGS->menuItem(),
+        ]);
     }
 }
