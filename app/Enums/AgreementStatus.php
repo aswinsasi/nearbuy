@@ -1,30 +1,33 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
- * Agreement status values.
+ * Agreement Status Values.
  *
  * @srs-ref Section 6.3 Enumeration Values - agreements.status
+ * Values: pending, active, completed, disputed, cancelled
  */
 enum AgreementStatus: string
 {
-    case PENDING = 'pending';               // Waiting for counterparty confirmation
-    case CONFIRMED = 'confirmed';           // Both parties confirmed
-    case COMPLETED = 'completed';           // Settlement done
-    case DISPUTED = 'disputed';             // Counterparty claims unknown
-    case REJECTED = 'rejected';             // Counterparty rejected details
-    case CANCELLED = 'cancelled';           // Creator cancelled
-    case EXPIRED = 'expired';               // Confirmation period expired
+    case PENDING = 'pending';       // Waiting for counterparty confirmation
+    case CONFIRMED = 'confirmed';   // Both parties confirmed (SRS: "active")
+    case COMPLETED = 'completed';   // Settlement done
+    case DISPUTED = 'disputed';     // Counterparty claims unknown
+    case REJECTED = 'rejected';     // Counterparty rejected details
+    case CANCELLED = 'cancelled';   // Creator cancelled
+    case EXPIRED = 'expired';       // Confirmation period expired
 
     /**
-     * Get the display label.
+     * Display label.
      */
     public function label(): string
     {
         return match ($this) {
             self::PENDING => 'Pending Confirmation',
-            self::CONFIRMED => 'Confirmed',
+            self::CONFIRMED => 'Active',
             self::COMPLETED => 'Completed',
             self::DISPUTED => 'Disputed',
             self::REJECTED => 'Rejected',
@@ -34,7 +37,7 @@ enum AgreementStatus: string
     }
 
     /**
-     * Get short label (for list items).
+     * Short label for compact lists.
      */
     public function shortLabel(): string
     {
@@ -50,15 +53,13 @@ enum AgreementStatus: string
     }
 
     /**
-     * Get Malayalam label.
-     *
-     * @srs-ref NFR-U-05 Support English and Malayalam
+     * Malayalam label.
      */
     public function labelMl(): string
     {
         return match ($this) {
-            self::PENDING => 'സ്ഥിരീകരണം കാത്തിരിക്കുന്നു',
-            self::CONFIRMED => 'സ്ഥിരീകരിച്ചു',
+            self::PENDING => 'കാത്തിരിക്കുന്നു',
+            self::CONFIRMED => 'സജീവം',
             self::COMPLETED => 'പൂർത്തിയായി',
             self::DISPUTED => 'തർക്കത്തിൽ',
             self::REJECTED => 'നിരസിച്ചു',
@@ -68,25 +69,15 @@ enum AgreementStatus: string
     }
 
     /**
-     * Get label by language code.
-     */
-    public function labelByLang(string $lang = 'en'): string
-    {
-        return match ($lang) {
-            'ml' => $this->labelMl(),
-            default => $this->label(),
-        };
-    }
-
-    /**
-     * Get icon.
+     * Icon for status.
+     * ✅ Active, ⏳ Pending, ✔️ Completed, ⚠️ Disputed, ❌ Cancelled
      */
     public function icon(): string
     {
         return match ($this) {
             self::PENDING => '⏳',
             self::CONFIRMED => '✅',
-            self::COMPLETED => '🎉',
+            self::COMPLETED => '✔️',
             self::DISPUTED => '⚠️',
             self::REJECTED => '❌',
             self::CANCELLED => '🚫',
@@ -95,7 +86,7 @@ enum AgreementStatus: string
     }
 
     /**
-     * Get badge (icon + label) for display.
+     * Badge (icon + label).
      */
     public function badge(): string
     {
@@ -103,7 +94,7 @@ enum AgreementStatus: string
     }
 
     /**
-     * Get short badge (icon + short label).
+     * Short badge (icon + short label) for compact lists.
      */
     public function shortBadge(): string
     {
@@ -111,23 +102,23 @@ enum AgreementStatus: string
     }
 
     /**
-     * Get badge color for UI.
+     * Description.
      */
-    public function badgeColor(): string
+    public function description(): string
     {
         return match ($this) {
-            self::PENDING => 'yellow',
-            self::CONFIRMED => 'green',
-            self::COMPLETED => 'blue',
-            self::DISPUTED => 'orange',
-            self::REJECTED => 'red',
-            self::CANCELLED => 'gray',
-            self::EXPIRED => 'gray',
+            self::PENDING => 'Waiting for the other party to confirm',
+            self::CONFIRMED => 'Both parties have confirmed',
+            self::COMPLETED => 'The agreement has been settled',
+            self::DISPUTED => 'There is a dispute about this agreement',
+            self::REJECTED => 'The other party rejected the details',
+            self::CANCELLED => 'This agreement was cancelled',
+            self::EXPIRED => 'The confirmation period has expired',
         };
     }
 
     /**
-     * Get CSS/Tailwind class for badge.
+     * CSS class for web UI.
      */
     public function badgeClass(): string
     {
@@ -143,119 +134,95 @@ enum AgreementStatus: string
     }
 
     /**
-     * Get description of the status.
+     * Color name for UI.
      */
-    public function description(): string
+    public function color(): string
     {
         return match ($this) {
-            self::PENDING => 'Waiting for the other party to confirm',
-            self::CONFIRMED => 'Both parties have confirmed the agreement',
-            self::COMPLETED => 'The agreement has been settled',
-            self::DISPUTED => 'There is a dispute about this agreement',
-            self::REJECTED => 'The other party rejected the agreement details',
-            self::CANCELLED => 'This agreement was cancelled',
-            self::EXPIRED => 'The confirmation period has expired',
+            self::PENDING => 'yellow',
+            self::CONFIRMED => 'green',
+            self::COMPLETED => 'blue',
+            self::DISPUTED => 'orange',
+            self::REJECTED => 'red',
+            self::CANCELLED => 'gray',
+            self::EXPIRED => 'gray',
         };
     }
 
-    /**
-     * Check if agreement is confirmed/active.
-     */
-    public function isActive(): bool
-    {
-        return $this === self::CONFIRMED;
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | State Checks
+    |--------------------------------------------------------------------------
+    */
 
-    /**
-     * Check if agreement is pending.
-     */
     public function isPending(): bool
     {
         return $this === self::PENDING;
     }
 
-    /**
-     * Check if agreement is completed.
-     */
+    public function isActive(): bool
+    {
+        return $this === self::CONFIRMED;
+    }
+
     public function isCompleted(): bool
     {
         return $this === self::COMPLETED;
     }
 
-    /**
-     * Check if agreement is in a problem state.
-     */
     public function isProblem(): bool
     {
         return in_array($this, [self::DISPUTED, self::REJECTED, self::EXPIRED]);
     }
 
-    /**
-     * Check if agreement can be confirmed.
-     */
-    public function canBeConfirmed(): bool
-    {
-        return $this === self::PENDING;
-    }
-
-    /**
-     * Check if agreement can be completed.
-     */
-    public function canBeCompleted(): bool
-    {
-        return $this === self::CONFIRMED;
-    }
-
-    /**
-     * Check if agreement can be disputed.
-     */
-    public function canBeDisputed(): bool
-    {
-        return in_array($this, [self::PENDING, self::CONFIRMED]);
-    }
-
-    /**
-     * Check if agreement can be cancelled.
-     */
-    public function canBeCancelled(): bool
-    {
-        return $this === self::PENDING;
-    }
-
-    /**
-     * Check if agreement can be rejected.
-     */
-    public function canBeRejected(): bool
-    {
-        return $this === self::PENDING;
-    }
-
-    /**
-     * Check if agreement is terminal (no further changes).
-     */
     public function isTerminal(): bool
     {
         return in_array($this, [self::COMPLETED, self::CANCELLED, self::REJECTED, self::EXPIRED]);
     }
 
-    /**
-     * Check if status allows editing.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Transition Checks
+    |--------------------------------------------------------------------------
+    */
+
+    public function canBeConfirmed(): bool
+    {
+        return $this === self::PENDING;
+    }
+
+    public function canBeCompleted(): bool
+    {
+        return $this === self::CONFIRMED;
+    }
+
+    public function canBeDisputed(): bool
+    {
+        return in_array($this, [self::PENDING, self::CONFIRMED]);
+    }
+
+    public function canBeCancelled(): bool
+    {
+        return $this === self::PENDING;
+    }
+
+    public function canBeRejected(): bool
+    {
+        return $this === self::PENDING;
+    }
+
     public function allowsEditing(): bool
     {
         return $this === self::PENDING;
     }
 
-    /**
-     * Check if PDF should be generated for this status.
-     */
     public function shouldGeneratePdf(): bool
     {
         return $this === self::CONFIRMED;
     }
 
     /**
-     * Get valid transitions from current status.
+     * Valid transitions.
      */
     public function validTransitions(): array
     {
@@ -270,16 +237,13 @@ enum AgreementStatus: string
         };
     }
 
-    /**
-     * Check if can transition to a specific status.
-     */
     public function canTransitionTo(self $newStatus): bool
     {
         return in_array($newStatus, $this->validTransitions());
     }
 
     /**
-     * Get sort order for status (for ordering in lists).
+     * Sort order for lists.
      */
     public function sortOrder(): int
     {
@@ -294,33 +258,27 @@ enum AgreementStatus: string
         };
     }
 
-    /**
-     * Get all values as array.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Static Helpers
+    |--------------------------------------------------------------------------
+    */
+
     public static function values(): array
     {
         return array_column(self::cases(), 'value');
     }
 
-    /**
-     * Get statuses that are considered "active" (not terminal).
-     */
     public static function activeStatuses(): array
     {
         return [self::PENDING, self::CONFIRMED, self::DISPUTED];
     }
 
-    /**
-     * Get terminal statuses.
-     */
     public static function terminalStatuses(): array
     {
         return [self::COMPLETED, self::CANCELLED, self::REJECTED, self::EXPIRED];
     }
 
-    /**
-     * Get statuses for filtering in admin.
-     */
     public static function filterOptions(): array
     {
         return array_map(fn(self $status) => [

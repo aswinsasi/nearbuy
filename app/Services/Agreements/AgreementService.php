@@ -1,121 +1,95 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Agreements;
 
-use App\Enums\AgreementStatus;
 use App\Enums\AgreementPurpose;
+use App\Enums\AgreementStatus;
 use App\Models\Agreement;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
- * Service for managing digital agreements.
+ * Agreement Service.
  *
- * Handles agreement creation, confirmation, and lifecycle management.
+ * Handles agreement creation, confirmation, and lifecycle.
  *
- * @example
- * $service = app(AgreementService::class);
- *
- * // Create agreement
- * $agreement = $service->createAgreement($user, [
- *     'direction' => 'giving',
- *     'amount' => 25000,
- *     'other_party_name' => 'John Doe',
- *     'other_party_phone' => '9876543210',
- *     'purpose' => 'loan',
- *     'due_date' => now()->addMonth(),
- * ]);
- *
- * // Confirm by counterparty
- * $service->confirmByCounterparty($agreement);
+ * @srs-ref FR-AGR-01 to FR-AGR-25
  */
 class AgreementService
 {
     /*
     |--------------------------------------------------------------------------
-    | Agreement Creation
+    | Agreement Creation (FR-AGR-01 to FR-AGR-08)
     |--------------------------------------------------------------------------
     */
 
     /**
      * Create a new agreement.
      *
-     * @param User $creator
-     * @param array{
-     *     direction: string,
-     *     amount: float,
-     *     other_party_name: string,
-     *     other_party_phone: string,
-     *     purpose: string,
-     *     description?: string,
-     *     due_date?: \Carbon\Carbon|null
-     * } $data
-     * @return Agreement
-     * @throws \Exception
+     * @srs-ref FR-AGR-10 - Generate unique agreement number
+     * @srs-ref FR-AGR-11 - Mark creator as confirmed
      */
     public function createAgreement(User $creator, array $data): Agreement
     {
-        // Normalize phone
-        $otherPartyPhone = $this->normalizePhone($data['other_party_phone']);
+        $otherPhone = $this->normalizePhone($data['other_party_phone']);
 
         // Prevent self-agreement
-        if ($otherPartyPhone === $creator->phone) {
-            throw new \Exception('Cannot create an agreement with yourself');
+        if ($otherPhone === $creator->phone) {
+            throw new \InvalidArgumentException('Cannot create agreement with yourself');
         }
 
-        // Check if other party is a registered user
-        $otherPartyUser = User::where('phone', $otherPartyPhone)->first();
+        // Check if counterparty is registered
+        $counterparty = User::where('phone', $otherPhone)->first();
 
         // Parse purpose
-        $purpose = AgreementPurpose::tryFrom(strtoupper($data['purpose'])) ?? AgreementPurpose::OTHER;
+        $purpose = AgreementPurpose::tryFrom($data['purpose'] ?? 'other') 
+            ?? AgreementPurpose::OTHER;
 
-        // Parse direction
-        $direction = \App\Enums\AgreementDirection::tryFrom(strtoupper($data['direction'])) 
-            ?? \App\Enums\AgreementDirection::GIVING;
-
-        // Generate verification token
-        $verificationToken = $this->generateVerificationToken();
+        // Generate agreement number (FR-AGR-10: NB-AG-YYYY-XXXX)
+        $agreementNumber = $this->generateAgreementNumber();
 
         $agreement = Agreement::create([
-            'agreement_number' => $this->generateAgreementNumber(),
-
-            // From (creator) details
+            'agreement_number' => $agreementNumber,
+            
+            // Creator (from)
             'from_user_id' => $creator->id,
             'from_name' => $creator->name ?? 'Unknown',
             'from_phone' => $creator->phone,
-
-            // To (counterparty) details
-            'to_user_id' => $otherPartyUser?->id,
+            
+            // Counterparty (to)
+            'to_user_id' => $counterparty?->id,
             'to_name' => trim($data['other_party_name']),
-            'to_phone' => $otherPartyPhone,
-
+            'to_phone' => $otherPhone,
+            
             // Direction
-            'direction' => $direction,
-
+            'direction' => $data['direction'] ?? 'giving',
+            
             // Financial details
-            'amount' => $data['amount'],
-            'amount_in_words' => $this->convertAmountToWords($data['amount']),
+            'amount' => (float) $data['amount'],
+            'amount_in_words' => $this->amountToWords((float) $data['amount']),
             'purpose_type' => $purpose,
             'description' => $data['description'] ?? null,
             'due_date' => $data['due_date'] ?? null,
-
-            // Status
+            
+            // Status (FR-AGR-11: creator confirmed)
             'status' => AgreementStatus::PENDING,
             'from_confirmed_at' => now(),
             'to_confirmed_at' => null,
-
+            
             // Verification
-            'verification_token' => $verificationToken,
-            'pdf_url' => null,
+            'verification_token' => Str::random(32),
+            'expires_at' => now()->addDays(7),
         ]);
 
         Log::info('Agreement created', [
             'agreement_id' => $agreement->id,
-            'agreement_number' => $agreement->agreement_number,
-            'from_user_id' => $creator->id,
+            'agreement_number' => $agreementNumber,
+            'creator_id' => $creator->id,
             'amount' => $data['amount'],
         ]);
 
@@ -123,7 +97,9 @@ class AgreementService
     }
 
     /**
-     * Generate unique agreement number (NB-AG-YYYY-XXXX format).
+     * Generate unique agreement number.
+     *
+     * @srs-ref FR-AGR-10 - Format: NB-AG-YYYY-XXXX
      */
     public function generateAgreementNumber(): string
     {
@@ -137,35 +113,25 @@ class AgreementService
         return $number;
     }
 
-    /**
-     * Generate verification token.
-     */
-    public function generateVerificationToken(): string
-    {
-        return Str::random(32);
-    }
-
     /*
     |--------------------------------------------------------------------------
-    | Confirmation
+    | Confirmation (FR-AGR-10 to FR-AGR-15)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Confirm agreement by counterparty.
+     * Confirm by counterparty.
      *
-     * @param Agreement $agreement
-     * @return Agreement
-     * @throws \Exception
+     * @srs-ref FR-AGR-15 - Mark agreement as active
      */
     public function confirmByCounterparty(Agreement $agreement): Agreement
     {
         if ($agreement->status !== AgreementStatus::PENDING) {
-            throw new \Exception('Agreement is not pending counterparty confirmation');
+            throw new \RuntimeException('Agreement is not pending');
         }
 
         if ($agreement->isExpired()) {
-            throw new \Exception('Agreement confirmation has expired');
+            throw new \RuntimeException('Agreement has expired');
         }
 
         $agreement->update([
@@ -173,7 +139,7 @@ class AgreementService
             'to_confirmed_at' => now(),
         ]);
 
-        Log::info('Agreement confirmed by counterparty', [
+        Log::info('Agreement confirmed', [
             'agreement_id' => $agreement->id,
             'agreement_number' => $agreement->agreement_number,
         ]);
@@ -182,16 +148,12 @@ class AgreementService
     }
 
     /**
-     * Reject agreement by counterparty.
-     *
-     * @param Agreement $agreement
-     * @param string|null $reason
-     * @return Agreement
+     * Reject by counterparty.
      */
     public function rejectByCounterparty(Agreement $agreement, ?string $reason = null): Agreement
     {
-        if (!in_array($agreement->status, [AgreementStatus::PENDING])) {
-            throw new \Exception('Agreement cannot be rejected');
+        if ($agreement->status !== AgreementStatus::PENDING) {
+            throw new \RuntimeException('Agreement is not pending');
         }
 
         $agreement->update([
@@ -199,9 +161,8 @@ class AgreementService
             'rejection_reason' => $reason,
         ]);
 
-        Log::info('Agreement rejected by counterparty', [
+        Log::info('Agreement rejected', [
             'agreement_id' => $agreement->id,
-            'agreement_number' => $agreement->agreement_number,
             'reason' => $reason,
         ]);
 
@@ -209,10 +170,7 @@ class AgreementService
     }
 
     /**
-     * Mark agreement as disputed (counterparty doesn't know creator).
-     *
-     * @param Agreement $agreement
-     * @return Agreement
+     * Mark as disputed (counterparty doesn't know creator).
      */
     public function markDisputed(Agreement $agreement): Agreement
     {
@@ -222,28 +180,24 @@ class AgreementService
 
         Log::warning('Agreement disputed', [
             'agreement_id' => $agreement->id,
-            'agreement_number' => $agreement->agreement_number,
         ]);
 
         return $agreement->fresh();
     }
 
     /**
-     * Mark agreement as completed (debt settled).
-     *
-     * @param Agreement $agreement
-     * @param User $user
-     * @return Agreement
+     * Mark as completed.
      */
     public function markCompleted(Agreement $agreement, User $user): Agreement
     {
-        // Only creditor can mark as completed
-        if ($agreement->creditor_id !== $user->id) {
-            throw new \Exception('Only the creditor can mark this agreement as completed');
+        if ($agreement->status !== AgreementStatus::CONFIRMED) {
+            throw new \RuntimeException('Agreement must be confirmed first');
         }
 
-        if ($agreement->status !== AgreementStatus::CONFIRMED) {
-            throw new \Exception('Agreement must be confirmed before marking complete');
+        // Only creditor can mark complete
+        $isCreditor = $this->isCreditor($agreement, $user);
+        if (!$isCreditor) {
+            throw new \RuntimeException('Only the creditor can mark as complete');
         }
 
         $agreement->update([
@@ -251,38 +205,28 @@ class AgreementService
             'completed_at' => now(),
         ]);
 
-        Log::info('Agreement marked completed', [
+        Log::info('Agreement completed', [
             'agreement_id' => $agreement->id,
-            'agreement_number' => $agreement->agreement_number,
         ]);
 
         return $agreement->fresh();
     }
 
     /**
-     * Cancel agreement by creator.
-     *
-     * @param Agreement $agreement
-     * @param User $user
-     * @return Agreement
+     * Cancel by creator.
      */
     public function cancelAgreement(Agreement $agreement, User $user): Agreement
     {
-        if ($agreement->creator_id !== $user->id) {
-            throw new \Exception('Only the creator can cancel this agreement');
+        if ($agreement->from_user_id !== $user->id) {
+            throw new \RuntimeException('Only creator can cancel');
         }
 
-        if (!in_array($agreement->status, [AgreementStatus::PENDING])) {
-            throw new \Exception('Agreement cannot be cancelled');
+        if ($agreement->status !== AgreementStatus::PENDING) {
+            throw new \RuntimeException('Can only cancel pending agreements');
         }
 
         $agreement->update([
             'status' => AgreementStatus::CANCELLED,
-        ]);
-
-        Log::info('Agreement cancelled', [
-            'agreement_id' => $agreement->id,
-            'agreement_number' => $agreement->agreement_number,
         ]);
 
         return $agreement->fresh();
@@ -295,71 +239,58 @@ class AgreementService
     */
 
     /**
-     * Get all agreements for a user (as creator or counterparty).
-     *
-     * @param User $user
-     * @param int $limit
-     * @return Collection
+     * Get agreements for user.
      */
     public function getAgreementsForUser(User $user, int $limit = 20): Collection
     {
         return Agreement::query()
-            ->where(function ($query) use ($user) {
-                $query->where('from_user_id', $user->id)
+            ->where(function ($q) use ($user) {
+                $q->where('from_user_id', $user->id)
                     ->orWhere('to_user_id', $user->id)
-                    ->orWhere('to_phone', $user->phone); // ← Changed
+                    ->orWhere('to_phone', $user->phone);
             })
-            ->orderBy('created_at', 'desc')
+            ->orderByDesc('created_at')
             ->limit($limit)
             ->get();
     }
 
     /**
-     * Get active agreements for a user.
-     *
-     * @param User $user
-     * @return Collection
+     * Get active agreements.
      */
     public function getActiveAgreements(User $user): Collection
     {
         return Agreement::query()
-            ->where(function ($query) use ($user) {
-                $query->where('from_user_id', $user->id) // ← Changed
-                    ->orWhere('to_user_id', $user->id) // ← Changed
-                    ->orWhere('to_phone', $user->phone); // ← Changed
+            ->where(function ($q) use ($user) {
+                $q->where('from_user_id', $user->id)
+                    ->orWhere('to_user_id', $user->id)
+                    ->orWhere('to_phone', $user->phone);
             })
             ->whereIn('status', [
                 AgreementStatus::PENDING,
                 AgreementStatus::CONFIRMED,
             ])
-            ->orderBy('created_at', 'desc')
+            ->orderByDesc('created_at')
             ->get();
     }
 
     /**
-     * Get pending confirmations for a user.
-     *
-     * @param User $user
-     * @return Collection
+     * Get pending confirmations for user (as counterparty).
      */
     public function getPendingConfirmations(User $user): Collection
     {
         return Agreement::query()
-            ->where(function ($query) use ($user) {
-                $query->where('to_user_id', $user->id) // ← Changed
-                    ->orWhere('to_phone', $user->phone); // ← Changed
+            ->where(function ($q) use ($user) {
+                $q->where('to_user_id', $user->id)
+                    ->orWhere('to_phone', $user->phone);
             })
             ->where('status', AgreementStatus::PENDING)
-            ->whereNull('to_confirmed_at') // ← Changed
-            ->orderBy('created_at', 'desc')
+            ->whereNull('to_confirmed_at')
+            ->orderByDesc('created_at')
             ->get();
     }
 
     /**
-     * Count pending confirmations for a user.
-     *
-     * @param User $user
-     * @return int
+     * Count pending confirmations.
      */
     public function countPendingConfirmations(User $user): int
     {
@@ -367,10 +298,15 @@ class AgreementService
     }
 
     /**
-     * Get agreement by verification token.
-     *
-     * @param string $token
-     * @return Agreement|null
+     * Get by agreement number.
+     */
+    public function getByAgreementNumber(string $number): ?Agreement
+    {
+        return Agreement::where('agreement_number', $number)->first();
+    }
+
+    /**
+     * Get by verification token.
      */
     public function getByVerificationToken(string $token): ?Agreement
     {
@@ -378,44 +314,42 @@ class AgreementService
     }
 
     /**
-     * Get agreement by number.
-     *
-     * @param string $agreementNumber
-     * @return Agreement|null
-     */
-    public function getByAgreementNumber(string $agreementNumber): ?Agreement
-    {
-        return Agreement::where('agreement_number', $agreementNumber)->first();
-    }
-
-    /**
      * Check if user is party to agreement.
-     *
-     * @param Agreement $agreement
-     * @param User $user
-     * @return bool
      */
     public function isPartyToAgreement(Agreement $agreement, User $user): bool
     {
-        return $agreement->from_user_id === $user->id // ← Changed
-            || $agreement->to_user_id === $user->id // ← Changed
-            || $agreement->to_phone === $user->phone; // ← Changed
+        return $agreement->from_user_id === $user->id
+            || $agreement->to_user_id === $user->id
+            || $agreement->to_phone === $user->phone;
+    }
+
+    /**
+     * Check if user is the creditor (one who should receive money).
+     */
+    public function isCreditor(Agreement $agreement, User $user): bool
+    {
+        $direction = $agreement->direction ?? 'giving';
+        
+        // If creator is giving, creator is creditor
+        // If creator is receiving, counterparty is creditor
+        if ($direction === 'giving') {
+            return $agreement->from_user_id === $user->id;
+        }
+        
+        return $agreement->to_user_id === $user->id 
+            || $agreement->to_phone === $user->phone;
     }
 
     /**
      * Get user's role in agreement.
-     *
-     * @param Agreement $agreement
-     * @param User $user
-     * @return string|null
      */
     public function getUserRole(Agreement $agreement, User $user): ?string
     {
-        if ($agreement->from_user_id === $user->id) { // ← Changed
+        if ($agreement->from_user_id === $user->id) {
             return 'creator';
         }
 
-        if ($agreement->to_user_id === $user->id || $agreement->to_phone === $user->phone) { // ← Changed
+        if ($agreement->to_user_id === $user->id || $agreement->to_phone === $user->phone) {
             return 'counterparty';
         }
 
@@ -424,25 +358,24 @@ class AgreementService
 
     /*
     |--------------------------------------------------------------------------
-    | Amount Conversion
+    | Amount to Words (FR-AGR-22)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Convert amount to words (Indian numbering system).
+     * Convert amount to words (Indian format).
      *
-     * @param float $amount
-     * @return string
+     * @srs-ref FR-AGR-22 - Amount in words
      */
-    public function convertAmountToWords(float $amount): string
+    public function amountToWords(float $amount): string
     {
         if ($amount == 0) {
             return 'Rupees Zero Only';
         }
 
         $amount = round($amount, 2);
-        $rupees = floor($amount);
-        $paise = round(($amount - $rupees) * 100);
+        $rupees = (int) floor($amount);
+        $paise = (int) round(($amount - $rupees) * 100);
 
         $words = 'Rupees ' . $this->numberToWords($rupees);
 
@@ -455,64 +388,100 @@ class AgreementService
 
     /**
      * Convert number to words.
-     *
-     * @param int $number
-     * @return string
      */
-    protected function numberToWords(int $number): string
+    protected function numberToWords(int $num): string
     {
-        if ($number == 0) {
-            return 'Zero';
-        }
+        if ($num == 0) return 'Zero';
 
-        $ones = [
-            '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+        $ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
             'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
-            'Seventeen', 'Eighteen', 'Nineteen',
-        ];
-
-        $tens = [
-            '', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety',
-        ];
+            'Seventeen', 'Eighteen', 'Nineteen'];
+        $tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
 
         $words = '';
 
-        // Crores (10,000,000)
-        if ($number >= 10000000) {
-            $words .= $this->numberToWords(floor($number / 10000000)) . ' Crore ';
-            $number %= 10000000;
+        // Crores
+        if ($num >= 10000000) {
+            $words .= $this->numberToWords((int) floor($num / 10000000)) . ' Crore ';
+            $num %= 10000000;
         }
 
-        // Lakhs (100,000)
-        if ($number >= 100000) {
-            $words .= $this->numberToWords(floor($number / 100000)) . ' Lakh ';
-            $number %= 100000;
+        // Lakhs
+        if ($num >= 100000) {
+            $words .= $this->numberToWords((int) floor($num / 100000)) . ' Lakh ';
+            $num %= 100000;
         }
 
         // Thousands
-        if ($number >= 1000) {
-            $words .= $this->numberToWords(floor($number / 1000)) . ' Thousand ';
-            $number %= 1000;
+        if ($num >= 1000) {
+            $words .= $this->numberToWords((int) floor($num / 1000)) . ' Thousand ';
+            $num %= 1000;
         }
 
         // Hundreds
-        if ($number >= 100) {
-            $words .= $ones[floor($number / 100)] . ' Hundred ';
-            $number %= 100;
+        if ($num >= 100) {
+            $words .= $ones[(int) floor($num / 100)] . ' Hundred ';
+            $num %= 100;
         }
 
         // Tens and ones
-        if ($number >= 20) {
-            $words .= $tens[floor($number / 10)];
-            if ($number % 10 > 0) {
-                $words .= '-' . $ones[$number % 10];
+        if ($num >= 20) {
+            $words .= $tens[(int) floor($num / 10)];
+            if ($num % 10 > 0) {
+                $words .= '-' . $ones[$num % 10];
             }
             $words .= ' ';
-        } elseif ($number > 0) {
-            $words .= $ones[$number] . ' ';
+        } elseif ($num > 0) {
+            $words .= $ones[$num] . ' ';
         }
 
         return trim($words);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validation
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Validate phone number.
+     */
+    public function isValidPhone(string $phone): bool
+    {
+        $clean = preg_replace('/[^0-9]/', '', $phone);
+        return strlen($clean) === 10 
+            || (strlen($clean) === 12 && str_starts_with($clean, '91'));
+    }
+
+    /**
+     * Validate amount.
+     */
+    public function isValidAmount($amount): bool
+    {
+        if (!is_numeric($amount)) return false;
+        $val = (float) $amount;
+        return $val > 0 && $val <= 100000000; // Max 10 crore
+    }
+
+    /**
+     * Normalize phone number.
+     */
+    public function normalizePhone(string $phone): string
+    {
+        $clean = preg_replace('/[^0-9]/', '', $phone);
+
+        // Remove 91 prefix if 12 digits
+        if (strlen($clean) === 12 && str_starts_with($clean, '91')) {
+            $clean = substr($clean, 2);
+        }
+
+        // Add 91 prefix for consistency
+        if (strlen($clean) === 10) {
+            $clean = '91' . $clean;
+        }
+
+        return $clean;
     }
 
     /*
@@ -523,8 +492,6 @@ class AgreementService
 
     /**
      * Expire old pending agreements.
-     *
-     * @return int
      */
     public function expirePendingAgreements(): int
     {
@@ -541,9 +508,7 @@ class AgreementService
     }
 
     /**
-     * Send reminders for pending agreements.
-     *
-     * @return Collection
+     * Get agreements needing reminder.
      */
     public function getAgreementsNeedingReminder(): Collection
     {
@@ -556,74 +521,10 @@ class AgreementService
     }
 
     /**
-     * Mark reminder as sent.
-     *
-     * @param Agreement $agreement
-     * @return void
+     * Mark reminder sent.
      */
     public function markReminderSent(Agreement $agreement): void
     {
         $agreement->update(['reminder_sent_at' => now()]);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Helpers
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Normalize phone number.
-     *
-     * @param string $phone
-     * @return string
-     */
-    protected function normalizePhone(string $phone): string
-    {
-        // Remove all non-numeric characters
-        $phone = preg_replace('/[^0-9]/', '', $phone);
-
-        // Remove leading 91 if present
-        if (strlen($phone) === 12 && str_starts_with($phone, '91')) {
-            $phone = substr($phone, 2);
-        }
-
-        // Add 91 prefix for consistency
-        if (strlen($phone) === 10) {
-            $phone = '91' . $phone;
-        }
-
-        return $phone;
-    }
-
-    /**
-     * Validate phone number.
-     *
-     * @param string $phone
-     * @return bool
-     */
-    public function isValidPhone(string $phone): bool
-    {
-        $normalized = preg_replace('/[^0-9]/', '', $phone);
-
-        // Accept 10 digits or 12 digits (with 91)
-        return strlen($normalized) === 10 || (strlen($normalized) === 12 && str_starts_with($normalized, '91'));
-    }
-
-    /**
-     * Validate amount.
-     *
-     * @param mixed $amount
-     * @return bool
-     */
-    public function isValidAmount($amount): bool
-    {
-        if (!is_numeric($amount)) {
-            return false;
-        }
-
-        $amount = (float) $amount;
-
-        return $amount > 0 && $amount <= 100000000; // Max 10 crore
     }
 }

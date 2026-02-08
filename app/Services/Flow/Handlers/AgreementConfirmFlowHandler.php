@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Flow\Handlers;
 
 use App\DTOs\IncomingMessage;
@@ -11,16 +13,19 @@ use App\Models\Agreement;
 use App\Models\ConversationSession;
 use App\Services\Agreements\AgreementService;
 use App\Services\WhatsApp\Messages\AgreementMessages;
-use App\Services\WhatsApp\Messages\MessageTemplates;
 
 /**
- * ENHANCED Agreement Confirmation Flow Handler.
+ * Agreement Confirmation Flow Handler.
  *
- * Key improvements:
- * 1. Uses Job for async PDF generation (no timeout!)
- * 2. Uses sendTextWithMenu/sendButtonsWithMenu patterns
- * 3. Better error messages with recovery options
- * 4. Consistent footer on all messages
+ * Handles counterparty confirmation of agreements.
+ *
+ * KEY FEATURE: Works for UNREGISTERED users (FR-AGR-13)!
+ * - Counterparty doesn't need to be registered
+ * - We track by phone number, not user ID
+ * - They can still confirm/reject via WhatsApp
+ *
+ * @srs-ref FR-AGR-10 to FR-AGR-15 (Confirmation flow)
+ * @srs-ref FR-AGR-20 to FR-AGR-25 (PDF generation)
  */
 class AgreementConfirmFlowHandler extends AbstractFlowHandler
 {
@@ -39,40 +44,41 @@ class AgreementConfirmFlowHandler extends AbstractFlowHandler
 
     protected function getSteps(): array
     {
-        return [
-            AgreementStep::SHOW_PENDING->value,
-            AgreementStep::VIEW_PENDING->value,
-            AgreementStep::CONFIRM_AGREEMENT->value,
-            AgreementStep::CONFIRMATION_COMPLETE->value,
-        ];
+        return array_map(fn($s) => $s->value, AgreementStep::confirmFlowSteps());
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Flow Entry Points
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Start the flow - show pending confirmations.
      */
     public function start(ConversationSession $session): void
     {
-        $user = $this->getUser($session);
+        // NOTE: We use phone number, NOT user ID (FR-AGR-13)
+        // This works for unregistered users too!
+        $phone = $session->phone;
 
-        if (!$user) {
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                "⚠️ *Registration Required*\n\nPlease register first to view agreements.",
-                [['id' => 'register', 'title' => '📝 Register']]
-            );
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Get pending confirmations
-        $pending = $this->agreementService->getPendingConfirmations($user);
+        // Get pending confirmations for this phone
+        $pending = Agreement::awaitingConfirmationFrom($phone)
+            ->notExpired()
+            ->with('creator')
+            ->orderByDesc('created_at')
+            ->get();
 
         if ($pending->isEmpty()) {
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                "✅ *No Pending Confirmations*\n\nYou're all caught up! No agreements waiting for your confirmation.",
-                [['id' => 'my_agreements', 'title' => '📋 My Agreements']],
-                '📋 Agreements'
+            $this->sendButtons(
+                $phone,
+                "✅ *No Pending Confirmations*\n\n" .
+                "Ninakku confirm cheyyaan ulla agreements onnum illa.\n" .
+                "_No agreements waiting for your confirmation._",
+                [
+                    ['id' => 'my_agreements', 'title' => '📋 My Agreements'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
             );
             return;
         }
@@ -81,27 +87,33 @@ class AgreementConfirmFlowHandler extends AbstractFlowHandler
     }
 
     /**
-     * Start with a specific agreement (from notification).
+     * Start with a specific agreement (from confirmation request).
+     *
+     * Called when counterparty receives confirmation request.
+     *
+     * @srs-ref FR-AGR-12 Send confirmation request to counterparty
+     * @srs-ref FR-AGR-13 Works for unregistered counterparties
      */
     public function startWithAgreement(ConversationSession $session, Agreement $agreement): void
     {
-        $this->setTemp($session, 'confirm_agreement_id', $agreement->id);
-
+        $this->setTempData($session, 'confirm_agreement_id', $agreement->id);
         $this->sessionManager->setFlowStep(
             $session,
             FlowType::AGREEMENT_CONFIRM,
-            AgreementStep::CONFIRM_AGREEMENT->value
+            AgreementStep::AWAITING_CONFIRM->value
         );
-
         $this->showAgreementForConfirmation($session, $agreement);
     }
 
-    /**
-     * Handle incoming message.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Message Handler
+    |--------------------------------------------------------------------------
+    */
+
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
-        // Handle common navigation (menu, cancel, etc.)
+        // Handle common navigation
         if ($this->handleCommonNavigation($message, $session)) {
             return;
         }
@@ -114,57 +126,68 @@ class AgreementConfirmFlowHandler extends AbstractFlowHandler
         }
 
         match ($step) {
-            AgreementStep::SHOW_PENDING => $this->handlePendingSelection($message, $session),
+            AgreementStep::PENDING_LIST => $this->handlePendingSelection($message, $session),
             AgreementStep::VIEW_PENDING => $this->handleViewAction($message, $session),
-            AgreementStep::CONFIRM_AGREEMENT => $this->handleConfirmationChoice($message, $session),
-            AgreementStep::CONFIRMATION_COMPLETE => $this->handlePostConfirmation($message, $session),
+            AgreementStep::AWAITING_CONFIRM => $this->handleConfirmationChoice($message, $session),
+            AgreementStep::CONFIRM_DONE => $this->handlePostConfirmation($message, $session),
             default => $this->start($session),
         };
     }
 
-    /**
-     * Handle invalid input.
-     */
     public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
     {
-        $step = AgreementStep::tryFrom($session->current_step);
-
-        match ($step) {
-            AgreementStep::CONFIRM_AGREEMENT => $this->showConfirmationButtons($session),
-            default => $this->start($session),
-        };
+        $this->promptCurrentStep($session);
     }
 
-    /**
-     * Get expected input type.
-     */
-    protected function getExpectedInputType(string $step): string
-    {
-        return match ($step) {
-            AgreementStep::SHOW_PENDING->value => 'list',
-            AgreementStep::CONFIRM_AGREEMENT->value => 'button',
-            default => 'button',
-        };
-    }
-
-    /**
-     * Re-prompt current step.
-     */
     protected function promptCurrentStep(ConversationSession $session): void
     {
         $step = AgreementStep::tryFrom($session->current_step);
 
         match ($step) {
-            AgreementStep::CONFIRM_AGREEMENT => $this->showConfirmationButtons($session),
+            AgreementStep::AWAITING_CONFIRM => $this->showConfirmationButtons($session),
             default => $this->start($session),
         };
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step Handlers
+    | Step: Pending List
     |--------------------------------------------------------------------------
     */
+
+    protected function showPendingList(ConversationSession $session, $pending): void
+    {
+        $count = $pending->count();
+
+        $header = "⏳ *Pending Confirmations*\n\n" .
+            "*{$count}* agreement(s) ninne kaaththirikkunnu:\n" .
+            "_{$count} agreement(s) waiting for your confirmation._";
+
+        $rows = [];
+        foreach ($pending as $agreement) {
+            $amount = number_format($agreement->amount);
+            $creator = $agreement->from_name ?? 'Unknown';
+
+            $rows[] = [
+                'id' => 'pending_' . $agreement->id,
+                'title' => mb_substr("₹{$amount} - {$creator}", 0, 24),
+                'description' => "⏳ #{$agreement->agreement_number}",
+            ];
+        }
+
+        $this->sendList(
+            $session->phone,
+            $header,
+            '📋 View',
+            [['title' => 'Pending Agreements', 'rows' => array_slice($rows, 0, 10)]]
+        );
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::AGREEMENT_CONFIRM,
+            AgreementStep::PENDING_LIST->value
+        );
+    }
 
     protected function handlePendingSelection(IncomingMessage $message, ConversationSession $session): void
     {
@@ -173,25 +196,82 @@ class AgreementConfirmFlowHandler extends AbstractFlowHandler
 
             if (str_starts_with($selectionId, 'pending_')) {
                 $agreementId = (int) str_replace('pending_', '', $selectionId);
-                $this->setTemp($session, 'confirm_agreement_id', $agreementId);
-                $this->nextStep($session, AgreementStep::VIEW_PENDING->value);
-                $this->showPendingDetail($session);
-                return;
+                $agreement = Agreement::with('creator')->find($agreementId);
+
+                if ($agreement && $agreement->isPending()) {
+                    $this->setTempData($session, 'confirm_agreement_id', $agreementId);
+                    $this->showAgreementForConfirmation($session, $agreement);
+                    return;
+                }
             }
-        }
-
-        if ($message->isInteractive()) {
-            $action = $this->getSelectionId($message);
-
-            match ($action) {
-                'my_agreements' => $this->goToAgreementList($session),
-                default => $this->goToMainMenu($session),
-            };
-            return;
         }
 
         // Default: re-show list
         $this->start($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step: View Agreement for Confirmation
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Show agreement details with confirmation options.
+     *
+     * @srs-ref FR-AGR-14 Three options: Yes/No/Don't Know
+     */
+    protected function showAgreementForConfirmation(ConversationSession $session, Agreement $agreement): void
+    {
+        $creator = $agreement->creator;
+        $creatorName = $creator?->name ?? $agreement->from_name ?? 'Unknown';
+
+        // Determine direction from counterparty's perspective
+        $direction = $agreement->direction ?? 'giving';
+        $counterpartyDirection = $direction === 'giving' ? 'receiving' : 'giving';
+        $dirIcon = $counterpartyDirection === 'receiving' ? '📥' : '💸';
+        $dirText = $counterpartyDirection === 'receiving'
+            ? 'Neekku kittunnu (You receive)'
+            : 'Nee kodukkanam (You give)';
+
+        // Get purpose label - handle both enum and string
+        $purposeValue = $agreement->purpose_type instanceof \App\Enums\AgreementPurpose
+            ? $agreement->purpose_type->value
+            : ($agreement->purpose_type ?? 'other');
+        $purposeLabel = AgreementMessages::getPurposeLabel($purposeValue);
+
+        // Format due date
+        $dueDate = $agreement->due_date
+            ? $agreement->due_date->format('M j, Y')
+            : 'No fixed date';
+
+        $message = "📋 *Agreement Confirmation Request!*\n\n" .
+            "*{$creatorName}* ninakkum aayi oru agreement record cheyyaan aagrahikkunnu:\n\n" .
+            "{$dirIcon} *{$dirText}*\n\n" .
+            "💰 *Amount:* ₹" . number_format($agreement->amount) . "\n" .
+            "📝 *In Words:* {$agreement->amount_in_words}\n\n" .
+            "📋 *Purpose:* {$purposeLabel}\n" .
+            "📄 *Details:* " . ($agreement->description ?? 'None') . "\n" .
+            "📅 *Due Date:* {$dueDate}\n\n" .
+            "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
+            "⚠️ *Ith sheri aano?* _Is this correct?_";
+
+        // FR-AGR-14: Three confirmation options
+        $this->sendButtons(
+            $session->phone,
+            $message,
+            [
+                ['id' => 'confirm', 'title' => '✅ Sheri, Confirm'],
+                ['id' => 'reject', 'title' => '❌ Alla, Incorrect'],
+                ['id' => 'unknown', 'title' => "❓ Ariyilla"],
+            ]
+        );
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::AGREEMENT_CONFIRM,
+            AgreementStep::AWAITING_CONFIRM->value
+        );
     }
 
     protected function handleViewAction(IncomingMessage $message, ConversationSession $session): void
@@ -205,100 +285,19 @@ class AgreementConfirmFlowHandler extends AbstractFlowHandler
         };
     }
 
-    protected function handleConfirmationChoice(IncomingMessage $message, ConversationSession $session): void
-    {
-        $choice = null;
-
-        if ($message->isInteractive()) {
-            $choice = $this->getSelectionId($message);
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (in_array($text, ['yes', 'confirm', '1'])) {
-                $choice = 'confirm';
-            } elseif (in_array($text, ['no', 'reject', 'incorrect', '2'])) {
-                $choice = 'reject';
-            } elseif (in_array($text, ['unknown', 'dont know', "don't know", '3'])) {
-                $choice = 'unknown';
-            }
-        }
-
-        match ($choice) {
-            'confirm' => $this->confirmAgreement($session),
-            'reject' => $this->rejectAgreement($session),
-            'unknown' => $this->disputeAgreement($session),
-            default => $this->handleInvalidInput($message, $session),
-        };
-    }
-
-    protected function handlePostConfirmation(IncomingMessage $message, ConversationSession $session): void
-    {
-        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
-
-        match ($action) {
-            'more_pending' => $this->start($session),
-            'my_agreements' => $this->goToAgreementList($session),
-            default => $this->goToMainMenu($session),
-        };
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Display Methods
-    |--------------------------------------------------------------------------
-    */
-
-    protected function showPendingList(ConversationSession $session, $pending): void
-    {
-        $count = $pending->count();
-        $header = "⏳ *Pending Confirmations*\n\n" .
-            "You have *{$count}* agreement(s) waiting for your confirmation:";
-
-        $rows = [];
-        foreach ($pending as $agreement) {
-            $amount = number_format($agreement->amount);
-            $creator = $agreement->creator->name ?? $agreement->from_name ?? 'Unknown';
-
-            $rows[] = [
-                'id' => 'pending_' . $agreement->id,
-                'title' => mb_substr("₹{$amount} from {$creator}", 0, 24),
-                'description' => mb_substr("⏳ #{$agreement->agreement_number}", 0, 72),
-            ];
-        }
-
-        $sections = [
-            [
-                'title' => 'Tap to Review',
-                'rows' => array_slice($rows, 0, 10),
-            ],
-        ];
-
-        $this->sendListWithFooter(
-            $session->phone,
-            $header,
-            '📋 View Agreements',
-            $sections,
-            '📋 Pending'
-        );
-
-        $this->sessionManager->setFlowStep(
-            $session,
-            FlowType::AGREEMENT_CONFIRM,
-            AgreementStep::SHOW_PENDING->value
-        );
-    }
-
     protected function showPendingDetail(ConversationSession $session): void
     {
-        $agreementId = $this->getTemp($session, 'confirm_agreement_id');
+        $agreementId = $this->getTempData($session, 'confirm_agreement_id');
         $agreement = Agreement::with('creator')->find($agreementId);
 
-        if (!$agreement) {
-            $this->sendErrorWithOptions(
+        if (!$agreement || !$agreement->isPending()) {
+            $this->sendButtons(
                 $session->phone,
-                "❌ *Agreement Not Found*\n\nThis agreement may have been cancelled or expired.",
+                "❌ *Agreement Not Found*\n\n" .
+                "This agreement may have been cancelled or expired.",
                 [
                     ['id' => 'more_pending', 'title' => '📋 View Pending'],
-                    self::MENU_BUTTON,
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ]
             );
             $this->start($session);
@@ -308,43 +307,40 @@ class AgreementConfirmFlowHandler extends AbstractFlowHandler
         $this->showAgreementForConfirmation($session, $agreement);
     }
 
-    protected function showAgreementForConfirmation(ConversationSession $session, Agreement $agreement): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step: Handle Confirmation Choice (FR-AGR-14)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Handle counterparty's confirmation choice.
+     *
+     * @srs-ref FR-AGR-14 Yes Confirm / No Incorrect / Don't Know
+     */
+    protected function handleConfirmationChoice(IncomingMessage $message, ConversationSession $session): void
     {
-        $creator = $agreement->creator;
-        
-        // Determine direction from counterparty's perspective
-        $direction = $agreement->direction->value ?? 'giving';
-        $counterpartyDirection = $direction === 'giving' ? 'receiving' : 'giving';
+        $choice = null;
 
-        // Get purpose value
-        $purposeValue = is_object($agreement->purpose_type) 
-            ? $agreement->purpose_type->value 
-            : ($agreement->purpose_type ?? $agreement->purpose ?? 'other');
+        if ($message->isInteractive()) {
+            $choice = $this->getSelectionId($message);
+        } elseif ($message->isText()) {
+            $text = strtolower(trim($message->text ?? ''));
+            if (in_array($text, ['yes', 'confirm', 'sheri', '1', 'correct'])) {
+                $choice = 'confirm';
+            } elseif (in_array($text, ['no', 'reject', 'incorrect', 'alla', '2', 'wrong'])) {
+                $choice = 'reject';
+            } elseif (in_array($text, ['unknown', 'dont know', "don't know", 'ariyilla', '3'])) {
+                $choice = 'unknown';
+            }
+        }
 
-        $message = "📋 *Agreement Confirmation Request*\n\n" .
-            "*{$creator->name}* wants to record this agreement with you:\n\n" .
-            AgreementMessages::getDirectionEmoji($counterpartyDirection) . 
-            " *" . AgreementMessages::getDirectionLabel($counterpartyDirection, false) . "*\n\n" .
-            "💰 *Amount:* ₹" . number_format($agreement->amount) . "\n" .
-            "📝 *Purpose:* " . AgreementMessages::getPurposeLabel($purposeValue) . "\n" .
-            "📅 *Due Date:* " . AgreementMessages::formatDueDate($agreement->due_date) . "\n" .
-            "📄 *Description:* " . ($agreement->description ?? 'None') . "\n\n" .
-            "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
-            "⚠️ *Is this correct?*";
-
-        $this->sendButtons(
-            $session->phone,
-            $message,
-            [
-                ['id' => 'confirm', 'title' => '✅ Yes, Confirm'],
-                ['id' => 'reject', 'title' => '❌ No, Incorrect'],
-                ['id' => 'unknown', 'title' => "❓ Don't Know"],
-            ],
-            '📋 Confirm Agreement',
-            MessageTemplates::GLOBAL_FOOTER
-        );
-
-        $this->nextStep($session, AgreementStep::CONFIRM_AGREEMENT->value);
+        match ($choice) {
+            'confirm' => $this->confirmAgreement($session),
+            'reject' => $this->rejectAgreement($session),
+            'unknown' => $this->disputeAgreement($session),
+            default => $this->showConfirmationButtons($session),
+        };
     }
 
     protected function showConfirmationButtons(ConversationSession $session): void
@@ -352,245 +348,319 @@ class AgreementConfirmFlowHandler extends AbstractFlowHandler
         $this->sendButtons(
             $session->phone,
             "Please select an option:\n\n" .
-            "✅ *Yes, Confirm* - The details are correct\n" .
-            "❌ *No, Incorrect* - Something is wrong\n" .
-            "❓ *Don't Know* - I don't know this person",
+            "✅ *Sheri, Confirm* - Details correct aanu\n" .
+            "❌ *Alla, Incorrect* - Something wrong aanu\n" .
+            "❓ *Ariyilla* - Enikku ee aaline ariyilla",
             [
-                ['id' => 'confirm', 'title' => '✅ Yes, Confirm'],
-                ['id' => 'reject', 'title' => '❌ No, Incorrect'],
-                ['id' => 'unknown', 'title' => "❓ Don't Know"],
-            ],
-            null,
-            MessageTemplates::GLOBAL_FOOTER
+                ['id' => 'confirm', 'title' => '✅ Sheri, Confirm'],
+                ['id' => 'reject', 'title' => '❌ Alla, Incorrect'],
+                ['id' => 'unknown', 'title' => "❓ Ariyilla"],
+            ]
         );
+    }
+
+    protected function proceedToConfirmation(ConversationSession $session): void
+    {
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::AGREEMENT_CONFIRM,
+            AgreementStep::AWAITING_CONFIRM->value
+        );
+        $this->showConfirmationButtons($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Action Methods
+    | Action: Confirm (FR-AGR-15)
     |--------------------------------------------------------------------------
     */
 
-    protected function proceedToConfirmation(ConversationSession $session): void
-    {
-        $this->nextStep($session, AgreementStep::CONFIRM_AGREEMENT->value);
-        $this->showConfirmationButtons($session);
-    }
-
+    /**
+     * Confirm the agreement.
+     *
+     * @srs-ref FR-AGR-15 Mark active upon BOTH confirmations
+     * @srs-ref FR-AGR-20 Generate PDF on mutual confirmation
+     */
     protected function confirmAgreement(ConversationSession $session): void
     {
         try {
-            $agreementId = $this->getTemp($session, 'confirm_agreement_id');
-            $agreement = Agreement::with(['creator'])->find($agreementId);
+            $agreementId = $this->getTempData($session, 'confirm_agreement_id');
+            $agreement = Agreement::with('creator')->find($agreementId);
 
             if (!$agreement) {
                 throw new \Exception('Agreement not found');
             }
 
-            // Link counterparty user if not already linked
+            if (!$agreement->isPending()) {
+                throw new \Exception('Agreement is no longer pending');
+            }
+
+            if ($agreement->isExpired()) {
+                throw new \Exception('Agreement has expired');
+            }
+
+            // Link counterparty user if registered (but don't require it! FR-AGR-13)
             $user = $this->getUser($session);
-            if (!$agreement->to_user_id && $user) {
+            if ($user && !$agreement->to_user_id) {
                 $agreement->update(['to_user_id' => $user->id]);
             }
 
-            // Confirm the agreement
+            // Confirm by counterparty
             $agreement = $this->agreementService->confirmByCounterparty($agreement);
 
-            // Send immediate success message
+            // Send success message
             $this->sendButtons(
                 $session->phone,
                 "🎉 *Agreement Confirmed!*\n\n" .
                 "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
-                "✅ Both parties have now confirmed.\n\n" .
-                "📄 *Generating your PDF document...*\n" .
-                "_This will be sent to you in a moment._",
+                "✅ Randum perrum confirm cheythu!\n" .
+                "_Both parties confirmed!_\n\n" .
+                "📄 *PDF generate aavunnu...*\n" .
+                "_Your PDF document will arrive shortly._",
                 [
                     ['id' => 'more_pending', 'title' => '📋 More Pending'],
-                    ['id' => 'my_agreements', 'title' => '📋 My Agreements'],
-                    self::MENU_BUTTON,
-                ],
-                '✅ Confirmed',
-                MessageTemplates::GLOBAL_FOOTER
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
             );
 
-            // DISPATCH JOB for PDF generation (async - won't timeout!)
+            // Dispatch PDF generation job (FR-AGR-20)
+            // This runs async so it won't timeout
             GenerateAgreementPDF::dispatch($agreement, notifyParties: true);
 
-            // Notify creator immediately (PDF will follow from Job)
+            // Notify creator immediately
             $this->notifyCreatorConfirmed($agreement);
 
-            $this->nextStep($session, AgreementStep::CONFIRMATION_COMPLETE->value);
+            // Update step
+            $this->sessionManager->setFlowStep(
+                $session,
+                FlowType::AGREEMENT_CONFIRM,
+                AgreementStep::CONFIRM_DONE->value
+            );
 
             $this->logInfo('Agreement confirmed by counterparty', [
                 'agreement_id' => $agreement->id,
                 'agreement_number' => $agreement->agreement_number,
+                'phone' => $session->phone,
             ]);
 
         } catch (\Exception $e) {
             $this->logError('Agreement confirmation failed', [
                 'error' => $e->getMessage(),
+                'phone' => $session->phone,
             ]);
 
-            $this->sendErrorWithOptions(
+            $this->sendButtons(
                 $session->phone,
-                "❌ *Confirmation Failed*\n\n" . $e->getMessage() . "\n\nPlease try again.",
+                "❌ *Confirmation Failed*\n\n{$e->getMessage()}\n\nPlease try again.",
                 [
                     ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ]
             );
-
-            $this->start($session);
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Action: Reject
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Reject the agreement (details incorrect).
+     */
     protected function rejectAgreement(ConversationSession $session): void
     {
         try {
-            $agreementId = $this->getTemp($session, 'confirm_agreement_id');
-            $agreement = Agreement::with(['creator'])->find($agreementId);
+            $agreementId = $this->getTempData($session, 'confirm_agreement_id');
+            $agreement = Agreement::with('creator')->find($agreementId);
 
             if (!$agreement) {
                 throw new \Exception('Agreement not found');
             }
 
+            // Mark as rejected
             $agreement = $this->agreementService->rejectByCounterparty($agreement, 'Details are incorrect');
 
-            $this->sendButtonsWithMenu(
+            $creatorName = $agreement->creator?->name ?? $agreement->from_name ?? 'Creator';
+
+            $this->sendButtons(
                 $session->phone,
                 "❌ *Agreement Rejected*\n\n" .
-                "You have rejected this agreement.\n\n" .
-                "*{$agreement->creator->name}* will be notified.\n\n" .
-                "If this was a mistake, please contact them directly.",
-                [['id' => 'more_pending', 'title' => '📋 More Pending']],
-                '❌ Rejected'
+                "Nee ee agreement reject cheythu.\n\n" .
+                "*{$creatorName}*-ne ariyikkum.\n" .
+                "_They will be notified._\n\n" .
+                "If mistake aayirunnel, please contact them directly.",
+                [
+                    ['id' => 'more_pending', 'title' => '📋 More Pending'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
             );
 
             // Notify creator
             $this->notifyCreatorRejected($agreement);
 
-            $this->nextStep($session, AgreementStep::CONFIRMATION_COMPLETE->value);
+            $this->sessionManager->setFlowStep(
+                $session,
+                FlowType::AGREEMENT_CONFIRM,
+                AgreementStep::CONFIRM_DONE->value
+            );
 
         } catch (\Exception $e) {
             $this->logError('Agreement rejection failed', ['error' => $e->getMessage()]);
-            $this->sendErrorWithOptions($session->phone, "❌ Failed to reject: " . $e->getMessage());
+            $this->sendText($session->phone, "❌ Error: {$e->getMessage()}");
             $this->start($session);
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Action: Dispute (Don't Know)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Mark as disputed (counterparty doesn't know creator).
+     */
     protected function disputeAgreement(ConversationSession $session): void
     {
         try {
-            $agreementId = $this->getTemp($session, 'confirm_agreement_id');
-            $agreement = Agreement::with(['creator'])->find($agreementId);
+            $agreementId = $this->getTempData($session, 'confirm_agreement_id');
+            $agreement = Agreement::with('creator')->find($agreementId);
 
             if (!$agreement) {
                 throw new \Exception('Agreement not found');
             }
 
+            // Mark as disputed
             $agreement = $this->agreementService->markDisputed($agreement);
 
-            $this->sendButtonsWithMenu(
+            $creatorName = $agreement->creator?->name ?? $agreement->from_name ?? 'Creator';
+
+            $this->sendButtons(
                 $session->phone,
                 "⚠️ *Agreement Flagged*\n\n" .
-                "You've indicated you don't know *{$agreement->creator->name}*.\n\n" .
-                "This agreement has been flagged for review.\n" .
-                "They will be notified.",
-                [['id' => 'more_pending', 'title' => '📋 More Pending']],
-                '⚠️ Flagged'
+                "Nee *{$creatorName}*-ne ariyilla ennu paranju.\n\n" .
+                "Ee agreement review-nu flag cheythittund.\n" .
+                "Avare ariyikkum.",
+                [
+                    ['id' => 'more_pending', 'title' => '📋 More Pending'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
             );
 
             // Notify creator
             $this->notifyCreatorDisputed($agreement);
 
-            $this->nextStep($session, AgreementStep::CONFIRMATION_COMPLETE->value);
+            $this->sessionManager->setFlowStep(
+                $session,
+                FlowType::AGREEMENT_CONFIRM,
+                AgreementStep::CONFIRM_DONE->value
+            );
 
         } catch (\Exception $e) {
             $this->logError('Agreement dispute failed', ['error' => $e->getMessage()]);
-            $this->sendErrorWithOptions($session->phone, "❌ Error: " . $e->getMessage());
+            $this->sendText($session->phone, "❌ Error: {$e->getMessage()}");
             $this->start($session);
         }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Notification Methods
+    | Step: Post-Confirmation
     |--------------------------------------------------------------------------
     */
 
+    protected function handlePostConfirmation(IncomingMessage $message, ConversationSession $session): void
+    {
+        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
+
+        match ($action) {
+            'more_pending' => $this->start($session),
+            'my_agreements' => $this->goToAgreementList($session),
+            default => $this->goToMenu($session),
+        };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Creator Notifications
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Notify creator that agreement was confirmed.
+     */
     protected function notifyCreatorConfirmed(Agreement $agreement): void
     {
-        $creator = $agreement->creator;
-        if (!$creator?->phone) return;
-
-        $message = "🎉 *Agreement Confirmed!*\n\n" .
-            "*{$agreement->to_name}* has confirmed your agreement.\n\n" .
-            "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
-            "📄 *PDF document will be sent shortly...*";
+        $creatorPhone = $agreement->creator?->phone ?? $agreement->from_phone;
+        if (!$creatorPhone) return;
 
         $this->sendButtons(
-            $creator->phone,
-            $message,
+            $creatorPhone,
+            "🎉 *Agreement Confirmed!*\n\n" .
+            "*{$agreement->to_name}* confirm cheythu!\n\n" .
+            "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
+            "📄 *PDF document udane varum...*\n" .
+            "_Your PDF will arrive shortly._",
             [
                 ['id' => 'my_agreements', 'title' => '📋 My Agreements'],
-                self::MENU_BUTTON,
-            ],
-            '✅ Confirmed',
-            MessageTemplates::GLOBAL_FOOTER
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ]
         );
     }
 
+    /**
+     * Notify creator that agreement was rejected.
+     */
     protected function notifyCreatorRejected(Agreement $agreement): void
     {
-        $creator = $agreement->creator;
-        if (!$creator?->phone) return;
+        $creatorPhone = $agreement->creator?->phone ?? $agreement->from_phone;
+        if (!$creatorPhone) return;
 
-        $message = "❌ *Agreement Rejected*\n\n" .
-            "*{$agreement->to_name}* has rejected your agreement.\n\n" .
+        $this->sendButtons(
+            $creatorPhone,
+            "❌ *Agreement Rejected*\n\n" .
+            "*{$agreement->to_name}* reject cheythu.\n\n" .
             "📋 Agreement #: *{$agreement->agreement_number}*\n" .
-            "📝 Reason: Details are incorrect\n\n" .
-            "Please verify the details and create a new agreement if needed.";
-
-        $this->sendButtonsWithMenu(
-            $creator->phone,
-            $message,
+            "📝 Reason: Details incorrect\n\n" .
+            "Details verify cheythu puthiyathu undaakkuka.",
             [
                 ['id' => 'create_agreement', 'title' => '📝 Create New'],
                 ['id' => 'my_agreements', 'title' => '📋 My Agreements'],
-            ],
-            '❌ Rejected'
+            ]
         );
     }
 
+    /**
+     * Notify creator that agreement was disputed.
+     */
     protected function notifyCreatorDisputed(Agreement $agreement): void
     {
-        $creator = $agreement->creator;
-        if (!$creator?->phone) return;
+        $creatorPhone = $agreement->creator?->phone ?? $agreement->from_phone;
+        if (!$creatorPhone) return;
 
-        $message = "⚠️ *Agreement Disputed*\n\n" .
-            "*{$agreement->to_name}* claims they don't know you.\n\n" .
+        $this->sendButtons(
+            $creatorPhone,
+            "⚠️ *Agreement Disputed*\n\n" .
+            "*{$agreement->to_name}* paranju avar ninne ariyilla.\n\n" .
             "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
-            "This agreement has been flagged.\n" .
-            "Please ensure you have the correct contact details.";
-
-        $this->sendButtonsWithMenu(
-            $creator->phone,
-            $message,
-            [['id' => 'my_agreements', 'title' => '📋 My Agreements']],
-            '⚠️ Disputed'
+            "Correct contact details verify cheyyuka.",
+            [
+                ['id' => 'my_agreements', 'title' => '📋 My Agreements'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ]
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Navigation Methods
+    | Navigation
     |--------------------------------------------------------------------------
     */
 
     protected function goToAgreementList(ConversationSession $session): void
     {
-        $this->goToFlow($session, FlowType::AGREEMENT_LIST, AgreementStep::SHOW_LIST->value);
-        // Would need AgreementListFlowHandler - trigger via FlowRouter
-        app(\App\Services\Flow\FlowRouter::class)->startFlow($session, FlowType::AGREEMENT_LIST);
+        $this->goToFlow($session, FlowType::AGREEMENT_LIST, AgreementStep::MY_LIST->value);
     }
 }

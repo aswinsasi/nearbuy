@@ -1,7 +1,10 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\PDF;
 
+use App\Enums\AgreementPurpose;
 use App\Models\Agreement;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\Log;
@@ -9,22 +12,24 @@ use Illuminate\Support\Facades\Storage;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 /**
- * Service for generating agreement PDF documents.
+ * Agreement PDF Service.
  *
- * Updated to match actual database schema:
- * - Uses 'direction' field to determine creditor/debtor
- * - Uses 'from_confirmed_at' and 'to_confirmed_at' for confirmation timestamps
- * - Uses 'amount_in_words' for amount text
- * - Uses 'purpose_type' for purpose enum
+ * Generates professional PDF documents for confirmed agreements.
+ *
+ * @srs-ref FR-AGR-20 Generate PDF on mutual confirmation
+ * @srs-ref FR-AGR-21 Include: agreement number, both party details, amount, purpose, timestamps
+ * @srs-ref FR-AGR-22 Include amount IN WORDS
+ * @srs-ref FR-AGR-23 Include QR code linking to verification URL
+ * @srs-ref FR-AGR-24 Store PDF in cloud storage
  */
 class AgreementPDFService
 {
     /**
      * Generate PDF and upload to storage.
      *
-     * @param Agreement $agreement
+     * @srs-ref FR-AGR-20, FR-AGR-24
+     *
      * @return string Public URL of the PDF
-     * @throws \Exception
      */
     public function generateAndUpload(Agreement $agreement): string
     {
@@ -50,14 +55,13 @@ class AgreementPDFService
             $disk = config('nearbuy.agreements.storage_disk', 'public');
             $url = Storage::disk($disk)->url($path);
 
-            // Update agreement with PDF URL
+            // Update agreement with PDF URL (FR-AGR-24)
             $agreement->update(['pdf_url' => $url]);
 
             Log::info('Agreement PDF generated successfully', [
                 'agreement_id' => $agreement->id,
                 'agreement_number' => $agreement->agreement_number,
                 'url' => $url,
-                'path' => $path,
             ]);
 
             return $url;
@@ -77,66 +81,59 @@ class AgreementPDFService
     /**
      * Generate PDF document.
      *
-     * @param Agreement $agreement
-     * @return \Barryvdh\DomPDF\PDF
+     * @srs-ref FR-AGR-21, FR-AGR-22, FR-AGR-23
      */
     public function generatePDF(Agreement $agreement): \Barryvdh\DomPDF\PDF
     {
-        // Load related models if not already loaded
+        // Load relationships
         if (!$agreement->relationLoaded('fromUser')) {
             $agreement->load(['fromUser', 'toUser']);
         }
 
-        // Generate QR code (with fallback)
+        // Generate QR code (FR-AGR-23)
         $qrCode = $this->generateQRCode($agreement);
 
-        // Prepare data for view
+        // Prepare data for view (FR-AGR-21, FR-AGR-22)
         $data = $this->prepareViewData($agreement, $qrCode);
 
-        // Check if view exists
+        // Check view exists
         if (!view()->exists('pdf.agreement')) {
-            Log::error('PDF view template not found', [
-                'view' => 'pdf.agreement',
-                'agreement_id' => $agreement->id,
-            ]);
-            throw new \Exception('PDF template not found. Please ensure resources/views/pdf/agreement.blade.php exists.');
+            Log::error('PDF view template not found');
+            throw new \Exception('PDF template not found at resources/views/pdf/agreement.blade.php');
         }
 
-        // Generate PDF from view
+        // Generate PDF
         $pdf = Pdf::loadView('pdf.agreement', $data);
 
-        // Configure PDF
+        // Configure
         $pdf->setPaper('a4', 'portrait');
         $pdf->setOptions([
             'isHtml5ParserEnabled' => true,
             'isRemoteEnabled' => true,
             'defaultFont' => 'sans-serif',
             'dpi' => 150,
-            'enable_css_float' => true,
-            'enable_javascript' => false,
         ]);
 
         return $pdf;
     }
 
     /**
-     * Generate QR code for agreement verification.
+     * Generate QR code for verification.
      *
-     * @param Agreement $agreement
-     * @return string|null Base64 encoded QR code image or null if failed
+     * @srs-ref FR-AGR-23 QR code linking to verification URL
      */
     public function generateQRCode(Agreement $agreement): ?string
     {
         try {
-            $verificationUrl = $this->getVerificationUrl($agreement);
+            $verificationUrl = $agreement->getVerificationUrl();
 
             // Check if QrCode facade is available
             if (!class_exists('SimpleSoftwareIO\QrCode\Facades\QrCode')) {
-                Log::warning('QrCode package not installed, skipping QR code generation');
+                Log::warning('QrCode package not installed');
                 return null;
             }
 
-            // Use SVG format (no imagick required) and convert to base64
+            // Use SVG format (no imagick required)
             $qrCode = QrCode::format('svg')
                 ->size(150)
                 ->margin(1)
@@ -150,87 +147,67 @@ class AgreementPDFService
                 'agreement_id' => $agreement->id,
                 'error' => $e->getMessage(),
             ]);
-
             return null;
         }
     }
 
     /**
-     * Get verification URL for agreement.
-     *
-     * @param Agreement $agreement
-     * @return string
-     */
-    public function getVerificationUrl(Agreement $agreement): string
-    {
-        $baseUrl = config('app.url');
-        $token = $agreement->verification_token;
-
-        return "{$baseUrl}/verify/{$token}";
-    }
-
-    /**
      * Prepare data for PDF view.
      *
-     * @param Agreement $agreement
-     * @param string|null $qrCode
-     * @return array
+     * @srs-ref FR-AGR-21 Include: agreement number, both party details, amount, purpose, timestamps
+     * @srs-ref FR-AGR-22 Include amount IN WORDS
      */
     protected function prepareViewData(Agreement $agreement, ?string $qrCode): array
     {
         $creator = $agreement->fromUser;
 
-        // Determine creditor from direction field
-        // 'giving' means creator is lending (creditor)
-        // 'receiving' means creator is borrowing (debtor)
-        $direction = $agreement->direction->value ?? $agreement->direction ?? 'giving';
+        // Determine creditor/debtor from direction
+        $direction = $agreement->direction ?? 'giving';
         $isCreatorCreditor = ($direction === 'giving');
 
         if ($isCreatorCreditor) {
             $partyA = [
                 'label' => 'CREDITOR (Lender)',
-                'name' => $creator->name ?? $agreement->from_name ?? 'Unknown',
-                'phone' => $this->formatPhoneForDisplay($creator->phone ?? $agreement->from_phone ?? ''),
+                'name' => $creator?->name ?? $agreement->from_name ?? 'Unknown',
+                'phone' => $this->formatPhone($agreement->from_phone),
                 'role' => 'Giving Money',
             ];
             $partyB = [
                 'label' => 'DEBTOR (Borrower)',
                 'name' => $agreement->to_name ?? 'Unknown',
-                'phone' => $this->formatPhoneForDisplay($agreement->to_phone ?? ''),
+                'phone' => $this->formatPhone($agreement->to_phone),
                 'role' => 'Receiving Money',
             ];
         } else {
             $partyA = [
                 'label' => 'DEBTOR (Borrower)',
-                'name' => $creator->name ?? $agreement->from_name ?? 'Unknown',
-                'phone' => $this->formatPhoneForDisplay($creator->phone ?? $agreement->from_phone ?? ''),
+                'name' => $creator?->name ?? $agreement->from_name ?? 'Unknown',
+                'phone' => $this->formatPhone($agreement->from_phone),
                 'role' => 'Receiving Money',
             ];
             $partyB = [
                 'label' => 'CREDITOR (Lender)',
                 'name' => $agreement->to_name ?? 'Unknown',
-                'phone' => $this->formatPhoneForDisplay($agreement->to_phone ?? ''),
+                'phone' => $this->formatPhone($agreement->to_phone),
                 'role' => 'Giving Money',
             ];
         }
 
-        // Get amount in words
-        $amountWords = $agreement->amount_in_words 
-            ?? $this->convertAmountToWords($agreement->amount ?? 0);
+        // Amount in words (FR-AGR-22)
+        $amountWords = $agreement->amount_in_words
+            ?? Agreement::amountToWords($agreement->amount ?? 0);
 
-        // Get purpose value - handle both enum and string
-        $purposeValue = is_object($agreement->purpose_type) 
-            ? $agreement->purpose_type->value 
+        // Purpose
+        // Purpose - handle both enum and string
+        $purposeValue = $agreement->purpose_type instanceof AgreementPurpose
+            ? $agreement->purpose_type->value
             : ($agreement->purpose_type ?? 'other');
+        $purposeLabel = $this->formatPurpose($purposeValue);
 
-        // Get status value - handle both enum and string
-        $statusValue = is_object($agreement->status) 
-            ? $agreement->status->value 
-            : ($agreement->status ?? 'pending');
-
-        // Get confirmation timestamps - use correct field names from database
-        $creatorConfirmedAt = $agreement->from_confirmed_at;
-        $toConfirmedAt = $agreement->to_confirmed_at;
+        // Status
+        $statusLabel = is_object($agreement->status)
+            ? $agreement->status->label()
+            : ucfirst($agreement->status ?? 'pending');
 
         return [
             'agreement' => $agreement,
@@ -239,29 +216,25 @@ class AgreementPDFService
             'partyB' => $partyB,
             'amount' => number_format($agreement->amount ?? 0, 2),
             'amountWords' => $amountWords,
-            'purpose' => $this->formatPurpose($purposeValue),
+            'purpose' => $purposeLabel,
             'description' => $agreement->description ?? 'N/A',
-            'dueDate' => $agreement->due_date 
-                ? (is_string($agreement->due_date) 
-                    ? \Carbon\Carbon::parse($agreement->due_date)->format('F j, Y') 
-                    : $agreement->due_date->format('F j, Y'))
+            'dueDate' => $agreement->due_date
+                ? $agreement->due_date->format('F j, Y')
                 : 'No fixed date',
             'createdAt' => $agreement->created_at?->format('F j, Y \a\t h:i A') ?? 'Unknown',
-            'creatorConfirmedAt' => $creatorConfirmedAt?->format('F j, Y \a\t h:i A'),
-            'toConfirmedAt' => $toConfirmedAt?->format('F j, Y \a\t h:i A'),
-            'status' => $this->formatStatus($statusValue),
+            'creatorConfirmedAt' => $agreement->from_confirmed_at?->format('F j, Y \a\t h:i A'),
+            'counterpartyConfirmedAt' => $agreement->to_confirmed_at?->format('F j, Y \a\t h:i A'),
+            'status' => $statusLabel,
             'qrCode' => $qrCode,
-            'verificationUrl' => $this->getVerificationUrl($agreement),
+            'verificationUrl' => $agreement->getVerificationUrl(),
             'generatedAt' => now()->format('F j, Y \a\t h:i A'),
         ];
     }
 
     /**
-     * Upload PDF to storage with fallback.
+     * Upload PDF to storage.
      *
-     * @param \Barryvdh\DomPDF\PDF $pdf
-     * @param string $filename
-     * @return string Storage path
+     * @srs-ref FR-AGR-24 Store PDF in cloud storage
      */
     protected function uploadToStorage(\Barryvdh\DomPDF\PDF $pdf, string $filename): string
     {
@@ -306,38 +279,29 @@ class AgreementPDFService
                     'fallback_error' => $fallbackError->getMessage(),
                 ]);
 
-                throw new \Exception('Failed to upload PDF to any storage: ' . $fallbackError->getMessage());
+                throw new \Exception('Failed to upload PDF: ' . $fallbackError->getMessage());
             }
         }
     }
 
     /**
-     * Generate filename for PDF.
-     *
-     * @param Agreement $agreement
-     * @return string
+     * Generate filename.
      */
     protected function generateFilename(Agreement $agreement): string
     {
         $number = str_replace(['/', '-', ' '], '_', $agreement->agreement_number ?? 'UNKNOWN');
         $timestamp = now()->format('Ymd_His');
-
         return "{$number}_{$timestamp}.pdf";
     }
 
     /**
      * Format phone for display.
-     *
-     * @param string $phone
-     * @return string
      */
-    protected function formatPhoneForDisplay(string $phone): string
+    protected function formatPhone(string $phone): string
     {
-        if (empty($phone)) {
-            return 'N/A';
-        }
+        if (empty($phone)) return 'N/A';
 
-        // Remove 91 prefix if present
+        // Remove 91 prefix
         if (strlen($phone) === 12 && str_starts_with($phone, '91')) {
             $phone = substr($phone, 2);
         }
@@ -351,10 +315,7 @@ class AgreementPDFService
     }
 
     /**
-     * Format purpose for display.
-     *
-     * @param string $purpose
-     * @return string
+     * Format purpose.
      */
     protected function formatPurpose(string $purpose): string
     {
@@ -363,128 +324,14 @@ class AgreementPDFService
             'advance' => 'Advance Payment',
             'deposit' => 'Security Deposit',
             'business' => 'Business Transaction',
-            'personal' => 'Personal Transaction',
             'other' => 'Other',
         ];
 
-        return $map[strtolower($purpose)] ?? ucfirst(strtolower($purpose));
-    }
-
-    /**
-     * Format status for display.
-     *
-     * @param string $status
-     * @return string
-     */
-    protected function formatStatus(string $status): string
-    {
-        $map = [
-            'pending' => 'Pending Confirmation',
-            'confirmed' => 'Confirmed by Both Parties',
-            'active' => 'Active',
-            'rejected' => 'Rejected',
-            'disputed' => 'Disputed',
-            'completed' => 'Completed',
-            'expired' => 'Expired',
-            'cancelled' => 'Cancelled',
-        ];
-
-        return $map[strtolower($status)] ?? ucfirst(strtolower($status));
-    }
-
-    /**
-     * Format direction for display.
-     *
-     * @param string $direction
-     * @return string
-     */
-    protected function formatDirection(string $direction): string
-    {
-        return match (strtolower($direction)) {
-            'giving' => 'Giving Money',
-            'receiving' => 'Receiving Money',
-            default => ucfirst($direction),
-        };
-    }
-
-    /**
-     * Convert amount to words (Indian numbering system).
-     *
-     * @param float $amount
-     * @return string
-     */
-    protected function convertAmountToWords(float $amount): string
-    {
-        if ($amount == 0) {
-            return 'Rupees Zero Only';
-        }
-
-        $amount = round($amount, 2);
-        $rupees = floor($amount);
-        $paise = round(($amount - $rupees) * 100);
-
-        $ones = [
-            '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
-            'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
-            'Seventeen', 'Eighteen', 'Nineteen',
-        ];
-
-        $tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-
-        $words = 'Rupees ';
-
-        if ($rupees >= 10000000) {
-            $crores = floor($rupees / 10000000);
-            $words .= $this->numberToWordsSimple($crores, $ones, $tens) . ' Crore ';
-            $rupees %= 10000000;
-        }
-
-        if ($rupees >= 100000) {
-            $lakhs = floor($rupees / 100000);
-            $words .= $this->numberToWordsSimple($lakhs, $ones, $tens) . ' Lakh ';
-            $rupees %= 100000;
-        }
-
-        if ($rupees >= 1000) {
-            $thousands = floor($rupees / 1000);
-            $words .= $this->numberToWordsSimple($thousands, $ones, $tens) . ' Thousand ';
-            $rupees %= 1000;
-        }
-
-        if ($rupees >= 100) {
-            $hundreds = floor($rupees / 100);
-            $words .= $ones[$hundreds] . ' Hundred ';
-            $rupees %= 100;
-        }
-
-        if ($rupees > 0) {
-            $words .= $this->numberToWordsSimple((int) $rupees, $ones, $tens);
-        }
-
-        // Add paise if present
-        if ($paise > 0) {
-            $words .= ' and ' . $this->numberToWordsSimple((int) $paise, $ones, $tens) . ' Paise';
-        }
-
-        return trim($words) . ' Only';
-    }
-
-    /**
-     * Simple number to words helper.
-     */
-    private function numberToWordsSimple(int $num, array $ones, array $tens): string
-    {
-        if ($num < 20) {
-            return $ones[$num];
-        }
-        return $tens[floor($num / 10)] . ($num % 10 ? '-' . $ones[$num % 10] : '');
+        return $map[strtolower($purpose)] ?? ucfirst($purpose);
     }
 
     /**
      * Delete PDF from storage.
-     *
-     * @param Agreement $agreement
-     * @return bool
      */
     public function deletePDF(Agreement $agreement): bool
     {
@@ -498,34 +345,22 @@ class AgreementPDFService
 
             if ($path && Storage::disk($disk)->exists($path)) {
                 Storage::disk($disk)->delete($path);
-                $agreement->update(['pdf_url' => null]);
-                return true;
             }
 
-            // Try public disk as fallback
-            if ($path && Storage::disk('public')->exists($path)) {
-                Storage::disk('public')->delete($path);
-                $agreement->update(['pdf_url' => null]);
-                return true;
-            }
-
-            return false;
+            $agreement->update(['pdf_url' => null]);
+            return true;
 
         } catch (\Exception $e) {
-            Log::error('Failed to delete agreement PDF', [
+            Log::error('Failed to delete PDF', [
                 'agreement_id' => $agreement->id,
                 'error' => $e->getMessage(),
             ]);
-
             return false;
         }
     }
 
     /**
-     * Extract storage path from URL.
-     *
-     * @param string $url
-     * @return string|null
+     * Extract path from URL.
      */
     protected function extractPathFromUrl(string $url): ?string
     {
@@ -535,19 +370,11 @@ class AgreementPDFService
             return "{$basePath}/{$matches[1]}";
         }
 
-        // Try to extract just the filename
-        if (preg_match('#/([^/]+\.pdf)$#', $url, $matches)) {
-            return "{$basePath}/{$matches[1]}";
-        }
-
         return null;
     }
 
     /**
-     * Regenerate PDF for an agreement.
-     *
-     * @param Agreement $agreement
-     * @return string New URL
+     * Regenerate PDF.
      */
     public function regeneratePDF(Agreement $agreement): string
     {
@@ -556,9 +383,7 @@ class AgreementPDFService
     }
 
     /**
-     * Check if PDF service is properly configured.
-     *
-     * @return array Status check results
+     * Check if PDF service is configured.
      */
     public function checkConfiguration(): array
     {

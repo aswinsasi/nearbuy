@@ -1,108 +1,107 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
- * Payment method options for job payments.
+ * Payment Method Options.
  *
- * @srs-ref Section 3.5 - Job Verification & Payment
- * @module Njaanum Panikkar (Basic Jobs Marketplace)
+ * Used for job payments and agreement settlements.
  */
 enum PaymentMethod: string
 {
     case CASH = 'cash';
     case UPI = 'upi';
+    case BANK_TRANSFER = 'bank_transfer';
     case OTHER = 'other';
 
     /**
-     * Get the display label.
+     * Display label.
      */
     public function label(): string
     {
         return match ($this) {
             self::CASH => 'Cash',
             self::UPI => 'UPI',
+            self::BANK_TRANSFER => 'Bank Transfer',
             self::OTHER => 'Other',
         };
     }
 
     /**
-     * Get Malayalam label.
+     * Malayalam label.
      */
     public function labelMl(): string
     {
         return match ($this) {
             self::CASH => 'പണം',
             self::UPI => 'യുപിഐ',
+            self::BANK_TRANSFER => 'ബാങ്ക് ട്രാൻസ്ഫർ',
             self::OTHER => 'മറ്റുള്ളവ',
         };
     }
 
     /**
-     * Get emoji icon.
+     * Icon.
      */
-    public function emoji(): string
+    public function icon(): string
     {
         return match ($this) {
             self::CASH => '💵',
             self::UPI => '📱',
+            self::BANK_TRANSFER => '🏦',
             self::OTHER => '💳',
         };
     }
 
     /**
-     * Get display with emoji.
+     * Display with icon.
      */
     public function display(): string
     {
-        return $this->emoji() . ' ' . $this->label();
+        return $this->icon() . ' ' . $this->label();
     }
 
     /**
-     * Get button title for WhatsApp.
-     */
-    public function buttonTitle(): string
-    {
-        return $this->emoji() . ' ' . $this->label();
-    }
-
-    /**
-     * Check if payment is digital.
+     * Is digital payment?
      */
     public function isDigital(): bool
     {
-        return $this === self::UPI;
+        return in_array($this, [self::UPI, self::BANK_TRANSFER]);
     }
 
     /**
-     * Check if payment requires reference number.
+     * Requires reference number?
      */
     public function requiresReference(): bool
     {
-        return $this === self::UPI;
+        return in_array($this, [self::UPI, self::BANK_TRANSFER]);
     }
 
     /**
-     * Get instruction for payment.
+     * Payment instruction.
      */
     public function instruction(): string
     {
         return match ($this) {
-            self::CASH => 'Please pay the worker in cash upon completion',
-            self::UPI => 'Transfer payment via UPI to the worker',
-            self::OTHER => 'Arrange payment with the worker',
+            self::CASH => 'Pay in cash',
+            self::UPI => 'Transfer via UPI',
+            self::BANK_TRANSFER => 'Transfer to bank account',
+            self::OTHER => 'Arrange payment as agreed',
         };
     }
 
     /**
-     * Get instruction in Malayalam.
+     * Malayalam instruction.
      */
     public function instructionMl(): string
     {
         return match ($this) {
-            self::CASH => 'പണി കഴിഞ്ഞാൽ പണം കൊടുക്കുക',
-            self::UPI => 'UPI വഴി പണം അയക്കുക',
-            self::OTHER => 'പണിക്കാരനുമായി പേയ്മെന്റ് ക്രമീകരിക്കുക',
+            self::CASH => 'പണം കൊടുക്കുക',
+            self::UPI => 'UPI വഴി അയക്കുക',
+            self::BANK_TRANSFER => 'ബാങ്ക് അക്കൗണ്ടിലേക്ക് ട്രാൻസ്ഫർ ചെയ്യുക',
+            self::OTHER => 'ധാരണ പ്രകാരം പേയ്മെന്റ് ക്രമീകരിക്കുക',
         };
     }
 
@@ -113,7 +112,7 @@ enum PaymentMethod: string
     {
         return [
             'id' => 'pay_' . $this->value,
-            'title' => substr($this->buttonTitle(), 0, 20),
+            'title' => mb_substr($this->display(), 0, 20),
         ];
     }
 
@@ -126,7 +125,19 @@ enum PaymentMethod: string
     }
 
     /**
-     * Get all values as array.
+     * Get common payment methods as buttons (max 3 for WhatsApp).
+     */
+    public static function commonButtons(): array
+    {
+        return [
+            self::CASH->toButton(),
+            self::UPI->toButton(),
+            self::BANK_TRANSFER->toButton(),
+        ];
+    }
+
+    /**
+     * Get all values.
      */
     public static function values(): array
     {

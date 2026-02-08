@@ -1,9 +1,13 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
- * Agreement direction (from creator's perspective).
+ * Agreement Direction (from creator's perspective).
+ *
+ * @srs-ref FR-AGR-01 Direction: Giving Money / Receiving Money
  */
 enum AgreementDirection: string
 {
@@ -11,18 +15,18 @@ enum AgreementDirection: string
     case RECEIVING = 'receiving';
 
     /**
-     * Get the display label.
+     * Display label.
      */
     public function label(): string
     {
         return match ($this) {
-            self::GIVING => 'I am giving money',
-            self::RECEIVING => 'I am receiving money',
+            self::GIVING => 'Giving Money',
+            self::RECEIVING => 'Receiving Money',
         };
     }
 
     /**
-     * Get short label.
+     * Short label.
      */
     public function shortLabel(): string
     {
@@ -33,29 +37,79 @@ enum AgreementDirection: string
     }
 
     /**
-     * Get Malayalam label.
+     * Malayalam label.
      */
     public function labelMl(): string
     {
         return match ($this) {
-            self::GIVING => 'ഞാൻ പണം നൽകുന്നു',
-            self::RECEIVING => 'ഞാൻ പണം വാങ്ങുന്നു',
+            self::GIVING => 'പണം കൊടുക്കുന്നു',
+            self::RECEIVING => 'പണം വാങ്ങുന്നു',
         };
     }
 
     /**
-     * Get icon.
+     * Icon for direction.
      */
     public function icon(): string
     {
         return match ($this) {
             self::GIVING => '💸',
-            self::RECEIVING => '💵',
+            self::RECEIVING => '📥',
         };
     }
 
     /**
-     * Get the opposite direction.
+     * Arrow for compact list display.
+     * ↗️ = gave (outgoing), ↙️ = received (incoming)
+     */
+    public function arrow(): string
+    {
+        return match ($this) {
+            self::GIVING => '↗️',
+            self::RECEIVING => '↙️',
+        };
+    }
+
+    /**
+     * Get past tense verb.
+     */
+    public function verbPast(): string
+    {
+        return match ($this) {
+            self::GIVING => 'Gave',
+            self::RECEIVING => 'Received',
+        };
+    }
+
+    /**
+     * Get present tense verb.
+     */
+    public function verbPresent(): string
+    {
+        return match ($this) {
+            self::GIVING => 'Give',
+            self::RECEIVING => 'Receive',
+        };
+    }
+
+    /**
+     * Display with icon.
+     */
+    public function displayWithIcon(): string
+    {
+        return $this->icon() . ' ' . $this->label();
+    }
+
+    /**
+     * Display with arrow (for compact lists).
+     */
+    public function displayWithArrow(): string
+    {
+        return $this->arrow() . ' ' . $this->verbPast();
+    }
+
+    /**
+     * Get opposite direction.
      */
     public function opposite(): self
     {
@@ -66,29 +120,37 @@ enum AgreementDirection: string
     }
 
     /**
-     * Get verb for display (past tense).
+     * Is creator the creditor (lender)?
      */
-    public function verbPast(): string
+    public function isCreatorCreditor(): bool
+    {
+        return $this === self::GIVING;
+    }
+
+    /**
+     * Get role label for creator.
+     */
+    public function creatorRole(): string
     {
         return match ($this) {
-            self::GIVING => 'gave',
-            self::RECEIVING => 'received',
+            self::GIVING => 'Creditor (Lender)',
+            self::RECEIVING => 'Debtor (Borrower)',
         };
     }
 
     /**
-     * Get verb for display (present tense).
+     * Get role label for counterparty.
      */
-    public function verbPresent(): string
+    public function counterpartyRole(): string
     {
         return match ($this) {
-            self::GIVING => 'give',
-            self::RECEIVING => 'receive',
+            self::GIVING => 'Debtor (Borrower)',
+            self::RECEIVING => 'Creditor (Lender)',
         };
     }
 
     /**
-     * Get all values as array.
+     * Get all values.
      */
     public static function values(): array
     {
@@ -96,13 +158,19 @@ enum AgreementDirection: string
     }
 
     /**
-     * Get options for WhatsApp buttons.
+     * Convert to WhatsApp buttons.
      */
     public static function toButtons(): array
     {
-        return array_map(fn(self $dir) => [
-            'id' => $dir->value,
-            'title' => substr("{$dir->icon()} {$dir->shortLabel()}", 0, 20),
-        ], self::cases());
+        return [
+            [
+                'id' => self::GIVING->value,
+                'title' => '💸 Giving Money',
+            ],
+            [
+                'id' => self::RECEIVING->value,
+                'title' => '📥 Receiving Money',
+            ],
+        ];
     }
 }

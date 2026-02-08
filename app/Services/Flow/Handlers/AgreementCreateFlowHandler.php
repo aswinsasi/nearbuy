@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Flow\Handlers;
 
 use App\DTOs\IncomingMessage;
@@ -8,17 +10,23 @@ use App\Enums\FlowType;
 use App\Models\ConversationSession;
 use App\Services\Agreements\AgreementService;
 use App\Services\WhatsApp\Messages\AgreementMessages;
-use App\Services\WhatsApp\Messages\MessageTemplates;
 
 /**
- * ENHANCED Agreement Create Flow Handler.
+ * Agreement Create Flow Handler.
  *
- * Key improvements:
- * 1. Uses sendTextWithMenu/sendButtonsWithMenu patterns
- * 2. Better error messages with recovery options
- * 3. Consistent footer on all messages
- * 4. Back/Cancel buttons on every step
- * 5. Better validation feedback
+ * 8-step creation flow with friendly bilingual conversation.
+ *
+ * FLOW (FR-AGR-01 to FR-AGR-08):
+ * 1. Direction → Giving or Receiving
+ * 2. Amount → Numeric input
+ * 3. Name → Counterparty name
+ * 4. Phone → 10-digit WhatsApp
+ * 5. Purpose → 5 types via list
+ * 6. Description → Optional details
+ * 7. Due Date → 5 options via list
+ * 8. Review → Confirm/Edit/Cancel
+ *
+ * @srs-ref FR-AGR-01 to FR-AGR-15
  */
 class AgreementCreateFlowHandler extends AbstractFlowHandler
 {
@@ -37,60 +45,48 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
 
     protected function getSteps(): array
     {
-        return [
-            AgreementStep::ASK_DIRECTION->value,
-            AgreementStep::ASK_AMOUNT->value,
-            AgreementStep::ASK_OTHER_PARTY_NAME->value,
-            AgreementStep::ASK_OTHER_PARTY_PHONE->value,
-            AgreementStep::ASK_PURPOSE->value,
-            AgreementStep::ASK_DESCRIPTION->value,
-            AgreementStep::ASK_DUE_DATE->value,
-            AgreementStep::CONFIRM_CREATE->value,
-            AgreementStep::CREATE_COMPLETE->value,
-        ];
+        return array_map(fn($s) => $s->value, AgreementStep::createFlowSteps());
     }
 
-    /**
-     * Start the flow.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Flow Entry
+    |--------------------------------------------------------------------------
+    */
+
     public function start(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
         if (!$user) {
-            $this->sendButtonsWithMenu(
+            $this->sendButtons(
                 $session->phone,
-                "⚠️ *Registration Required*\n\nPlease register first to create agreements.",
+                "⚠️ *Register cheyyuka*\n\nAgreement undaakkaan munpu register cheyyuka.",
                 [['id' => 'register', 'title' => '📝 Register']]
             );
-            $this->goToMainMenu($session);
+            $this->goToMenu($session);
             return;
         }
 
-        // Clear previous data
-        $this->clearTemp($session);
-
-        $this->sessionManager->setFlowStep(
-            $session,
-            FlowType::AGREEMENT_CREATE,
-            AgreementStep::ASK_DIRECTION->value
-        );
-
+        $this->clearTempData($session);
+        $this->sessionManager->setFlowStep($session, FlowType::AGREEMENT_CREATE, AgreementStep::ASK_DIRECTION->value);
         $this->askDirection($session);
     }
 
-    /**
-     * Handle incoming message.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Message Handler
+    |--------------------------------------------------------------------------
+    */
+
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
-        // Handle common navigation (menu, cancel, back)
+        // Handle navigation
         if ($this->handleCommonNavigation($message, $session)) {
             return;
         }
 
-        // Handle back navigation for this flow
-        if ($this->isBack($message)) {
+        if ($this->isBackButton($message)) {
             $this->handleBack($session);
             return;
         }
@@ -103,109 +99,40 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
         }
 
         match ($step) {
-            AgreementStep::ASK_DIRECTION => $this->handleDirectionSelection($message, $session),
-            AgreementStep::ASK_AMOUNT => $this->handleAmountInput($message, $session),
-            AgreementStep::ASK_OTHER_PARTY_NAME => $this->handleNameInput($message, $session),
-            AgreementStep::ASK_OTHER_PARTY_PHONE => $this->handlePhoneInput($message, $session),
-            AgreementStep::ASK_PURPOSE => $this->handlePurposeSelection($message, $session),
-            AgreementStep::ASK_DESCRIPTION => $this->handleDescriptionInput($message, $session),
-            AgreementStep::ASK_DUE_DATE => $this->handleDueDateSelection($message, $session),
-            AgreementStep::CONFIRM_CREATE => $this->handleConfirmation($message, $session),
-            AgreementStep::CREATE_COMPLETE => $this->handlePostCreate($message, $session),
+            AgreementStep::ASK_DIRECTION => $this->handleDirection($message, $session),
+            AgreementStep::ASK_AMOUNT => $this->handleAmount($message, $session),
+            AgreementStep::ASK_NAME => $this->handleName($message, $session),
+            AgreementStep::ASK_PHONE => $this->handlePhone($message, $session),
+            AgreementStep::ASK_PURPOSE => $this->handlePurpose($message, $session),
+            AgreementStep::ASK_DESCRIPTION => $this->handleDescription($message, $session),
+            AgreementStep::ASK_DUE_DATE => $this->handleDueDate($message, $session),
+            AgreementStep::REVIEW => $this->handleReview($message, $session),
+            AgreementStep::DONE => $this->handlePostCreate($message, $session),
             default => $this->start($session),
         };
     }
 
-    /**
-     * Handle invalid input.
-     */
     public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
     {
-        $step = AgreementStep::tryFrom($session->current_step);
-
-        match ($step) {
-            AgreementStep::ASK_DIRECTION => $this->askDirection($session, true),
-            AgreementStep::ASK_AMOUNT => $this->askAmount($session, true),
-            AgreementStep::ASK_OTHER_PARTY_NAME => $this->askName($session, true),
-            AgreementStep::ASK_OTHER_PARTY_PHONE => $this->askPhone($session, true),
-            AgreementStep::ASK_PURPOSE => $this->askPurpose($session, true),
-            AgreementStep::ASK_DUE_DATE => $this->askDueDate($session, true),
-            AgreementStep::CONFIRM_CREATE => $this->askConfirmation($session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Get expected input type.
-     */
-    protected function getExpectedInputType(string $step): string
-    {
-        return match ($step) {
-            AgreementStep::ASK_DIRECTION->value => 'button',
-            AgreementStep::ASK_AMOUNT->value => 'text',
-            AgreementStep::ASK_OTHER_PARTY_NAME->value => 'text',
-            AgreementStep::ASK_OTHER_PARTY_PHONE->value => 'phone',
-            AgreementStep::ASK_PURPOSE->value => 'list',
-            AgreementStep::ASK_DESCRIPTION->value => 'text',
-            AgreementStep::ASK_DUE_DATE->value => 'list',
-            AgreementStep::CONFIRM_CREATE->value => 'button',
-            default => 'text',
-        };
-    }
-
-    /**
-     * Re-prompt current step.
-     */
-    protected function promptCurrentStep(ConversationSession $session): void
-    {
-        $step = AgreementStep::tryFrom($session->current_step);
-
-        match ($step) {
-            AgreementStep::ASK_DIRECTION => $this->askDirection($session),
-            AgreementStep::ASK_AMOUNT => $this->askAmount($session),
-            AgreementStep::ASK_OTHER_PARTY_NAME => $this->askName($session),
-            AgreementStep::ASK_OTHER_PARTY_PHONE => $this->askPhone($session),
-            AgreementStep::ASK_PURPOSE => $this->askPurpose($session),
-            AgreementStep::ASK_DESCRIPTION => $this->askDescription($session),
-            AgreementStep::ASK_DUE_DATE => $this->askDueDate($session),
-            AgreementStep::CONFIRM_CREATE => $this->askConfirmation($session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Handle back navigation.
-     */
-    protected function handleBack(ConversationSession $session): void
-    {
-        $step = AgreementStep::tryFrom($session->current_step);
-
-        $previousStep = match ($step) {
-            AgreementStep::ASK_AMOUNT => AgreementStep::ASK_DIRECTION,
-            AgreementStep::ASK_OTHER_PARTY_NAME => AgreementStep::ASK_AMOUNT,
-            AgreementStep::ASK_OTHER_PARTY_PHONE => AgreementStep::ASK_OTHER_PARTY_NAME,
-            AgreementStep::ASK_PURPOSE => AgreementStep::ASK_OTHER_PARTY_PHONE,
-            AgreementStep::ASK_DESCRIPTION => AgreementStep::ASK_PURPOSE,
-            AgreementStep::ASK_DUE_DATE => AgreementStep::ASK_DESCRIPTION,
-            AgreementStep::CONFIRM_CREATE => AgreementStep::ASK_DUE_DATE,
-            default => null,
-        };
-
-        if ($previousStep) {
-            $this->nextStep($session, $previousStep->value);
-            $this->promptCurrentStep($session);
-        } else {
-            $this->start($session);
-        }
+        $this->promptCurrentStep($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step Handlers
+    | Step 1: Direction (FR-AGR-01)
     |--------------------------------------------------------------------------
     */
 
-    protected function handleDirectionSelection(IncomingMessage $message, ConversationSession $session): void
+    protected function askDirection(ConversationSession $session): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            AgreementMessages::ASK_DIRECTION,
+            AgreementMessages::getDirectionButtons()
+        );
+    }
+
+    protected function handleDirection(IncomingMessage $message, ConversationSession $session): void
     {
         $direction = null;
 
@@ -213,129 +140,165 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
             $direction = $this->getSelectionId($message);
         } elseif ($message->isText()) {
             $text = strtolower(trim($message->text ?? ''));
-            if (str_contains($text, 'giving') || str_contains($text, 'give') || $text === '1') {
+            if (str_contains($text, 'giv') || str_contains($text, 'koduk')) {
                 $direction = 'giving';
-            } elseif (str_contains($text, 'receiving') || str_contains($text, 'receive') || $text === '2') {
+            } elseif (str_contains($text, 'receiv') || str_contains($text, 'vaang')) {
                 $direction = 'receiving';
             }
         }
 
         if (!in_array($direction, ['giving', 'receiving'])) {
-            $this->handleInvalidInput($message, $session);
+            $this->askDirection($session);
             return;
         }
 
-        $this->setTemp($session, 'direction', $direction);
-        $this->nextStep($session, AgreementStep::ASK_AMOUNT->value);
+        $this->setTempData($session, 'direction', $direction);
+        $this->goToStep($session, AgreementStep::ASK_AMOUNT);
         $this->askAmount($session);
     }
 
-    protected function handleAmountInput(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 2: Amount (FR-AGR-02)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askAmount(ConversationSession $session): void
+    {
+        $direction = $this->getTempData($session, 'direction');
+        $dirText = $direction === 'giving' ? 'kodukkunnu' : 'vaangunnu';
+
+        $msg = "💰 *Ethra amount?*\n\n" .
+            "Nee *{$dirText}*.\n\n" .
+            "Amount type cheyyuka:\n" .
+            "_Eg: 20000_";
+
+        $this->sendButtons($session->phone, $msg, [
+            ['id' => 'back', 'title' => '⬅️ Back'],
+        ]);
+    }
+
+    protected function handleAmount(IncomingMessage $message, ConversationSession $session): void
     {
         if (!$message->isText()) {
-            $this->handleInvalidInput($message, $session);
+            $this->askAmount($session);
             return;
         }
 
-        $input = trim($message->text ?? '');
+        $input = preg_replace('/[₹,\s]/', '', $message->text ?? '');
 
-        // Remove currency symbols and commas
-        $cleaned = preg_replace('/[₹,\s]/', '', $input);
-
-        $amount = $this->validateAmount($cleaned);
-        if ($amount === null) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "⚠️ *Invalid Amount*\n\n" .
-                "Please enter a valid amount (numbers only).\n\n" .
-                "_Example: 25000_\n" .
-                "_Range: ₹1 to ₹10 Crore_",
-                [
-                    ['id' => 'back', 'title' => '⬅️ Back'],
-                    self::MENU_BUTTON,
-                ]
-            );
+        if (!$this->agreementService->isValidAmount($input)) {
+            $this->sendText($session->phone, AgreementMessages::ERROR_INVALID_AMOUNT);
             return;
         }
 
-        $this->setTemp($session, 'amount', $amount);
-        $this->nextStep($session, AgreementStep::ASK_OTHER_PARTY_NAME->value);
+        $this->setTempData($session, 'amount', (float) $input);
+        $this->goToStep($session, AgreementStep::ASK_NAME);
         $this->askName($session);
     }
 
-    protected function handleNameInput(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 3: Name (FR-AGR-03)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askName(ConversationSession $session): void
+    {
+        $direction = $this->getTempData($session, 'direction');
+        $otherRole = $direction === 'giving' ? 'kittunnathu' : 'thararuthu';
+
+        $msg = "👤 *Aarude koode?*\n\n" .
+            "Aaraanu {$otherRole}? Full name type cheyyuka:";
+
+        $this->sendButtons($session->phone, $msg, [
+            ['id' => 'back', 'title' => '⬅️ Back'],
+        ]);
+    }
+
+    protected function handleName(IncomingMessage $message, ConversationSession $session): void
     {
         if (!$message->isText()) {
-            $this->handleInvalidInput($message, $session);
+            $this->askName($session);
             return;
         }
 
         $name = trim($message->text ?? '');
 
-        if (!$this->validateName($name)) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "⚠️ *Invalid Name*\n\nPlease enter a valid name (2-100 characters).",
-                [
-                    ['id' => 'back', 'title' => '⬅️ Back'],
-                    self::MENU_BUTTON,
-                ]
-            );
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 100) {
+            $this->sendText($session->phone, AgreementMessages::ERROR_INVALID_NAME);
             return;
         }
 
-        $this->setTemp($session, 'other_party_name', $name);
-        $this->nextStep($session, AgreementStep::ASK_OTHER_PARTY_PHONE->value);
+        $this->setTempData($session, 'other_party_name', $name);
+        $this->goToStep($session, AgreementStep::ASK_PHONE);
         $this->askPhone($session);
     }
 
-    protected function handlePhoneInput(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 4: Phone (FR-AGR-04)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askPhone(ConversationSession $session): void
+    {
+        $name = $this->getTempData($session, 'other_party_name');
+
+        $msg = AgreementMessages::format(AgreementMessages::ASK_PHONE, [
+            'name' => $name,
+        ]);
+
+        $this->sendButtons($session->phone, $msg, [
+            ['id' => 'back', 'title' => '⬅️ Back'],
+        ]);
+    }
+
+    protected function handlePhone(IncomingMessage $message, ConversationSession $session): void
     {
         if (!$message->isText()) {
-            $this->handleInvalidInput($message, $session);
+            $this->askPhone($session);
             return;
         }
 
         $phone = trim($message->text ?? '');
 
-        if (!$this->validatePhone($phone)) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "⚠️ *Invalid Phone Number*\n\n" .
-                "Please enter a valid 10-digit mobile number.\n\n" .
-                "_Example: 9876543210_",
-                [
-                    ['id' => 'back', 'title' => '⬅️ Back'],
-                    self::MENU_BUTTON,
-                ]
-            );
+        if (!$this->agreementService->isValidPhone($phone)) {
+            $this->sendText($session->phone, AgreementMessages::ERROR_INVALID_PHONE);
             return;
         }
 
-        // Check for self-agreement
+        // Check self-agreement
         $user = $this->getUser($session);
-        $normalizedPhone = $this->normalizePhone($phone);
+        $normalized = $this->agreementService->normalizePhone($phone);
 
-        if ($normalizedPhone === $user->phone) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "⚠️ *Cannot Create Self-Agreement*\n\n" .
-                "You cannot create an agreement with yourself.\n" .
-                "Please enter the other person's phone number.",
-                [
-                    ['id' => 'back', 'title' => '⬅️ Back'],
-                    self::MENU_BUTTON,
-                ]
-            );
+        if ($normalized === $user->phone) {
+            $this->sendText($session->phone, AgreementMessages::ERROR_SELF_AGREEMENT);
             return;
         }
 
-        $this->setTemp($session, 'other_party_phone', $phone);
-        $this->nextStep($session, AgreementStep::ASK_PURPOSE->value);
+        $this->setTempData($session, 'other_party_phone', $phone);
+        $this->goToStep($session, AgreementStep::ASK_PURPOSE);
         $this->askPurpose($session);
     }
 
-    protected function handlePurposeSelection(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 5: Purpose (FR-AGR-05)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askPurpose(ConversationSession $session): void
+    {
+        $this->sendList(
+            $session->phone,
+            AgreementMessages::ASK_PURPOSE,
+            '📋 Select Purpose',
+            AgreementMessages::getPurposeSections()
+        );
+    }
+
+    protected function handlePurpose(IncomingMessage $message, ConversationSession $session): void
     {
         $purpose = null;
 
@@ -346,79 +309,133 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
             $purpose = $this->matchPurpose($text);
         }
 
-        $validPurposes = ['loan', 'advance', 'deposit', 'business', 'personal', 'other'];
-        if (!in_array($purpose, $validPurposes)) {
-            $this->handleInvalidInput($message, $session);
+        $valid = ['loan', 'advance', 'deposit', 'business', 'other'];
+        if (!in_array($purpose, $valid)) {
+            $this->askPurpose($session);
             return;
         }
 
-        $this->setTemp($session, 'purpose', $purpose);
-        $this->nextStep($session, AgreementStep::ASK_DESCRIPTION->value);
+        $this->setTempData($session, 'purpose', $purpose);
+        $this->goToStep($session, AgreementStep::ASK_DESCRIPTION);
         $this->askDescription($session);
     }
 
-    protected function handleDescriptionInput(IncomingMessage $message, ConversationSession $session): void
-    {
-        $description = null;
+    /*
+    |--------------------------------------------------------------------------
+    | Step 6: Description (FR-AGR-06)
+    |--------------------------------------------------------------------------
+    */
 
-        // Check for skip button
-        if ($this->isSkip($message)) {
-            $this->setTemp($session, 'description', null);
-            $this->nextStep($session, AgreementStep::ASK_DUE_DATE->value);
+    protected function askDescription(ConversationSession $session): void
+    {
+        $purpose = $this->getTempData($session, 'purpose');
+        $hint = AgreementMessages::getDescriptionHint($purpose);
+
+        $msg = AgreementMessages::format(AgreementMessages::ASK_DESCRIPTION, [
+            'hint' => $hint,
+        ]);
+
+        $this->sendButtons($session->phone, $msg, AgreementMessages::getSkipButtons());
+    }
+
+    protected function handleDescription(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Handle skip
+        if ($this->isSkipButton($message) || 
+            ($message->isText() && strtolower(trim($message->text ?? '')) === 'skip')) {
+            $this->setTempData($session, 'description', null);
+            $this->goToStep($session, AgreementStep::ASK_DUE_DATE);
             $this->askDueDate($session);
             return;
         }
 
         if ($message->isText()) {
-            $text = trim($message->text ?? '');
-
-            if (strtolower($text) !== 'skip' && mb_strlen($text) > 0) {
-                if (mb_strlen($text) > 500) {
-                    $this->sendErrorWithOptions(
-                        $session->phone,
-                        "⚠️ *Too Long*\n\nDescription must be under 500 characters.\n\nYours is " . mb_strlen($text) . " characters.",
-                        [
-                            ['id' => 'skip', 'title' => '⏭️ Skip'],
-                            ['id' => 'back', 'title' => '⬅️ Back'],
-                        ]
-                    );
-                    return;
-                }
-                $description = $text;
+            $desc = trim($message->text ?? '');
+            if (mb_strlen($desc) > 500) {
+                $this->sendText($session->phone, "⚠️ 500 characters-ൽ kuravakkanam.");
+                return;
             }
+            $this->setTempData($session, 'description', $desc);
         }
 
-        $this->setTemp($session, 'description', $description);
-        $this->nextStep($session, AgreementStep::ASK_DUE_DATE->value);
+        $this->goToStep($session, AgreementStep::ASK_DUE_DATE);
         $this->askDueDate($session);
     }
 
-    protected function handleDueDateSelection(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 7: Due Date (FR-AGR-07)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askDueDate(ConversationSession $session): void
+    {
+        $this->sendList(
+            $session->phone,
+            AgreementMessages::ASK_DUE_DATE,
+            '📅 Select Due Date',
+            AgreementMessages::getDueDateSections()
+        );
+    }
+
+    protected function handleDueDate(IncomingMessage $message, ConversationSession $session): void
     {
         $selection = null;
 
         if ($message->isListReply()) {
             $selection = $this->getSelectionId($message);
         } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            $selection = $this->matchDueDate($text);
+            $selection = $this->matchDueDate(strtolower(trim($message->text ?? '')));
         }
 
-        $validSelections = ['1week', '2weeks', '1month', '3months', '6months', 'none'];
-        if (!in_array($selection, $validSelections)) {
-            $this->handleInvalidInput($message, $session);
+        $valid = ['1week', '2weeks', '1month', '3months', 'none'];
+        if (!in_array($selection, $valid)) {
+            $this->askDueDate($session);
             return;
         }
 
         $dueDate = AgreementMessages::getDueDateFromSelection($selection);
-        $this->setTemp($session, 'due_date', $dueDate?->toDateString());
-        $this->setTemp($session, 'due_date_selection', $selection);
+        $this->setTempData($session, 'due_date', $dueDate?->toDateString());
+        $this->setTempData($session, 'due_date_selection', $selection);
 
-        $this->nextStep($session, AgreementStep::CONFIRM_CREATE->value);
-        $this->askConfirmation($session);
+        $this->goToStep($session, AgreementStep::REVIEW);
+        $this->showReview($session);
     }
 
-    protected function handleConfirmation(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 8: Review (FR-AGR-08)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function showReview(ConversationSession $session): void
+    {
+        $direction = $this->getTempData($session, 'direction');
+        $amount = $this->getTempData($session, 'amount');
+        $name = $this->getTempData($session, 'other_party_name');
+        $phone = $this->getTempData($session, 'other_party_phone');
+        $purpose = $this->getTempData($session, 'purpose');
+        $description = $this->getTempData($session, 'description');
+        $dueDateSelection = $this->getTempData($session, 'due_date_selection');
+
+        $dueDate = AgreementMessages::getDueDateFromSelection($dueDateSelection ?? 'none');
+
+        $msg = AgreementMessages::format(AgreementMessages::REVIEW, [
+            'direction_icon' => AgreementMessages::getDirectionIcon($direction),
+            'direction_text' => AgreementMessages::getDirectionText($direction),
+            'amount' => number_format((float) $amount),
+            'arrow' => AgreementMessages::getDirectionArrow($direction),
+            'name' => $name,
+            'phone' => $phone,
+            'purpose' => AgreementMessages::getPurposeLabel($purpose),
+            'description' => $description ?? 'None',
+            'due_date' => AgreementMessages::formatDueDate($dueDate),
+        ]);
+
+        $this->sendButtons($session->phone, $msg, AgreementMessages::getReviewButtons());
+    }
+
+    protected function handleReview(IncomingMessage $message, ConversationSession $session): void
     {
         $action = null;
 
@@ -426,204 +443,26 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
             $action = $this->getSelectionId($message);
         } elseif ($message->isText()) {
             $text = strtolower(trim($message->text ?? ''));
-            if (in_array($text, ['confirm', 'create', 'yes', '1'])) {
+            if (in_array($text, ['confirm', 'yes', 'sheri', '1'])) {
                 $action = 'confirm';
             } elseif (in_array($text, ['edit', 'change', '2'])) {
                 $action = 'edit';
-            } elseif (in_array($text, ['cancel', 'no', '3'])) {
+            } elseif (in_array($text, ['cancel', 'no', 'venda', '3'])) {
                 $action = 'cancel';
             }
         }
 
         match ($action) {
             'confirm' => $this->createAgreement($session),
-            'edit' => $this->restartCreation($session),
-            'cancel' => $this->cancelCreation($session),
-            default => $this->handleInvalidInput($message, $session),
-        };
-    }
-
-    protected function handlePostCreate(IncomingMessage $message, ConversationSession $session): void
-    {
-        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
-
-        match ($action) {
-            'view_agreement' => $this->showAgreement($session),
-            'create_another' => $this->start($session),
-            default => $this->goToMainMenu($session),
+            'edit' => $this->restart($session),
+            'cancel' => $this->cancel($session),
+            default => $this->showReview($session),
         };
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Prompt Methods
-    |--------------------------------------------------------------------------
-    */
-
-    protected function askDirection(ConversationSession $session, bool $isRetry = false): void
-    {
-        $intro = $isRetry ? "" : "📋 *Create Digital Agreement*\n\n" .
-            "Record a financial agreement with someone.\n" .
-            "Both parties confirm → PDF generated.\n\n";
-
-        $message = $intro . "💱 *Transaction Direction*\n\nAre you giving or receiving money?";
-
-        $this->sendButtonsWithBackAndMenu(
-            $session->phone,
-            $message,
-            [
-                ['id' => 'giving', 'title' => '💸 Giving Money'],
-                ['id' => 'receiving', 'title' => '💰 Receiving'],
-            ],
-            '📝 New Agreement'
-        );
-    }
-
-    protected function askAmount(ConversationSession $session, bool $isRetry = false): void
-    {
-        $direction = $this->getTemp($session, 'direction');
-        $directionLabel = $direction === 'giving' ? 'giving' : 'receiving';
-
-        $message = $isRetry
-            ? "⚠️ Please enter a valid amount (numbers only)."
-            : "💰 *Enter Amount*\n\n" .
-              "You are *{$directionLabel}* money.\n\n" .
-              "Enter the amount in rupees:\n\n" .
-              "_Example: 25000_";
-
-        $this->sendButtonsWithBackAndMenu(
-            $session->phone,
-            $message,
-            [], // No action buttons, just back and menu
-            '💰 Amount'
-        );
-    }
-
-    protected function askName(ConversationSession $session, bool $isRetry = false): void
-    {
-        $direction = $this->getTemp($session, 'direction');
-        $otherPartyRole = $direction === 'giving' ? 'receiving from you' : 'giving to you';
-
-        $message = $isRetry
-            ? "⚠️ Please enter a valid name (2-100 characters)."
-            : "👤 *Other Party's Name*\n\n" .
-              "Who is {$otherPartyRole}?\n\n" .
-              "Enter their full name:";
-
-        $this->sendButtonsWithBackAndMenu(
-            $session->phone,
-            $message,
-            [],
-            '👤 Name'
-        );
-    }
-
-    protected function askPhone(ConversationSession $session, bool $isRetry = false): void
-    {
-        $name = $this->getTemp($session, 'other_party_name');
-
-        $message = $isRetry
-            ? "⚠️ Please enter a valid 10-digit mobile number.\n\n_Example: 9876543210_"
-            : "📱 *{$name}'s WhatsApp Number*\n\n" .
-              "Enter their 10-digit mobile number:\n\n" .
-              "_Example: 9876543210_\n\n" .
-              "⚠️ They will receive a confirmation request.";
-
-        $this->sendButtonsWithBackAndMenu(
-            $session->phone,
-            $message,
-            [],
-            '📱 Phone'
-        );
-    }
-
-    protected function askPurpose(ConversationSession $session, bool $isRetry = false): void
-    {
-        $message = $isRetry
-            ? "Please select a purpose from the list."
-            : "📝 *Purpose of Agreement*\n\nWhat is this transaction for?";
-
-        $this->sendListWithFooter(
-            $session->phone,
-            $message,
-            '📝 Select Purpose',
-            AgreementMessages::getPurposeSections(),
-            '📝 Purpose'
-        );
-    }
-
-    protected function askDescription(ConversationSession $session): void
-    {
-        $this->sendButtons(
-            $session->phone,
-            "📄 *Description (Optional)*\n\n" .
-            "Add any notes about this agreement.\n\n" .
-            "_Example: \"For home repair work\" or \"Monthly installment 1 of 3\"_\n\n" .
-            "Type your description or tap Skip:",
-            [
-                ['id' => 'skip', 'title' => '⏭️ Skip'],
-                ['id' => 'back', 'title' => '⬅️ Back'],
-                self::MENU_BUTTON,
-            ],
-            '📄 Description',
-            MessageTemplates::GLOBAL_FOOTER
-        );
-    }
-
-    protected function askDueDate(ConversationSession $session, bool $isRetry = false): void
-    {
-        $message = $isRetry
-            ? "Please select a due date from the list."
-            : "📅 *Due Date*\n\nWhen should this be settled?";
-
-        $this->sendListWithFooter(
-            $session->phone,
-            $message,
-            '📅 Select Due Date',
-            AgreementMessages::getDueDateSections(),
-            '📅 Due Date'
-        );
-    }
-
-    protected function askConfirmation(ConversationSession $session): void
-    {
-        $direction = $this->getTemp($session, 'direction');
-        $amount = $this->getTemp($session, 'amount');
-        $name = $this->getTemp($session, 'other_party_name');
-        $phone = $this->getTemp($session, 'other_party_phone');
-        $purpose = $this->getTemp($session, 'purpose');
-        $description = $this->getTemp($session, 'description');
-        $dueDateSelection = $this->getTemp($session, 'due_date_selection');
-
-        $dueDate = AgreementMessages::getDueDateFromSelection($dueDateSelection);
-
-        $message = "📋 *Review Your Agreement*\n\n" .
-            AgreementMessages::getDirectionEmoji($direction) . 
-            " *" . AgreementMessages::getDirectionLabel($direction) . "*\n\n" .
-            "👤 *Other Party:* {$name}\n" .
-            "📱 *Phone:* {$phone}\n\n" .
-            "💰 *Amount:* ₹" . number_format($amount) . "\n" .
-            "📝 *Purpose:* " . AgreementMessages::getPurposeLabel($purpose) . "\n" .
-            "📅 *Due Date:* " . AgreementMessages::formatDueDate($dueDate) . "\n" .
-            "📄 *Description:* " . ($description ?? 'None') . "\n\n" .
-            "✅ *Is this correct?*";
-
-        $this->sendButtons(
-            $session->phone,
-            $message,
-            [
-                ['id' => 'confirm', 'title' => '✅ Create Agreement'],
-                ['id' => 'edit', 'title' => '✏️ Edit'],
-                ['id' => 'cancel', 'title' => '❌ Cancel'],
-            ],
-            '📋 Confirm',
-            MessageTemplates::GLOBAL_FOOTER
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Action Methods
+    | Create Agreement
     |--------------------------------------------------------------------------
     */
 
@@ -632,152 +471,189 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
         try {
             $user = $this->getUser($session);
 
-            $dueDateString = $this->getTemp($session, 'due_date');
+            $dueDateString = $this->getTempData($session, 'due_date');
             $dueDate = $dueDateString ? \Carbon\Carbon::parse($dueDateString) : null;
 
             $agreement = $this->agreementService->createAgreement($user, [
-                'direction' => $this->getTemp($session, 'direction'),
-                'amount' => $this->getTemp($session, 'amount'),
-                'other_party_name' => $this->getTemp($session, 'other_party_name'),
-                'other_party_phone' => $this->getTemp($session, 'other_party_phone'),
-                'purpose' => $this->getTemp($session, 'purpose'),
-                'description' => $this->getTemp($session, 'description'),
+                'direction' => $this->getTempData($session, 'direction'),
+                'amount' => $this->getTempData($session, 'amount'),
+                'other_party_name' => $this->getTempData($session, 'other_party_name'),
+                'other_party_phone' => $this->getTempData($session, 'other_party_phone'),
+                'purpose' => $this->getTempData($session, 'purpose'),
+                'description' => $this->getTempData($session, 'description'),
                 'due_date' => $dueDate,
             ]);
 
-            // Store agreement ID
-            $this->setTemp($session, 'created_agreement_id', $agreement->id);
+            $this->setTempData($session, 'created_agreement_id', $agreement->id);
 
-            // Send success message
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                "🎉 *Agreement Created!*\n\n" .
-                "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
-                "📤 Confirmation request sent to:\n" .
-                "👤 *{$agreement->to_name}*\n" .
-                "📱 {$agreement->to_phone}\n\n" .
-                "⏳ Waiting for their confirmation...\n\n" .
-                "_Once confirmed, you'll both receive a PDF document._",
-                [
-                    ['id' => 'create_another', 'title' => '➕ Create Another'],
-                    ['id' => 'my_agreements', 'title' => '📋 My Agreements'],
-                ],
-                '✅ Created'
-            );
+            // Success message
+            $direction = $this->getTempData($session, 'direction');
+            $dirText = $direction === 'giving' ? '→' : '←';
+
+            $msg = AgreementMessages::format(AgreementMessages::CREATED, [
+                'agreement_number' => $agreement->agreement_number,
+                'amount' => number_format((float) $agreement->amount),
+                'direction' => $dirText,
+                'name' => $agreement->to_name,
+            ]);
+
+            $this->sendButtons($session->phone, $msg, AgreementMessages::getPostCreateButtons());
 
             // Send confirmation request to counterparty
             $this->sendConfirmationRequest($agreement);
 
-            $this->nextStep($session, AgreementStep::CREATE_COMPLETE->value);
+            $this->goToStep($session, AgreementStep::DONE);
 
-            $this->logInfo('Agreement created via flow', [
+            $this->logInfo('Agreement created', [
                 'agreement_id' => $agreement->id,
                 'agreement_number' => $agreement->agreement_number,
             ]);
 
         } catch (\Exception $e) {
-            $this->logError('Failed to create agreement', ['error' => $e->getMessage()]);
-
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ *Creation Failed*\n\n" . $e->getMessage() . "\n\nPlease try again.",
-                [
-                    ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
-                ]
-            );
-
+            $this->logError('Agreement creation failed', ['error' => $e->getMessage()]);
+            $this->sendText($session->phone, "❌ *Error:* {$e->getMessage()}\n\nVeendum try cheyyuka.");
             $this->start($session);
         }
     }
 
+    /**
+     * Send confirmation request to counterparty (FR-AGR-12).
+     */
     protected function sendConfirmationRequest($agreement): void
     {
         $creator = $agreement->creator;
-        $direction = $agreement->direction->value ?? 'giving';
+        $direction = $agreement->direction ?? 'giving';
 
         // Invert direction for counterparty perspective
         $counterpartyDirection = $direction === 'giving' ? 'receiving' : 'giving';
 
-        // Get purpose value
-        $purposeValue = is_object($agreement->purpose_type) 
-            ? $agreement->purpose_type->value 
-            : ($agreement->purpose_type ?? $agreement->purpose ?? 'other');
+        $purpose = is_object($agreement->purpose_type)
+            ? $agreement->purpose_type->value
+            : ($agreement->purpose_type ?? 'other');
 
-        $message = "📋 *Agreement Confirmation Request*\n\n" .
-            "*{$creator->name}* wants to record this agreement with you:\n\n" .
-            AgreementMessages::getDirectionEmoji($counterpartyDirection) . 
-            " *" . AgreementMessages::getDirectionLabel($counterpartyDirection, false) . "*\n\n" .
-            "💰 *Amount:* ₹" . number_format($agreement->amount) . "\n" .
-            "📝 *Purpose:* " . AgreementMessages::getPurposeLabel($purposeValue) . "\n" .
-            "📅 *Due Date:* " . AgreementMessages::formatDueDate($agreement->due_date) . "\n" .
-            "📄 *Description:* " . ($agreement->description ?? 'None') . "\n\n" .
-            "📋 Agreement #: *{$agreement->agreement_number}*\n\n" .
-            "⚠️ *Is this correct?*";
+        $dueDate = $agreement->due_date 
+            ? \Carbon\Carbon::parse($agreement->due_date) 
+            : null;
 
-        // *** FIX: Set up recipient's session for confirmation flow ***
+        $msg = AgreementMessages::format(AgreementMessages::CONFIRM_REQUEST, [
+            'creator_name' => $creator->name ?? 'Someone',
+            'direction_icon' => AgreementMessages::getDirectionIcon($counterpartyDirection, false),
+            'direction_text' => AgreementMessages::getDirectionText($counterpartyDirection, false),
+            'amount' => number_format((float) $agreement->amount),
+            'purpose' => AgreementMessages::getPurposeLabel($purpose),
+            'description' => $agreement->description ?? 'None',
+            'due_date' => AgreementMessages::formatDueDate($dueDate),
+            'agreement_number' => $agreement->agreement_number,
+        ]);
+
+        // Set up recipient's session for confirmation flow
         $recipientSession = $this->sessionManager->getOrCreate($agreement->to_phone);
         $this->sessionManager->setFlowStep(
             $recipientSession,
             FlowType::AGREEMENT_CONFIRM,
-            AgreementStep::CONFIRM_AGREEMENT->value
+            AgreementStep::AWAITING_CONFIRM->value
         );
-        $this->setTemp($recipientSession, 'confirm_agreement_id', $agreement->id);
+        $this->setTempData($recipientSession, 'confirm_agreement_id', $agreement->id);
 
-        $this->sendButtons(
-            $agreement->to_phone,
-            $message,
-            [
-                ['id' => 'confirm', 'title' => '✅ Yes, Confirm'],
-                ['id' => 'reject', 'title' => '❌ No, Incorrect'],
-                ['id' => 'unknown', 'title' => "❓ Don't Know"],
-            ],
-            '📋 Confirm Agreement',
-            MessageTemplates::GLOBAL_FOOTER
-        );
-    }
-
-    protected function showAgreement(ConversationSession $session): void
-    {
-        $this->goToFlow($session, FlowType::AGREEMENT_LIST, AgreementStep::SHOW_LIST->value);
-        app(\App\Services\Flow\FlowRouter::class)->startFlow($session, FlowType::AGREEMENT_LIST);
-    }
-
-    protected function restartCreation(ConversationSession $session): void
-    {
-        $this->sendTextWithMenu($session->phone, "🔄 Let's start over with your agreement.");
-        $this->start($session);
-    }
-
-    protected function cancelCreation(ConversationSession $session): void
-    {
-        $this->clearTemp($session);
-        $this->sendTextWithMenu($session->phone, "❌ *Agreement Cancelled*\n\nNo agreement was created.");
-        $this->goToMainMenu($session);
+        $this->sendButtons($agreement->to_phone, $msg, AgreementMessages::getConfirmButtons());
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Helper Methods
+    | Post-Create Handler
+    |--------------------------------------------------------------------------
+    */
+
+    protected function handlePostCreate(IncomingMessage $message, ConversationSession $session): void
+    {
+        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
+
+        match ($action) {
+            'view' => $this->viewCreatedAgreement($session),
+            'another' => $this->start($session),
+            default => $this->goToMenu($session),
+        };
+    }
+
+    protected function viewCreatedAgreement(ConversationSession $session): void
+    {
+        // Switch to agreement list flow
+        $this->goToFlow($session, FlowType::AGREEMENT_LIST, AgreementStep::MY_LIST->value);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Navigation
+    |--------------------------------------------------------------------------
+    */
+
+    protected function handleBack(ConversationSession $session): void
+    {
+        $step = AgreementStep::tryFrom($session->current_step);
+        $prev = $step?->previousStep();
+
+        if ($prev) {
+            $this->goToStep($session, $prev);
+            $this->promptCurrentStep($session);
+        } else {
+            $this->start($session);
+        }
+    }
+
+    protected function restart(ConversationSession $session): void
+    {
+        $this->sendText($session->phone, "🔄 Veendum thudangaam...");
+        $this->start($session);
+    }
+
+    protected function cancel(ConversationSession $session): void
+    {
+        $this->clearTempData($session);
+        $this->sendText($session->phone, "❌ *Cancelled*\n\nAgreement undaakkiyilla.");
+        $this->goToMenu($session);
+    }
+
+    protected function promptCurrentStep(ConversationSession $session): void
+    {
+        $step = AgreementStep::tryFrom($session->current_step);
+
+        match ($step) {
+            AgreementStep::ASK_DIRECTION => $this->askDirection($session),
+            AgreementStep::ASK_AMOUNT => $this->askAmount($session),
+            AgreementStep::ASK_NAME => $this->askName($session),
+            AgreementStep::ASK_PHONE => $this->askPhone($session),
+            AgreementStep::ASK_PURPOSE => $this->askPurpose($session),
+            AgreementStep::ASK_DESCRIPTION => $this->askDescription($session),
+            AgreementStep::ASK_DUE_DATE => $this->askDueDate($session),
+            AgreementStep::REVIEW => $this->showReview($session),
+            default => $this->start($session),
+        };
+    }
+
+    protected function goToStep(ConversationSession $session, AgreementStep $step): void
+    {
+        $this->sessionManager->setFlowStep($session, FlowType::AGREEMENT_CREATE, $step->value);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers
     |--------------------------------------------------------------------------
     */
 
     protected function matchPurpose(string $text): ?string
     {
         $map = [
-            'loan' => ['loan', 'lend', 'borrow'],
-            'advance' => ['advance', 'salary'],
-            'deposit' => ['deposit', 'security', 'rent'],
-            'business' => ['business', 'work', 'trade'],
-            'personal' => ['personal', 'friend', 'family'],
-            'other' => ['other'],
+            'loan' => ['loan', 'lend', 'vaaypa', 'kadam'],
+            'advance' => ['advance', 'salary', 'pani'],
+            'deposit' => ['deposit', 'rent', 'vaadaka', 'booking'],
+            'business' => ['business', 'supplier', 'vendor'],
+            'other' => ['other', 'mattullava'],
         ];
 
         foreach ($map as $purpose => $keywords) {
-            foreach ($keywords as $keyword) {
-                if (str_contains($text, $keyword)) {
-                    return $purpose;
-                }
+            foreach ($keywords as $kw) {
+                if (str_contains($text, $kw)) return $purpose;
             }
         }
 
@@ -786,25 +662,36 @@ class AgreementCreateFlowHandler extends AbstractFlowHandler
 
     protected function matchDueDate(string $text): ?string
     {
-        if (str_contains($text, 'week') && !str_contains($text, '2')) {
-            return '1week';
-        }
-        if (str_contains($text, '2') && str_contains($text, 'week')) {
-            return '2weeks';
-        }
-        if (str_contains($text, 'month') && !str_contains($text, '3') && !str_contains($text, '6')) {
-            return '1month';
-        }
-        if (str_contains($text, '3') && str_contains($text, 'month')) {
-            return '3months';
-        }
-        if (str_contains($text, '6') && str_contains($text, 'month')) {
-            return '6months';
-        }
-        if (str_contains($text, 'no') || str_contains($text, 'none') || str_contains($text, 'open')) {
-            return 'none';
-        }
-
+        if (str_contains($text, '1') && str_contains($text, 'week')) return '1week';
+        if (str_contains($text, '2') && str_contains($text, 'week')) return '2weeks';
+        if (str_contains($text, '1') && str_contains($text, 'month')) return '1month';
+        if (str_contains($text, '3') && str_contains($text, 'month')) return '3months';
+        if (str_contains($text, 'no') || str_contains($text, 'none') || str_contains($text, 'open')) return 'none';
         return null;
+    }
+
+    /**
+     * Check if skip button was pressed.
+     */
+    protected function isSkipButton(IncomingMessage $message): bool
+    {
+        if ($message->isInteractive()) {
+            return $this->getSelectionId($message) === 'skip';
+        }
+        return false;
+    }
+
+    /**
+     * Check if back button was pressed.
+     */
+    protected function isBackButton(IncomingMessage $message): bool
+    {
+        if ($message->isInteractive()) {
+            return $this->getSelectionId($message) === 'back';
+        }
+        if ($message->isText()) {
+            return strtolower(trim($message->text ?? '')) === 'back';
+        }
+        return false;
     }
 }

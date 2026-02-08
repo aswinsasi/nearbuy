@@ -1,85 +1,137 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\WhatsApp\Messages;
 
+use App\Enums\AgreementPurpose;
+use Carbon\Carbon;
+
 /**
- * Message templates for Agreements module.
+ * Agreement Message Templates.
  *
- * Contains all user-facing messages for agreement creation and confirmation.
+ * Friendly, bilingual (English + Malayalam) messages for trust-building.
+ * This involves money - be precise in review but warm in conversation.
+ *
+ * @srs-ref FR-AGR-01 to FR-AGR-25
  */
 class AgreementMessages
 {
     /*
     |--------------------------------------------------------------------------
-    | Create Flow Messages
+    | Create Flow Messages (FR-AGR-01 to FR-AGR-08)
     |--------------------------------------------------------------------------
     */
 
-    public const CREATE_START = "📋 *Create Digital Agreement*\n\nRecord a financial agreement with someone for future reference.\n\nThis creates a digitally signed record that both parties can verify.";
+    /** FR-AGR-01: Direction selection */
+    public const ASK_DIRECTION = "📝 *Puthiya Agreement!*\n\n" .
+        "Paisa kodukkunnathaano vaangunnathaano?\n" .
+        "_Are you giving or receiving?_";
 
-    public const ASK_DIRECTION = "💱 *Transaction Direction*\n\nAre you giving or receiving money in this agreement?";
+    /** FR-AGR-02: Amount */
+    public const ASK_AMOUNT = "💰 *Ethra amount?*\n\n" .
+        "Amount type cheyyuka (numbers only):\n" .
+        "_Eg: 20000_";
 
-    public const ASK_AMOUNT = "💰 *Enter Amount*\n\nEnter the amount in rupees (numbers only).\n\nExample: _25000_";
+    /** FR-AGR-03: Counterparty name */
+    public const ASK_NAME = "👤 *Aarude koode?*\n\n" .
+        "Other person-nte full name type cheyyuka:";
 
-    public const ASK_NAME = "👤 *Other Party's Name*\n\nEnter the full name of the other person:";
+    /** FR-AGR-04: Counterparty phone */
+    public const ASK_PHONE = "📱 *{name}-nte WhatsApp number?*\n\n" .
+        "10-digit mobile number type cheyyuka:\n" .
+        "_Eg: 9876543210_\n\n" .
+        "⚠️ Avar-kku confirmation request povum.";
 
-    public const ASK_PHONE = "📱 *Other Party's WhatsApp Number*\n\nEnter their 10-digit mobile number:\n\nExample: _9876543210_";
+    /** FR-AGR-05: Purpose selection */
+    public const ASK_PURPOSE = "📋 *Entha karyam?*\n\n" .
+        "Purpose select cheyyuka:";
 
-    public const ASK_PURPOSE = "📝 *Purpose of Agreement*\n\nSelect the purpose:";
+    /** FR-AGR-06: Description */
+    public const ASK_DESCRIPTION = "📝 *Kurachu details?* (optional)\n\n" .
+        "{hint}\n\n" .
+        "Type cheyyuka or *skip* cheyyuka.";
 
-    public const ASK_DESCRIPTION = "📄 *Description (Optional)*\n\nAdd any additional details about this agreement.\n\nOr type 'skip' to continue without a description.";
+    /** FR-AGR-07: Due date */
+    public const ASK_DUE_DATE = "📅 *Eppozhekku thirichu thararanam?*\n\n" .
+        "Due date select cheyyuka:";
 
-    public const ASK_DUE_DATE = "📅 *Due Date*\n\nWhen is this amount due?";
+    /** FR-AGR-08: Review summary */
+    public const REVIEW = "📋 *Agreement Review*\n\n" .
+        "{direction_icon} *{direction_text}*\n" .
+        "💰 *₹{amount}*\n\n" .
+        "👤 {arrow} *{name}*\n" .
+        "📱 {phone}\n\n" .
+        "📋 Purpose: {purpose}\n" .
+        "📝 Details: {description}\n" .
+        "📅 Due: {due_date}\n\n" .
+        "✅ *Sheri aano?*";
 
-    public const REVIEW_AGREEMENT = "📋 *Review Your Agreement*\n\n{direction_emoji} *{direction}*\n\n👤 *Other Party:* {other_party_name}\n📱 *Phone:* {other_party_phone}\n\n💰 *Amount:* ₹{amount}\n📝 *Purpose:* {purpose}\n📅 *Due Date:* {due_date}\n📄 *Description:* {description}\n\nIs this correct?";
-
-    public const CREATE_SUCCESS = "✅ *Agreement Created!*\n\n📋 Agreement #: *{agreement_number}*\n\n{other_party_name} will receive a confirmation request on WhatsApp.\n\nOnce they confirm, you'll both receive a PDF copy of the agreement.";
-
-    public const CREATE_CANCELLED = "❌ Agreement creation cancelled.";
+    /** Creation success */
+    public const CREATED = "🎉 *Agreement Created!*\n\n" .
+        "📋 #{agreement_number}\n" .
+        "💰 ₹{amount} {direction} {name}\n\n" .
+        "📤 *{name}*-nu confirmation request ayachittund.\n\n" .
+        "Avar confirm cheythaal PDF kittum 👍";
 
     /*
     |--------------------------------------------------------------------------
-    | Confirmation Flow Messages
+    | Confirmation Flow Messages (FR-AGR-10 to FR-AGR-15)
     |--------------------------------------------------------------------------
     */
 
-    public const CONFIRM_REQUEST = "📋 *Agreement Confirmation Request*\n\n*{creator_name}* wants to record this agreement with you:\n\n{direction_emoji} *{direction}*\n\n💰 *Amount:* ₹{amount}\n📝 *Purpose:* {purpose}\n📅 *Due Date:* {due_date}\n📄 *Description:* {description}\n\n📋 Agreement #: {agreement_number}\n\nPlease confirm if this is correct.";
+    /** FR-AGR-12: Confirmation request to counterparty */
+    public const CONFIRM_REQUEST = "📋 *Agreement Confirmation!*\n\n" .
+        "*{creator_name}* ninakkum aayi oru agreement record cheyyaan aagrahikkunnu:\n\n" .
+        "{direction_icon} *{direction_text}*\n" .
+        "💰 *₹{amount}*\n\n" .
+        "📋 Purpose: {purpose}\n" .
+        "📝 Details: {description}\n" .
+        "📅 Due: {due_date}\n\n" .
+        "📋 #{agreement_number}\n\n" .
+        "⚠️ *Ith sheri aano?*";
 
-    public const CONFIRM_SUCCESS = "✅ *Agreement Confirmed!*\n\n📋 Agreement #: *{agreement_number}*\n\nBoth parties have confirmed. Your PDF agreement is ready.";
+    /** FR-AGR-15: Both confirmed */
+    public const BOTH_CONFIRMED = "✅ *Agreement Confirmed!*\n\n" .
+        "📋 #{agreement_number}\n\n" .
+        "Randum perrum confirm cheythu! 🎉\n" .
+        "PDF document generate cheythittund.";
 
-    public const CONFIRM_REJECTED = "❌ *Agreement Rejected*\n\nYou have rejected this agreement.\n\n{creator_name} will be notified.";
+    /** Counterparty rejected */
+    public const REJECTED = "❌ *Agreement Rejected*\n\n" .
+        "*{name}* ith reject cheythu.\n\n" .
+        "📋 #{agreement_number}";
 
-    public const CONFIRM_DISPUTED = "⚠️ *Agreement Disputed*\n\nYou've indicated you don't know the other party.\n\n{creator_name} will be notified.";
-
-    public const CREATOR_NOTIFIED_CONFIRMED = "✅ *Agreement Confirmed!*\n\n{other_party_name} has confirmed your agreement.\n\n📋 Agreement #: *{agreement_number}*\n\nYour PDF agreement is ready.";
-
-    public const CREATOR_NOTIFIED_REJECTED = "❌ *Agreement Rejected*\n\n{other_party_name} has rejected your agreement #{agreement_number}.\n\nReason: {reason}";
-
-    public const CREATOR_NOTIFIED_DISPUTED = "⚠️ *Agreement Disputed*\n\n{other_party_name} claims they don't know you.\n\nAgreement #{agreement_number} has been flagged.";
+    /** Counterparty doesn't know creator */
+    public const DISPUTED = "⚠️ *Agreement Disputed*\n\n" .
+        "*{name}* says they don't know you.\n\n" .
+        "📋 #{agreement_number}";
 
     /*
     |--------------------------------------------------------------------------
-    | Agreement List Messages
+    | My Agreements Messages
     |--------------------------------------------------------------------------
     */
 
-    public const MY_AGREEMENTS_HEADER = "📋 *My Agreements*\n\nYou have {count} agreement(s):";
+    public const MY_LIST_HEADER = "📋 *Ente Agreements*\n\n" .
+        "{count} agreement(s):";
 
-    public const MY_AGREEMENTS_EMPTY = "📭 *No Agreements*\n\nYou don't have any agreements yet.\n\nWould you like to create one?";
+    public const MY_LIST_EMPTY = "📭 *Agreements illa*\n\n" .
+        "Puthiyathu undaakkatte?";
 
-    public const PENDING_AGREEMENTS = "⏳ *Pending Confirmations*\n\nYou have {count} agreement(s) waiting for confirmation:";
+    public const PENDING_HEADER = "⏳ *Pending Confirmations*\n\n" .
+        "{count} agreement(s) confirmation kaaththirikkunnu:";
 
-    public const AGREEMENT_DETAIL = "📋 *Agreement #{agreement_number}*\n\n{direction_emoji} *{direction}*\n\n👤 *Other Party:* {other_party_name}\n📱 *Phone:* {other_party_phone}\n\n💰 *Amount:* ₹{amount}\n({amount_words})\n\n📝 *Purpose:* {purpose}\n📅 *Due Date:* {due_date}\n📊 *Status:* {status}\n\n📄 {description}";
-
-    /*
-    |--------------------------------------------------------------------------
-    | PDF Messages
-    |--------------------------------------------------------------------------
-    */
-
-    public const PDF_READY = "📄 *Your Agreement PDF is Ready*\n\n📋 Agreement #: {agreement_number}\n\nTap below to download your signed agreement document.";
-
-    public const PDF_GENERATING = "⏳ Generating your agreement PDF...";
+    public const AGREEMENT_DETAIL = "📋 *#{agreement_number}*\n\n" .
+        "{direction_icon} *{direction_text}*\n\n" .
+        "👤 {name}\n" .
+        "📱 {phone}\n\n" .
+        "💰 *₹{amount}*\n" .
+        "_{amount_words}_\n\n" .
+        "📋 {purpose}\n" .
+        "📝 {description}\n" .
+        "📅 Due: {due_date}\n" .
+        "📊 Status: {status}";
 
     /*
     |--------------------------------------------------------------------------
@@ -87,21 +139,25 @@ class AgreementMessages
     |--------------------------------------------------------------------------
     */
 
-    public const ERROR_INVALID_AMOUNT = "⚠️ Invalid amount. Please enter numbers only.\n\nExample: _25000_";
+    public const ERROR_INVALID_AMOUNT = "⚠️ *Invalid amount*\n\n" .
+        "Numbers maathram type cheyyuka.\n" .
+        "_Eg: 25000_";
 
-    public const ERROR_INVALID_PHONE = "⚠️ Invalid phone number. Please enter a 10-digit mobile number.\n\nExample: _9876543210_";
+    public const ERROR_INVALID_PHONE = "⚠️ *Invalid phone number*\n\n" .
+        "10-digit mobile number venam.\n" .
+        "_Eg: 9876543210_";
 
-    public const ERROR_INVALID_NAME = "⚠️ Please enter a valid name (at least 2 characters).";
+    public const ERROR_INVALID_NAME = "⚠️ *Invalid name*\n\n" .
+        "Valid name type cheyyuka (min 2 characters).";
 
-    public const ERROR_SELF_AGREEMENT = "⚠️ You cannot create an agreement with yourself.";
+    public const ERROR_SELF_AGREEMENT = "⚠️ *Swantham koode agreement undaakkaan pattoola!*\n\n" .
+        "Other person-nte number type cheyyuka.";
 
-    public const ERROR_AGREEMENT_NOT_FOUND = "❌ Agreement not found.";
+    public const ERROR_NOT_FOUND = "❌ Agreement kandilla.";
 
-    public const ERROR_ALREADY_CONFIRMED = "⚠️ This agreement has already been confirmed.";
+    public const ERROR_ALREADY_CONFIRMED = "⚠️ Ith already confirm aayi.";
 
-    public const ERROR_ALREADY_REJECTED = "⚠️ This agreement has already been rejected.";
-
-    public const ERROR_EXPIRED = "⚠️ This agreement confirmation request has expired.";
+    public const ERROR_EXPIRED = "⏰ Ith expire aayi.";
 
     /*
     |--------------------------------------------------------------------------
@@ -110,124 +166,104 @@ class AgreementMessages
     */
 
     /**
-     * Get direction selection buttons.
+     * FR-AGR-01: Direction buttons.
      */
     public static function getDirectionButtons(): array
     {
         return [
-            ['id' => 'giving', 'title' => '💸 Giving Money'],
-            ['id' => 'receiving', 'title' => '💰 Receiving Money'],
+            ['id' => 'giving', 'title' => '💸 Kodukkunnu'],
+            ['id' => 'receiving', 'title' => '📥 Vaangunnu'],
         ];
     }
 
     /**
-     * Get purpose selection list sections.
+     * FR-AGR-05: Purpose list (5 types from Appendix 8.2).
      */
     public static function getPurposeSections(): array
     {
         return [
             [
-                'title' => 'Select Purpose',
-                'rows' => [
-                    ['id' => 'loan', 'title' => '🏦 Loan', 'description' => 'Personal or business loan'],
-                    ['id' => 'advance', 'title' => '💵 Advance', 'description' => 'Salary or payment advance'],
-                    ['id' => 'deposit', 'title' => '🏠 Deposit', 'description' => 'Security or rental deposit'],
-                    ['id' => 'business', 'title' => '💼 Business', 'description' => 'Business transaction'],
-                    ['id' => 'personal', 'title' => '👤 Personal', 'description' => 'Personal transaction'],
-                    ['id' => 'other', 'title' => '📋 Other', 'description' => 'Other purpose'],
-                ],
+                'title' => 'Purpose',
+                'rows' => AgreementPurpose::toListRows(),
             ],
         ];
     }
 
     /**
-     * Get due date selection list sections.
+     * FR-AGR-07: Due date list (5 options from Appendix 8.4).
      */
     public static function getDueDateSections(): array
     {
         return [
             [
-                'title' => 'Select Due Date',
+                'title' => 'Due Date',
                 'rows' => [
                     ['id' => '1week', 'title' => '📅 1 Week', 'description' => self::formatFutureDate(7)],
                     ['id' => '2weeks', 'title' => '📅 2 Weeks', 'description' => self::formatFutureDate(14)],
                     ['id' => '1month', 'title' => '📅 1 Month', 'description' => self::formatFutureDate(30)],
                     ['id' => '3months', 'title' => '📅 3 Months', 'description' => self::formatFutureDate(90)],
-                    ['id' => '6months', 'title' => '📅 6 Months', 'description' => self::formatFutureDate(180)],
-                    ['id' => 'none', 'title' => '⏰ No Fixed Date', 'description' => 'Open-ended agreement'],
+                    ['id' => 'none', 'title' => '⏰ No Fixed Date', 'description' => 'Open-ended'],
                 ],
             ],
         ];
     }
 
     /**
-     * Get review confirmation buttons.
+     * FR-AGR-08: Review confirmation buttons.
      */
     public static function getReviewButtons(): array
     {
         return [
-            ['id' => 'confirm', 'title' => '✅ Create Agreement'],
+            ['id' => 'confirm', 'title' => '✅ Confirm'],
             ['id' => 'edit', 'title' => '✏️ Edit'],
             ['id' => 'cancel', 'title' => '❌ Cancel'],
         ];
     }
 
     /**
-     * Get counterparty confirmation buttons.
+     * FR-AGR-14: Counterparty confirmation buttons.
      */
     public static function getConfirmButtons(): array
     {
         return [
-            ['id' => 'confirm', 'title' => '✅ Yes, Confirm'],
-            ['id' => 'reject', 'title' => '❌ No, Incorrect'],
-            ['id' => 'unknown', 'title' => '❓ Don\'t Know'],
+            ['id' => 'yes', 'title' => '✅ Sheri, Confirm'],
+            ['id' => 'no', 'title' => '❌ Alla, Incorrect'],
+            ['id' => 'unknown', 'title' => "❓ Ariyilla"],
         ];
     }
 
     /**
-     * Get agreement action buttons.
+     * Skip/back buttons.
      */
-    public static function getAgreementActionButtons(): array
+    public static function getSkipButtons(): array
     {
         return [
-            ['id' => 'download_pdf', 'title' => '📄 Download PDF'],
-            ['id' => 'mark_complete', 'title' => '✅ Mark Complete'],
+            ['id' => 'skip', 'title' => '⏭️ Skip'],
             ['id' => 'back', 'title' => '⬅️ Back'],
         ];
     }
 
     /**
-     * Get pending agreement action buttons.
-     */
-    public static function getPendingActionButtons(): array
-    {
-        return [
-            ['id' => 'remind', 'title' => '🔔 Send Reminder'],
-            ['id' => 'cancel', 'title' => '❌ Cancel Agreement'],
-            ['id' => 'back', 'title' => '⬅️ Back'],
-        ];
-    }
-
-    /**
-     * Get post-creation buttons.
+     * Post-creation buttons.
      */
     public static function getPostCreateButtons(): array
     {
         return [
-            ['id' => 'view_agreement', 'title' => '📋 View Agreement'],
-            ['id' => 'create_another', 'title' => '➕ Create Another'],
-            ['id' => 'menu', 'title' => '🏠 Main Menu'],
+            ['id' => 'view', 'title' => '📋 View'],
+            ['id' => 'another', 'title' => '➕ Another'],
+            ['id' => 'menu', 'title' => '🏠 Menu'],
         ];
     }
 
     /**
-     * Get my agreements empty buttons.
+     * Agreement actions.
      */
-    public static function getEmptyAgreementsButtons(): array
+    public static function getAgreementActionButtons(): array
     {
         return [
-            ['id' => 'create', 'title' => '➕ Create Agreement'],
-            ['id' => 'menu', 'title' => '🏠 Main Menu'],
+            ['id' => 'pdf', 'title' => '📄 Download PDF'],
+            ['id' => 'complete', 'title' => '✅ Mark Done'],
+            ['id' => 'back', 'title' => '⬅️ Back'],
         ];
     }
 
@@ -238,30 +274,30 @@ class AgreementMessages
     */
 
     /**
-     * Build agreements list for user.
+     * Build agreements list.
      */
-    public static function buildAgreementsList(array $agreements): array
+    public static function buildAgreementsList(array $agreements, int $userId): array
     {
         $rows = [];
 
-        foreach ($agreements as $agreement) {
-            $statusIcon = self::getStatusIcon($agreement['status'] ?? 'pending');
-            $amount = number_format($agreement['amount'] ?? 0);
-            $otherParty = $agreement['other_party_name'] ?? 'Unknown';
+        foreach ($agreements as $agr) {
+            $isCreator = ($agr['from_user_id'] ?? null) === $userId;
+            $otherName = $isCreator 
+                ? ($agr['to_name'] ?? 'Unknown') 
+                : ($agr['from_name'] ?? 'Unknown');
+            
+            $direction = $agr['direction'] ?? 'giving';
+            $icon = self::getDirectionIcon($direction, $isCreator);
+            $statusIcon = self::getStatusIcon($agr['status'] ?? 'pending');
 
             $rows[] = [
-                'id' => 'agreement_' . $agreement['id'],
-                'title' => self::truncate("₹{$amount} - {$otherParty}", 24),
-                'description' => self::truncate("{$statusIcon} #{$agreement['agreement_number']}", 72),
+                'id' => 'agr_' . $agr['id'],
+                'title' => self::truncate("{$icon} ₹" . number_format($agr['amount'] ?? 0), 24),
+                'description' => "{$statusIcon} {$otherName} • #{$agr['agreement_number']}",
             ];
         }
 
-        return [
-            [
-                'title' => 'Your Agreements',
-                'rows' => array_slice($rows, 0, 10),
-            ],
-        ];
+        return [['title' => 'Agreements', 'rows' => array_slice($rows, 0, 10)]];
     }
 
     /**
@@ -271,114 +307,138 @@ class AgreementMessages
     {
         $rows = [];
 
-        foreach ($agreements as $agreement) {
-            $amount = number_format($agreement['amount'] ?? 0);
-            $creator = $agreement['creator_name'] ?? 'Unknown';
+        foreach ($agreements as $agr) {
+            $creator = $agr['from_name'] ?? 'Unknown';
 
             $rows[] = [
-                'id' => 'pending_' . $agreement['id'],
-                'title' => self::truncate("₹{$amount} from {$creator}", 24),
-                'description' => self::truncate("⏳ Awaiting your confirmation", 72),
+                'id' => 'pending_' . $agr['id'],
+                'title' => self::truncate("₹" . number_format($agr['amount'] ?? 0) . " - {$creator}", 24),
+                'description' => "⏳ Confirmation pending",
             ];
         }
 
-        return [
-            [
-                'title' => 'Pending Confirmations',
-                'rows' => array_slice($rows, 0, 10),
-            ],
-        ];
+        return [['title' => 'Pending', 'rows' => array_slice($rows, 0, 10)]];
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Helper Methods
+    | Formatting Helpers
     |--------------------------------------------------------------------------
     */
 
     /**
      * Format message with placeholders.
      */
-    public static function format(string $template, array $replacements): string
+    public static function format(string $template, array $data): string
     {
-        foreach ($replacements as $key => $value) {
+        foreach ($data as $key => $value) {
             $template = str_replace("{{$key}}", (string) $value, $template);
         }
-
         return $template;
     }
 
     /**
-     * Format amount for display.
+     * Get direction icon.
      */
-    public static function formatAmount(float $amount): string
-    {
-        return '₹' . number_format($amount, 2);
-    }
-
-    /**
-     * Get direction emoji.
-     */
-    public static function getDirectionEmoji(string $direction): string
-    {
-        return $direction === 'giving' ? '💸' : '💰';
-    }
-
-    /**
-     * Get direction label.
-     */
-    public static function getDirectionLabel(string $direction, bool $isCreator = true): string
+    public static function getDirectionIcon(string $direction, bool $isCreator = true): string
     {
         if ($isCreator) {
-            return $direction === 'giving' ? 'You are giving' : 'You are receiving';
+            return $direction === 'giving' ? '💸' : '📥';
         }
+        // Invert for counterparty
+        return $direction === 'giving' ? '📥' : '💸';
+    }
 
-        return $direction === 'giving' ? 'They are giving you' : 'They are receiving from you';
+    /**
+     * Get direction text.
+     */
+    public static function getDirectionText(string $direction, bool $isCreator = true): string
+    {
+        if ($isCreator) {
+            return $direction === 'giving' 
+                ? 'Nee kodukkunnu' 
+                : 'Nee vaangunnu';
+        }
+        return $direction === 'giving' 
+            ? 'Neekku kittunnu' 
+            : 'Nee kodukkanam';
+    }
+
+    /**
+     * Get direction arrow for review.
+     */
+    public static function getDirectionArrow(string $direction): string
+    {
+        return $direction === 'giving' ? '→' : '←';
     }
 
     /**
      * Get purpose label.
      */
-    public static function getPurposeLabel(string $purposeId): string
+    public static function getPurposeLabel(?string $purpose): string
     {
-        $map = [
-            'loan' => '🏦 Loan',
-            'advance' => '💵 Advance',
-            'deposit' => '🏠 Deposit',
-            'business' => '💼 Business',
-            'personal' => '👤 Personal',
-            'other' => '📋 Other',
-        ];
-
-        return $map[$purposeId] ?? ucfirst($purposeId);
+        if (!$purpose) return '📝 Other';
+        
+        $enum = AgreementPurpose::tryFrom($purpose);
+        return $enum ? $enum->displayWithIcon() : '📝 ' . ucfirst($purpose);
     }
 
     /**
-     * Get due date from selection.
+     * Get description hint based on purpose.
      */
-    public static function getDueDateFromSelection(string $selection): ?\Carbon\Carbon
+    public static function getDescriptionHint(?string $purpose): string
+    {
+        if (!$purpose) return 'Eg: Describe the agreement';
+        
+        $enum = AgreementPurpose::tryFrom($purpose);
+        return $enum ? $enum->descriptionHint() : 'Eg: Describe the agreement';
+    }
+
+    /**
+     * Get due date from selection (Appendix 8.4).
+     */
+    public static function getDueDateFromSelection(string $selection): ?Carbon
     {
         return match ($selection) {
             '1week' => now()->addWeek(),
             '2weeks' => now()->addWeeks(2),
             '1month' => now()->addMonth(),
             '3months' => now()->addMonths(3),
-            '6months' => now()->addMonths(6),
             'none' => null,
             default => null,
         };
     }
 
     /**
-     * Format due date for display.
+     * Get due date label from selection.
      */
-    public static function formatDueDate(?\Carbon\Carbon $dueDate): string
+    public static function getDueDateLabel(string $selection): string
     {
-        if (!$dueDate) {
-            return 'No fixed date';
-        }
+        return match ($selection) {
+            '1week' => '1 Week',
+            '2weeks' => '2 Weeks',
+            '1month' => '1 Month',
+            '3months' => '3 Months',
+            'none' => 'No Fixed Date',
+            default => $selection,
+        };
+    }
 
-        return $dueDate->format('M j, Y');
+    /**
+     * Format due date.
+     */
+    public static function formatDueDate(?Carbon $date): string
+    {
+        if (!$date) return 'No fixed date';
+        return $date->format('M j, Y');
+    }
+
+    /**
+     * Format future date for list description.
+     */
+    public static function formatFutureDate(int $days): string
+    {
+        return now()->addDays($days)->format('M j, Y');
     }
 
     /**
@@ -387,13 +447,13 @@ class AgreementMessages
     public static function getStatusIcon(string $status): string
     {
         return match ($status) {
-            'pending_counterparty' => '⏳',
-            'pending_creator' => '⏳',
+            'pending' => '⏳',
             'confirmed' => '✅',
+            'completed' => '✔️',
             'rejected' => '❌',
             'disputed' => '⚠️',
-            'completed' => '✔️',
             'expired' => '⏰',
+            'cancelled' => '🚫',
             default => '📋',
         };
     }
@@ -404,34 +464,31 @@ class AgreementMessages
     public static function getStatusLabel(string $status): string
     {
         return match ($status) {
-            'pending_counterparty' => '⏳ Awaiting confirmation',
-            'pending_creator' => '⏳ Awaiting your confirmation',
-            'confirmed' => '✅ Confirmed by both parties',
+            'pending' => '⏳ Waiting for confirmation',
+            'confirmed' => '✅ Confirmed',
+            'completed' => '✔️ Completed',
             'rejected' => '❌ Rejected',
             'disputed' => '⚠️ Disputed',
-            'completed' => '✔️ Completed',
             'expired' => '⏰ Expired',
+            'cancelled' => '🚫 Cancelled',
             default => ucfirst($status),
         };
     }
 
     /**
-     * Format a future date for list description.
+     * Truncate text.
      */
-    private static function formatFutureDate(int $days): string
+    public static function truncate(string $text, int $max): string
     {
-        return now()->addDays($days)->format('M j, Y');
+        if (mb_strlen($text) <= $max) return $text;
+        return mb_substr($text, 0, $max - 1) . '…';
     }
 
     /**
-     * Truncate string.
+     * Format amount.
      */
-    private static function truncate(string $text, int $maxLength): string
+    public static function formatAmount(float $amount): string
     {
-        if (mb_strlen($text) <= $maxLength) {
-            return $text;
-        }
-
-        return mb_substr($text, 0, $maxLength - 1) . '…';
+        return '₹' . number_format($amount);
     }
 }
