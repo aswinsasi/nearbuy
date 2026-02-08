@@ -1,58 +1,72 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Builder;
 
+/**
+ * Product Response Model.
+ *
+ * Shop's response to a customer product request.
+ *
+ * @property int $id
+ * @property int $request_id
+ * @property int $shop_id
+ * @property bool $is_available
+ * @property float|null $price (FR-PRD-21)
+ * @property string|null $description (FR-PRD-21: model info)
+ * @property string|null $photo_url (FR-PRD-20, FR-PRD-22)
+ * @property \Carbon\Carbon $responded_at
+ * @property \Carbon\Carbon $created_at
+ * @property \Carbon\Carbon $updated_at
+ *
+ * @property-read ProductRequest $request
+ * @property-read Shop $shop
+ * @property-read float|null $distance_km (computed)
+ *
+ * @srs-ref FR-PRD-20 to FR-PRD-23
+ */
 class ProductResponse extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
     protected $fillable = [
         'request_id',
         'shop_id',
-        'photo_url',
+        'is_available',
         'price',
         'description',
-        'is_available',
+        'photo_url',
         'responded_at',
     ];
 
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
     protected $casts = [
-        'price' => 'decimal:2',
         'is_available' => 'boolean',
+        'price' => 'decimal:2',
         'responded_at' => 'datetime',
     ];
 
     /**
-     * Boot the model.
+     * Boot: set responded_at, increment request count.
      */
     protected static function boot()
     {
         parent::boot();
 
-        static::creating(function ($response) {
+        static::creating(function (self $response) {
             if (empty($response->responded_at)) {
                 $response->responded_at = now();
             }
         });
 
-        static::created(function ($response) {
-            // Increment the response count on the request
-            $response->request->incrementResponseCount();
+        static::created(function (self $response) {
+            // Increment response count on request
+            $response->request?->incrementResponses();
         });
     }
 
@@ -63,7 +77,7 @@ class ProductResponse extends Model
     */
 
     /**
-     * Get the product request this response belongs to.
+     * Get the product request.
      */
     public function request(): BelongsTo
     {
@@ -71,7 +85,7 @@ class ProductResponse extends Model
     }
 
     /**
-     * Alias for request relationship.
+     * Alias for request.
      */
     public function productRequest(): BelongsTo
     {
@@ -79,7 +93,7 @@ class ProductResponse extends Model
     }
 
     /**
-     * Get the shop that created this response.
+     * Get the shop.
      */
     public function shop(): BelongsTo
     {
@@ -88,12 +102,12 @@ class ProductResponse extends Model
 
     /*
     |--------------------------------------------------------------------------
-    | Scopes
+    | Query Scopes
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Scope to filter available responses.
+     * Scope: available responses only.
      */
     public function scopeAvailable(Builder $query): Builder
     {
@@ -101,7 +115,7 @@ class ProductResponse extends Model
     }
 
     /**
-     * Scope to filter responses with photos.
+     * Scope: with photo.
      */
     public function scopeWithPhoto(Builder $query): Builder
     {
@@ -109,7 +123,7 @@ class ProductResponse extends Model
     }
 
     /**
-     * Scope to filter responses with price.
+     * Scope: with price.
      */
     public function scopeWithPrice(Builder $query): Builder
     {
@@ -117,37 +131,98 @@ class ProductResponse extends Model
     }
 
     /**
-     * Scope to order by price ascending.
+     * Scope: sorted by price (lowest first).
+     *
+     * @srs-ref FR-PRD-31 - Sort responses by price
      */
-    public function scopeLowestPriceFirst(Builder $query): Builder
+    public function scopeLowestFirst(Builder $query): Builder
     {
         return $query->orderBy('price', 'asc');
     }
 
     /**
-     * Scope to order by newest first.
+     * Scope: newest first.
      */
     public function scopeNewest(Builder $query): Builder
     {
-        return $query->orderBy('responded_at', 'desc');
+        return $query->orderByDesc('responded_at');
     }
 
     /**
-     * Scope to filter by request.
+     * Scope: for a specific request.
      */
     public function scopeForRequest(Builder $query, ProductRequest|int $request): Builder
     {
-        $requestId = $request instanceof ProductRequest ? $request->id : $request;
-        return $query->where('request_id', $requestId);
+        $id = $request instanceof ProductRequest ? $request->id : $request;
+        return $query->where('request_id', $id);
     }
 
     /**
-     * Scope to filter by shop.
+     * Scope: from a specific shop.
      */
     public function scopeFromShop(Builder $query, Shop|int $shop): Builder
     {
+        $id = $shop instanceof Shop ? $shop->id : $shop;
+        return $query->where('shop_id', $id);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Static Methods
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Check if shop already responded to request.
+     *
+     * @srs-ref FR-PRD-23 - Prevent duplicate responses
+     */
+    public static function existsForShop(ProductRequest|int $request, Shop|int $shop): bool
+    {
+        $requestId = $request instanceof ProductRequest ? $request->id : $request;
         $shopId = $shop instanceof Shop ? $shop->id : $shop;
-        return $query->where('shop_id', $shopId);
+
+        return self::query()
+            ->where('request_id', $requestId)
+            ->where('shop_id', $shopId)
+            ->exists();
+    }
+
+    /**
+     * Create available response.
+     *
+     * @srs-ref FR-PRD-22 - Store response with photo URL, price, description
+     */
+    public static function createAvailable(
+        ProductRequest $request,
+        Shop $shop,
+        float $price,
+        ?string $description = null,
+        ?string $photoUrl = null
+    ): self {
+        return self::create([
+            'request_id' => $request->id,
+            'shop_id' => $shop->id,
+            'is_available' => true,
+            'price' => $price,
+            'description' => $description,
+            'photo_url' => $photoUrl,
+        ]);
+    }
+
+    /**
+     * Create unavailable response.
+     */
+    public static function createUnavailable(ProductRequest $request, Shop $shop): self
+    {
+        return self::create([
+            'request_id' => $request->id,
+            'shop_id' => $shop->id,
+            'is_available' => false,
+            'price' => null,
+            'description' => null,
+            'photo_url' => null,
+        ]);
     }
 
     /*
@@ -161,16 +236,12 @@ class ProductResponse extends Model
      */
     public function getFormattedPriceAttribute(): ?string
     {
-        if ($this->price === null) {
-            return null;
-        }
-
-        $currency = config('nearbuy.agreements.currency.symbol', '₹');
-        return $currency . number_format($this->price, 2);
+        if ($this->price === null) return null;
+        return '₹' . number_format((float) $this->price);
     }
 
     /**
-     * Check if response has photo.
+     * Check if has photo.
      */
     public function hasPhoto(): bool
     {
@@ -178,7 +249,7 @@ class ProductResponse extends Model
     }
 
     /**
-     * Check if response has price.
+     * Check if has price.
      */
     public function hasPrice(): bool
     {
@@ -186,71 +257,10 @@ class ProductResponse extends Model
     }
 
     /**
-     * Get the distance from the customer (if request has location).
+     * Get distance from customer (if computed).
      */
-    public function getDistanceFromCustomerAttribute(): ?float
+    public function getDistanceKmAttribute(): ?float
     {
-        $request = $this->request;
-        $shop = $this->shop;
-
-        if (!$request || !$shop) {
-            return null;
-        }
-
-        return $shop->distanceFrom($request->latitude, $request->longitude);
-    }
-
-    /**
-     * Get formatted distance from customer.
-     */
-    public function getFormattedDistanceAttribute(): ?string
-    {
-        $distance = $this->distance_from_customer;
-
-        if ($distance === null) {
-            return null;
-        }
-
-        if ($distance < 1) {
-            return round($distance * 1000) . ' m';
-        }
-
-        return round($distance, 1) . ' km';
-    }
-
-    /**
-     * Create a response from a shop.
-     */
-    public static function createFromShop(
-        ProductRequest $request,
-        Shop $shop,
-        bool $isAvailable = true,
-        ?float $price = null,
-        ?string $description = null,
-        ?string $photoUrl = null
-    ): self {
-        return self::create([
-            'request_id' => $request->id,
-            'shop_id' => $shop->id,
-            'is_available' => $isAvailable,
-            'price' => $price,
-            'description' => $description,
-            'photo_url' => $photoUrl,
-        ]);
-    }
-
-    /**
-     * Get responses for a request, formatted for customer display.
-     */
-    public static function getForCustomerDisplay(ProductRequest $request, int $limit = 10): \Illuminate\Database\Eloquent\Collection
-    {
-        return self::query()
-            ->forRequest($request)
-            ->available()
-            ->with('shop')
-            ->withPrice()
-            ->lowestPriceFirst()
-            ->limit($limit)
-            ->get();
+        return $this->attributes['distance_km'] ?? null;
     }
 }

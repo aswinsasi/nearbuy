@@ -1,666 +1,458 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Flow\Handlers;
 
+use App\Contracts\FlowHandlerInterface;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
-use App\Enums\ProductSearchStep;
 use App\Models\ConversationSession;
 use App\Models\ProductRequest;
+use App\Models\ProductResponse;
 use App\Services\Media\MediaService;
 use App\Services\Products\ProductResponseService;
 use App\Services\Products\ProductSearchService;
-use App\Services\WhatsApp\Messages\MessageTemplates;
-use App\Services\WhatsApp\Messages\ProductMessages;
+use App\Services\Session\SessionManager;
+use App\Services\WhatsApp\WhatsAppService;
+use Illuminate\Support\Facades\Log;
 
 /**
- * ENHANCED Product Response Flow Handler.
+ * Product Response Flow Handler (Shop Side).
  *
- * Key improvements:
- * 1. Extends AbstractFlowHandler for consistent menu buttons
- * 2. Uses sendTextWithMenu/sendButtonsWithMenu patterns
- * 3. Main Menu button on all messages
+ * SIMPLIFIED 2-STEP RESPONSE FLOW:
+ * 1. "💰 Price/model entha?" → free text (FR-PRD-21)
+ * 2. "📸 Photo undo?" → [Send Photo] [Skip] (FR-PRD-20)
+ * → "✅ Response ayachittund!" (FR-PRD-22)
+ *
+ * Entry points:
+ * - Notification button click (yes_{id}/no_{id}/skip_{id})
+ * - "Product Requests" menu option
+ *
+ * @srs-ref FR-PRD-20 to FR-PRD-23
  */
-class ProductResponseFlowHandler extends AbstractFlowHandler
+class ProductResponseFlowHandler implements FlowHandlerInterface
 {
+    /** Flow steps */
+    protected const STEP_VIEW_REQUESTS = 'view_requests';
+    protected const STEP_ASK_PRICE = 'ask_price';
+    protected const STEP_ASK_PHOTO = 'ask_photo';
+    protected const STEP_DONE = 'done';
+
     public function __construct(
-        \App\Services\Session\SessionManager $sessionManager,
-        \App\Services\WhatsApp\WhatsAppService $whatsApp,
+        protected SessionManager $sessionManager,
+        protected WhatsAppService $whatsApp,
         protected ProductSearchService $searchService,
         protected ProductResponseService $responseService,
-        protected MediaService $mediaService
-    ) {
-        parent::__construct($sessionManager, $whatsApp);
-    }
+        protected MediaService $mediaService,
+    ) {}
 
-    protected function getFlowType(): FlowType
+    public function getName(): string
     {
-        return FlowType::PRODUCT_RESPOND;
+        return FlowType::PRODUCT_RESPOND->value;
     }
 
-    protected function getSteps(): array
+    public function canHandleStep(string $step): bool
     {
-        return [
-            ProductSearchStep::VIEW_REQUEST->value,
-            ProductSearchStep::RESPOND_AVAILABILITY->value,
-            ProductSearchStep::RESPOND_PRICE->value,
-            ProductSearchStep::RESPOND_IMAGE->value,
-            ProductSearchStep::RESPOND_NOTES->value,
-            ProductSearchStep::CONFIRM_RESPONSE->value,
-            ProductSearchStep::RESPONSE_SENT->value,
-        ];
+        return in_array($step, [
+            self::STEP_VIEW_REQUESTS,
+            self::STEP_ASK_PRICE,
+            self::STEP_ASK_PHOTO,
+            self::STEP_DONE,
+        ], true);
     }
 
-/**
-     * Start the response flow for a specific request (from notification button).
-     * 
-     * This is called when shop clicks "Yes, I Have It" or "Don't Have" from a notification,
-     * potentially while in another flow.
-     * 
-     * @param ConversationSession $session
-     * @param int $requestId The product request ID
-     * @param string $action 'yes' or 'no' - the shop's initial response
-     */
-    public function startWithRequest(ConversationSession $session, int $requestId, string $action = 'yes'): void
+    public function getExpectedInputType(string $step): string
     {
-        $user = $this->getUser($session);
-
-        if (!$user || !$user->isShopOwner()) {
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                "⚠️ *Shop Owner Required*\n\nOnly shop owners can respond to product requests.",
-                [['id' => 'register', 'title' => '📝 Register Shop']]
-            );
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        $shop = $user->shop;
-
-        // Get the specific request
-        $request = $this->searchService->getRequestForShop($requestId, $shop);
-
-        if (!$request) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ Request not found or has expired.",
-                [
-                    ['id' => 'product_requests', 'title' => '📬 View Requests'],
-                    self::MENU_BUTTON,
-                ]
-            );
-            return;
-        }
-
-        // Check if already responded
-        if ($this->responseService->hasAlreadyResponded($request, $shop)) {
-            $existingResponse = $this->responseService->getShopResponse($request, $shop);
-            $message = ProductMessages::format(ProductMessages::ALREADY_RESPONDED, [
-                'price' => number_format($existingResponse->price ?? 0),
-            ]);
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                $message,
-                [['id' => 'product_requests', 'title' => '📬 More Requests']]
-            );
-            return;
-        }
-
-        // Check if request is still active
-        if (!$this->searchService->acceptsResponses($request)) {
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                ProductMessages::REQUEST_NO_LONGER_ACTIVE,
-                [['id' => 'product_requests', 'title' => '📬 More Requests']]
-            );
-            return;
-        }
-
-        // Store request context
-        $this->setTemp($session, 'respond_request_id', $request->id);
-        $this->setTemp($session, 'request_description', $request->description);
-
-        // Set the flow
-        $this->sessionManager->setFlowStep(
-            $session,
-            FlowType::PRODUCT_RESPOND,
-            ProductSearchStep::RESPOND_AVAILABILITY->value
-        );
-
-        // Handle based on action
-        if ($action === 'yes') {
-            // Shop has the product - start price input flow
-            $this->startResponseFlow($session);
-        } else {
-            // Shop doesn't have it - create unavailable response
-            $this->createUnavailableResponse($session);
-        }
-
-        $this->logInfo('Product response started from notification', [
-            'request_id' => $requestId,
-            'action' => $action,
-            'shop_id' => $shop->id,
-        ]);
+        return match ($step) {
+            self::STEP_VIEW_REQUESTS => 'list',
+            self::STEP_ASK_PRICE => 'text',
+            self::STEP_ASK_PHOTO => 'image_or_button',
+            default => 'button',
+        };
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Entry Points
+    |--------------------------------------------------------------------------
+    */
 
     /**
-     * Start the flow - show pending requests.
+     * Start from menu - show pending requests.
      */
     public function start(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
         if (!$user || !$user->isShopOwner()) {
-            $this->sendButtonsWithMenu(
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                "⚠️ *Shop Owner Required*\n\nOnly shop owners can respond to product requests.",
-                [['id' => 'register', 'title' => '📝 Register Shop']]
+                "⚠️ Shop owners mathram respond cheyyaan pattoo.",
+                [
+                    ['id' => 'register', 'title' => '📝 Register Shop'],
+                    ['id' => 'menu', 'title' => '🏠 Menu'],
+                ]
             );
-            $this->goToMainMenu($session);
+            $this->sessionManager->resetToMainMenu($session);
+            return;
+        }
+
+        $this->showPendingRequests($session);
+    }
+
+    /**
+     * Start from notification button click.
+     *
+     * Called when shop clicks yes_{id}, no_{id}, or skip_{id}.
+     *
+     * @param string $action 'yes', 'no', or 'skip'
+     * @param int $requestId Product request ID
+     */
+    public function startWithRequest(ConversationSession $session, int $requestId, string $action = 'yes'): void
+    {
+        $user = $this->getUser($session);
+
+        if (!$user || !$user->isShopOwner()) {
+            $this->whatsApp->sendText($session->phone, "⚠️ Shop owners only.");
+            $this->sessionManager->resetToMainMenu($session);
             return;
         }
 
         $shop = $user->shop;
+        $request = ProductRequest::find($requestId);
 
-        // Get pending requests for this shop
-        $requests = $this->searchService->getPendingRequestsForShop($shop);
-
-        if ($requests->isEmpty()) {
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                ProductMessages::PENDING_REQUESTS_EMPTY,
-                []
-            );
-            $this->goToMainMenu($session);
+        if (!$request) {
+            $this->whatsApp->sendText($session->phone, "❌ Request kandilla or expired.");
+            $this->showPendingRequests($session);
             return;
         }
 
-        $header = ProductMessages::format(ProductMessages::PENDING_REQUESTS_HEADER, [
-            'count' => $requests->count(),
-        ]);
+        // FR-PRD-23: Check for duplicate
+        if ($this->responseService->hasAlreadyResponded($request, $shop)) {
+            $existing = $this->responseService->getShopResponse($request, $shop);
+            $price = $existing?->price ? '₹' . number_format((float) $existing->price) : 'N/A';
 
-        // Build list
-        $rows = [];
-        foreach ($requests as $request) {
-            $distance = ProductMessages::formatDistance($request->distance_km);
-            $timeRemaining = ProductMessages::formatTimeRemaining($request->expires_at);
-
-            $rows[] = [
-                'id' => 'request_' . $request->id,
-                'title' => mb_substr($request->description, 0, 24),
-                'description' => mb_substr("📍 {$distance} • ⏰ {$timeRemaining}", 0, 72),
-            ];
+            $this->whatsApp->sendButtons(
+                $session->phone,
+                "⚠️ *Already respond cheythittund*\n\nYour price: {$price}",
+                [
+                    ['id' => 'more_requests', 'title' => '📬 More Requests'],
+                    ['id' => 'menu', 'title' => '🏠 Menu'],
+                ]
+            );
+            return;
         }
 
-        $sections = [
-            [
-                'title' => 'Pending Requests',
-                'rows' => array_slice($rows, 0, 10),
-            ],
-        ];
+        // Check if still accepting
+        if (!$request->isOpen()) {
+            $this->whatsApp->sendButtons(
+                $session->phone,
+                "⚠️ *Request closed aayi*\n\nExpired or customer closed.",
+                [
+                    ['id' => 'more_requests', 'title' => '📬 More Requests'],
+                    ['id' => 'menu', 'title' => '🏠 Menu'],
+                ]
+            );
+            return;
+        }
 
-        $this->sendListWithFooter(
-            $session->phone,
-            $header,
-            '📬 View Requests',
-            $sections,
-            '📬 Product Requests'
-        );
+        // Store context
+        $this->sessionManager->mergeTempData($session, [
+            'request_id' => $requestId,
+            'request_desc' => $request->description,
+        ]);
 
+        // Set flow
         $this->sessionManager->setFlowStep(
             $session,
             FlowType::PRODUCT_RESPOND,
-            ProductSearchStep::VIEW_REQUEST->value
+            self::STEP_ASK_PRICE
         );
-    }
 
-    /**
-     * Handle incoming message.
-     */
-    public function handle(IncomingMessage $message, ConversationSession $session): void
-    {
-        // Handle common navigation (menu, cancel, etc.)
-        if ($this->handleCommonNavigation($message, $session)) {
-            return;
-        }
-
-        $step = ProductSearchStep::tryFrom($session->current_step);
-
-        if (!$step) {
-            $this->start($session);
-            return;
-        }
-
-        match ($step) {
-            ProductSearchStep::VIEW_REQUEST => $this->handleRequestSelection($message, $session),
-            ProductSearchStep::RESPOND_AVAILABILITY => $this->handleAvailabilityChoice($message, $session),
-            ProductSearchStep::RESPOND_PRICE => $this->handlePriceInput($message, $session),
-            ProductSearchStep::RESPOND_IMAGE => $this->handleImageInput($message, $session),
-            ProductSearchStep::RESPOND_NOTES => $this->handleNotesInput($message, $session),
-            ProductSearchStep::CONFIRM_RESPONSE => $this->handleConfirmation($message, $session),
-            ProductSearchStep::RESPONSE_SENT => $this->handlePostResponse($message, $session),
-            default => $this->start($session),
+        // Handle action
+        match ($action) {
+            'yes' => $this->askPrice($session),
+            'no' => $this->createNoResponse($session, $request, $shop),
+            'skip' => $this->skipRequest($session),
+            default => $this->askPrice($session),
         };
-    }
 
-    /**
-     * Handle invalid input.
-     */
-    public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
-    {
-        $step = ProductSearchStep::tryFrom($session->current_step);
-
-        match ($step) {
-            ProductSearchStep::RESPOND_PRICE => $this->askPrice($session, true),
-            ProductSearchStep::CONFIRM_RESPONSE => $this->askConfirmation($session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Get expected input type.
-     */
-    protected function getExpectedInputType(string $step): string
-    {
-        return match ($step) {
-            ProductSearchStep::VIEW_REQUEST->value => 'list',
-            ProductSearchStep::RESPOND_AVAILABILITY->value => 'button',
-            ProductSearchStep::RESPOND_PRICE->value => 'text',
-            ProductSearchStep::RESPOND_IMAGE->value => 'media',
-            ProductSearchStep::RESPOND_NOTES->value => 'text',
-            ProductSearchStep::CONFIRM_RESPONSE->value => 'button',
-            default => 'button',
-        };
-    }
-
-    /**
-     * Re-prompt current step.
-     */
-    protected function promptCurrentStep(ConversationSession $session): void
-    {
-        $step = ProductSearchStep::tryFrom($session->current_step);
-
-        match ($step) {
-            ProductSearchStep::VIEW_REQUEST => $this->start($session),
-            ProductSearchStep::RESPOND_AVAILABILITY => $this->showRequestDetails($session),
-            ProductSearchStep::RESPOND_PRICE => $this->askPrice($session),
-            ProductSearchStep::RESPOND_IMAGE => $this->askImage($session),
-            ProductSearchStep::RESPOND_NOTES => $this->askNotes($session),
-            ProductSearchStep::CONFIRM_RESPONSE => $this->askConfirmation($session),
-            default => $this->start($session),
-        };
+        Log::info('Shop response started', [
+            'request_id' => $requestId,
+            'action' => $action,
+            'shop_id' => $shop->id,
+        ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step Handlers
+    | Main Handler
+    |--------------------------------------------------------------------------
+    */
+
+    public function handle(IncomingMessage $message, ConversationSession $session): void
+    {
+        $step = $session->current_step;
+
+        match ($step) {
+            self::STEP_VIEW_REQUESTS => $this->handleRequestSelection($message, $session),
+            self::STEP_ASK_PRICE => $this->handlePriceInput($message, $session),
+            self::STEP_ASK_PHOTO => $this->handlePhotoInput($message, $session),
+            self::STEP_DONE => $this->handlePostResponse($message, $session),
+            default => $this->start($session),
+        };
+    }
+
+    public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
+    {
+        $step = $session->current_step;
+
+        match ($step) {
+            self::STEP_ASK_PRICE => $this->askPrice($session, true),
+            self::STEP_ASK_PHOTO => $this->askPhoto($session),
+            default => $this->start($session),
+        };
+    }
+
+    public function handleTimeout(ConversationSession $session): void
+    {
+        $this->whatsApp->sendText($session->phone, "⏰ Session expired.");
+        $this->sessionManager->resetToMainMenu($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 1: View Pending Requests
     |--------------------------------------------------------------------------
     */
 
     protected function handleRequestSelection(IncomingMessage $message, ConversationSession $session): void
     {
-        $requestId = null;
-
-        if ($message->isListReply()) {
-            $selectionId = $this->getSelectionId($message);
-            if (str_starts_with($selectionId, 'request_')) {
-                $requestId = (int) str_replace('request_', '', $selectionId);
-            }
-        }
-
-        if (!$requestId) {
-            $this->start($session);
+        if (!$message->isListReply()) {
+            $this->showPendingRequests($session);
             return;
         }
 
-        $user = $this->getUser($session);
-        $shop = $user->shop;
+        $id = $message->getSelectionId();
 
-        $request = $this->searchService->getRequestForShop($requestId, $shop);
-
-        if (!$request) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ Request not found or has expired.",
-                [
-                    ['id' => 'retry', 'title' => '🔄 View Requests'],
-                    self::MENU_BUTTON,
-                ]
-            );
-            $this->start($session);
+        if (str_starts_with($id, 'req_')) {
+            $requestId = (int) str_replace('req_', '', $id);
+            $this->startWithRequest($session, $requestId, 'yes');
             return;
         }
 
-        // Check if already responded
-        if ($this->responseService->hasAlreadyResponded($request, $shop)) {
-            $existingResponse = $this->responseService->getShopResponse($request, $shop);
-            $message = ProductMessages::format(ProductMessages::ALREADY_RESPONDED, [
-                'price' => number_format($existingResponse->price ?? 0),
-            ]);
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                $message,
-                [['id' => 'more_requests', 'title' => '📬 More Requests']]
-            );
-            $this->start($session);
-            return;
-        }
-
-        // Check if request is still active
-        if (!$this->searchService->acceptsResponses($request)) {
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                ProductMessages::REQUEST_NO_LONGER_ACTIVE,
-                [['id' => 'more_requests', 'title' => '📬 More Requests']]
-            );
-            $this->start($session);
-            return;
-        }
-
-        // Store current request
-        $this->setTemp($session, 'respond_request_id', $request->id);
-
-        // Show request details
-        $this->showRequestDetails($session, $request);
+        $this->showPendingRequests($session);
     }
 
-    protected function handleAvailabilityChoice(IncomingMessage $message, ConversationSession $session): void
+    protected function showPendingRequests(ConversationSession $session): void
     {
-        $choice = null;
+        $user = $this->getUser($session);
+        $shop = $user?->shop;
 
-        if ($message->isInteractive()) {
-            $selectionId = $this->getSelectionId($message);
-            
-            // Handle new format: respond_yes_17, respond_no_17
-            if (preg_match('/^respond_(yes|no)_\d+$/', $selectionId, $matches)) {
-                $choice = $matches[1];
-            } else {
-                // Handle legacy format: yes, no, skip
-                $choice = $selectionId;
-            }
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (in_array($text, ['yes', 'have', 'available', '1'])) {
-                $choice = 'yes';
-            } elseif (in_array($text, ['no', 'dont', "don't", 'not', '2'])) {
-                $choice = 'no';
-            } elseif (in_array($text, ['skip', 'later', '3'])) {
-                $choice = 'skip';
-            }
+        if (!$shop) {
+            $this->sessionManager->resetToMainMenu($session);
+            return;
         }
 
-        match ($choice) {
-            'yes' => $this->startResponseFlow($session),
-            'no' => $this->createUnavailableResponse($session),
-            'skip' => $this->skipRequest($session),
-            default => $this->showRequestDetails($session),
-        };
+        $requests = $this->searchService->getRequestsForShop($shop, 10);
+
+        if ($requests->isEmpty()) {
+            $this->whatsApp->sendButtons(
+                $session->phone,
+                "📭 *Requests onnum illa*\n\nCustomers undaakumbol notify cheyyaam.",
+                [['id' => 'menu', 'title' => '🏠 Menu']]
+            );
+            $this->sessionManager->resetToMainMenu($session);
+            return;
+        }
+
+        // Build list
+        $rows = [];
+        foreach ($requests as $req) {
+            $distance = $this->formatDistance($req->distance_km ?? 0);
+            $rows[] = [
+                'id' => 'req_' . $req->id,
+                'title' => $this->truncate($req->description, 24),
+                'description' => "📍 {$distance} • ⏰ {$req->time_remaining}",
+            ];
+        }
+
+        $this->whatsApp->sendList(
+            $session->phone,
+            "📬 *{$requests->count()} Product Request(s)*\n\nRespond cheyyaan select cheyyuka:",
+            '📬 View Requests',
+            [['title' => 'Pending', 'rows' => array_slice($rows, 0, 10)]],
+            'Product Requests'
+        );
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::PRODUCT_RESPOND,
+            self::STEP_VIEW_REQUESTS
+        );
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 2: Price Input (FR-PRD-21)
+    |--------------------------------------------------------------------------
+    */
 
     protected function handlePriceInput(IncomingMessage $message, ConversationSession $session): void
     {
+        // Check for cancel/back
+        if ($message->isButtonReply()) {
+            $action = $message->getSelectionId();
+            if (in_array($action, ['cancel', 'back', 'menu', 'main_menu'])) {
+                $this->clearTempData($session);
+                $this->sessionManager->resetToMainMenu($session);
+                return;
+            }
+        }
+
         if (!$message->isText()) {
-            $this->handleInvalidInput($message, $session);
+            $this->askPrice($session, true);
             return;
         }
 
         $input = trim($message->text ?? '');
 
-        // Parse price and optional details
+        // FR-PRD-21: Parse price and model info
         $parsed = $this->responseService->parsePriceAndDetails($input);
 
         if (!$parsed['price']) {
-            $this->sendErrorWithOptions(
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                "⚠️ Invalid price. Please enter a number.\n\nExample: _15000_ or _15000 - Black color, warranty included_",
+                "⚠️ Valid price enter cheyyuka.\n\n_Eg: 1500 or 1500, Samsung model_",
                 [
-                    ['id' => 'back', 'title' => '⬅️ Back'],
-                    self::MENU_BUTTON,
+                    ['id' => 'cancel', 'title' => '❌ Cancel'],
                 ]
             );
             return;
         }
 
-        $this->setTemp($session, 'response_price', $parsed['price']);
-
+        // Store price and optional description
+        $this->sessionManager->setTempData($session, 'price', $parsed['price']);
         if ($parsed['description']) {
-            $this->setTemp($session, 'response_description', $parsed['description']);
+            $this->sessionManager->setTempData($session, 'description', $parsed['description']);
         }
 
-        // Move to image step
-        $this->nextStep($session, ProductSearchStep::RESPOND_IMAGE->value);
-        $this->askImage($session);
+        // Move to photo step
+        $this->sessionManager->setStep($session, self::STEP_ASK_PHOTO);
+        $this->askPhoto($session);
     }
 
-    protected function handleImageInput(IncomingMessage $message, ConversationSession $session): void
-    {
-        // Check for skip
-        if ($this->isSkip($message) || ($message->isText() && strtolower(trim($message->text ?? '')) === 'skip')) {
-            $this->nextStep($session, ProductSearchStep::RESPOND_NOTES->value);
-            $this->askNotes($session);
-            return;
-        }
-
-        if (!$message->isImage()) {
-            $this->sendButtonsWithMenu(
-                $session->phone,
-                "📷 Please send a photo of the product, or tap Skip to continue without one.",
-                [['id' => 'skip', 'title' => '⏭️ Skip Photo']]
-            );
-            return;
-        }
-
-        $mediaId = $this->getMediaId($message);
-
-        if ($mediaId) {
-            $this->sendTextWithMenu($session->phone, "⏳ Uploading image...");
-
-            $result = $this->mediaService->downloadAndStore($mediaId, 'responses');
-
-            if ($result['success']) {
-                $this->setTemp($session, 'response_image_url', $result['url']);
-                $this->sendTextWithMenu($session->phone, "✅ Image uploaded!");
-            } else {
-                $this->sendTextWithMenu($session->phone, "⚠️ Image upload failed, but you can continue.");
-            }
-        }
-
-        // Check if we already have description from price input
-        $description = $this->getTemp($session, 'response_description');
-
-        if ($description) {
-            // Skip notes step, go to confirmation
-            $this->nextStep($session, ProductSearchStep::CONFIRM_RESPONSE->value);
-            $this->askConfirmation($session);
-        } else {
-            $this->nextStep($session, ProductSearchStep::RESPOND_NOTES->value);
-            $this->askNotes($session);
-        }
-    }
-
-    protected function handleNotesInput(IncomingMessage $message, ConversationSession $session): void
-    {
-        // Check for skip
-        if ($this->isSkip($message)) {
-            $this->nextStep($session, ProductSearchStep::CONFIRM_RESPONSE->value);
-            $this->askConfirmation($session);
-            return;
-        }
-
-        if ($message->isText()) {
-            $text = trim($message->text ?? '');
-
-            if (strtolower($text) !== 'skip' && mb_strlen($text) > 0) {
-                $this->setTemp($session, 'response_description', $text);
-            }
-        }
-
-        // Move to confirmation
-        $this->nextStep($session, ProductSearchStep::CONFIRM_RESPONSE->value);
-        $this->askConfirmation($session);
-    }
-
-    protected function handleConfirmation(IncomingMessage $message, ConversationSession $session): void
-    {
-        $action = null;
-
-        if ($message->isInteractive()) {
-            $action = $this->getSelectionId($message);
-        } elseif ($message->isText()) {
-            $text = strtolower(trim($message->text ?? ''));
-            if (in_array($text, ['send', 'yes', 'confirm', '1'])) {
-                $action = 'send';
-            } elseif (in_array($text, ['edit', 'change', '2'])) {
-                $action = 'edit';
-            } elseif (in_array($text, ['cancel', 'no', '3'])) {
-                $action = 'cancel';
-            }
-        }
-
-        match ($action) {
-            'send' => $this->createAndSendResponse($session),
-            'edit' => $this->restartResponse($session),
-            'cancel' => $this->cancelResponse($session),
-            default => $this->handleInvalidInput($message, $session),
-        };
-    }
-
-    protected function handlePostResponse(IncomingMessage $message, ConversationSession $session): void
-    {
-        $action = $message->isInteractive() ? $this->getSelectionId($message) : null;
-
-        match ($action) {
-            'more_requests' => $this->start($session),
-            default => $this->goToMainMenu($session),
-        };
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Display Methods
-    |--------------------------------------------------------------------------
-    */
-
-    protected function showRequestDetails(ConversationSession $session, ?ProductRequest $request = null): void
-    {
-        if (!$request) {
-            $requestId = $this->getTemp($session, 'respond_request_id');
-            $user = $this->getUser($session);
-            $request = $this->searchService->getRequestForShop($requestId, $user->shop);
-        }
-
-        if (!$request) {
-            $this->start($session);
-            return;
-        }
-
-        $message = ProductMessages::format(ProductMessages::NEW_REQUEST_NOTIFICATION, [
-            'description' => $request->description,
-            'category' => ProductMessages::getCategoryLabel($request->category?->value ?? 'all'),
-            'distance' => ProductMessages::formatDistance($request->distance_km),
-            'time_remaining' => ProductMessages::formatTimeRemaining($request->expires_at),
-            'request_number' => $request->request_number,
-        ]);
-
-        // Send request image if available
-        if ($request->image_url) {
-            $this->sendImage($session->phone, $request->image_url, $message);
-        } else {
-            $this->sendTextWithMenu($session->phone, $message);
-        }
-
-        // Send choice buttons with menu
-        $this->sendButtonsWithMenu(
-            $session->phone,
-            ProductMessages::RESPOND_PROMPT,
-            [
-                ['id' => 'respond_yes_' . $request->id, 'title' => '✅ Yes, I Have It'],
-                ['id' => 'respond_no_' . $request->id, 'title' => "❌ Don't Have"],
-            ]
-        );
-
-        $this->nextStep($session, ProductSearchStep::RESPOND_AVAILABILITY->value);
-    }
-
+    /**
+     * Ask for price.
+     *
+     * @srs-ref FR-PRD-21 - Collect price and model info via free-text
+     */
     protected function askPrice(ConversationSession $session, bool $isRetry = false): void
     {
         $message = $isRetry
-            ? "⚠️ Invalid price. Please enter a number.\n\nExample: _15000_ or _15000 - Black color, warranty included_"
-            : ProductMessages::ASK_PRICE;
+            ? "⚠️ Valid price enter cheyyuka.\n\n_Eg: 1500 or 1500, Samsung model_"
+            : "💰 *Price/model entha?*\n\n_Eg: 1500 or 1500, Samsung model_";
 
-        $this->sendButtonsWithMenu(
+        $this->whatsApp->sendButtons(
             $session->phone,
             $message,
-            [['id' => 'back', 'title' => '⬅️ Back']]
-        );
-    }
-
-    protected function askImage(ConversationSession $session): void
-    {
-        $this->sendButtonsWithMenu(
-            $session->phone,
-            ProductMessages::ASK_PHOTO,
-            [['id' => 'skip', 'title' => '⏭️ Skip Photo']]
-        );
-    }
-
-    protected function askNotes(ConversationSession $session): void
-    {
-        $this->sendButtonsWithMenu(
-            $session->phone,
-            ProductMessages::ASK_DETAILS,
-            [['id' => 'skip', 'title' => '⏭️ Skip']]
-        );
-    }
-
-    protected function askConfirmation(ConversationSession $session): void
-    {
-        $price = $this->getTemp($session, 'response_price');
-        $description = $this->getTemp($session, 'response_description');
-        $imageUrl = $this->getTemp($session, 'response_image_url');
-
-        $message = ProductMessages::format(ProductMessages::RESPONSE_CONFIRM, [
-            'request_description' => $this->getTemp($session, 'request_description') ?? 'Product request',
-            'available' => 'Yes',
-            'price' => number_format($price),
-            'description' => $description ?: '(None)',
-            'has_photo' => $imageUrl ? '✅ Included' : '❌ Not included',
-        ]);
-
-        // Show image preview if uploaded
-        if ($imageUrl) {
-            $this->sendImage($session->phone, $imageUrl);
-        }
-
-        $this->sendButtons(
-            $session->phone,
-            $message,
-            [
-                ['id' => 'send', 'title' => '📤 Send Response'],
-                ['id' => 'edit', 'title' => '✏️ Edit'],
-                ['id' => 'cancel', 'title' => '❌ Cancel'],
-            ],
-            null,
-            MessageTemplates::GLOBAL_FOOTER
+            [['id' => 'cancel', 'title' => '❌ Cancel']]
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Action Methods
+    | Step 3: Photo Input (FR-PRD-20)
     |--------------------------------------------------------------------------
     */
 
-    protected function startResponseFlow(ConversationSession $session): void
+    protected function handlePhotoInput(IncomingMessage $message, ConversationSession $session): void
     {
-        $this->nextStep($session, ProductSearchStep::RESPOND_PRICE->value);
-        $this->askPrice($session);
+        // Check for skip
+        if ($message->isButtonReply()) {
+            $action = $message->getSelectionId();
+
+            if ($action === 'skip') {
+                // No photo, create response
+                $this->createResponse($session);
+                return;
+            }
+
+            if (in_array($action, ['cancel', 'menu', 'main_menu'])) {
+                $this->clearTempData($session);
+                $this->sessionManager->resetToMainMenu($session);
+                return;
+            }
+        }
+
+        // Check for text "skip"
+        if ($message->isText() && strtolower(trim($message->text ?? '')) === 'skip') {
+            $this->createResponse($session);
+            return;
+        }
+
+        // FR-PRD-20: Handle photo upload
+        if ($message->isImage()) {
+            $mediaId = $message->getMediaId();
+
+            if ($mediaId) {
+                $this->whatsApp->sendText($session->phone, "⏳ Photo uploading...");
+
+                try {
+                    $result = $this->mediaService->downloadAndStore($mediaId, 'responses');
+
+                    if ($result['success']) {
+                        $this->sessionManager->setTempData($session, 'photo_url', $result['url']);
+                        $this->whatsApp->sendText($session->phone, "✅ Photo saved!");
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Photo upload failed', ['error' => $e->getMessage()]);
+                    $this->whatsApp->sendText($session->phone, "⚠️ Photo upload failed, continuing...");
+                }
+            }
+
+            // Create response with photo
+            $this->createResponse($session);
+            return;
+        }
+
+        // Invalid input, re-prompt
+        $this->askPhoto($session);
     }
 
-    protected function createAndSendResponse(ConversationSession $session): void
+    /**
+     * Ask for photo.
+     *
+     * @srs-ref FR-PRD-20 - Prompt for product photo
+     */
+    protected function askPhoto(ConversationSession $session): void
+    {
+        $this->whatsApp->sendButtons(
+            $session->phone,
+            "📸 *Photo undo? (optional)*\n\nSend photo or skip.",
+            [
+                ['id' => 'skip', 'title' => '⏭️ Skip'],
+                ['id' => 'cancel', 'title' => '❌ Cancel'],
+            ]
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Response Creation (FR-PRD-22)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Create and send response.
+     *
+     * @srs-ref FR-PRD-22 - Store response with photo URL, price, description
+     */
+    protected function createResponse(ConversationSession $session): void
     {
         try {
-            $requestId = $this->getTemp($session, 'respond_request_id');
+            $requestId = $this->sessionManager->getTempData($session, 'request_id');
             $request = ProductRequest::find($requestId);
 
             if (!$request) {
@@ -670,49 +462,49 @@ class ProductResponseFlowHandler extends AbstractFlowHandler
             $user = $this->getUser($session);
             $shop = $user->shop;
 
+            $price = (float) $this->sessionManager->getTempData($session, 'price');
+            $description = $this->sessionManager->getTempData($session, 'description');
+            $photoUrl = $this->sessionManager->getTempData($session, 'photo_url');
+
             $response = $this->responseService->createResponse($request, $shop, [
-                'price' => $this->getTemp($session, 'response_price'),
-                'description' => $this->getTemp($session, 'response_description'),
-                'image_url' => $this->getTemp($session, 'response_image_url'),
+                'price' => $price,
+                'description' => $description,
+                'photo_url' => $photoUrl,
             ]);
 
-            // Send success message
-            $message = ProductMessages::format(ProductMessages::RESPONSE_SENT, [
-                'price' => number_format($response->price),
-                'request_number' => $request->request_number,
-            ]);
-
-            $this->sendButtonsWithMenu(
+            // Success message
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                $message,
-                [['id' => 'more_requests', 'title' => '📬 More Requests']]
+                "✅ *Response ayachittund!*\n\n💰 ₹" . number_format($price) . "\nCustomer-nu ariyikkaam 👍",
+                [
+                    ['id' => 'more_requests', 'title' => '📬 More Requests'],
+                    ['id' => 'menu', 'title' => '🏠 Menu'],
+                ]
             );
 
             // Notify customer
             $this->notifyCustomer($request, $response, $shop);
 
-            // Clear temp data
-            $this->clearResponseTempData($session);
+            // Clear and set done
+            $this->clearTempData($session);
+            $this->sessionManager->setStep($session, self::STEP_DONE);
 
-            $this->nextStep($session, ProductSearchStep::RESPONSE_SENT->value);
-
-            $this->logInfo('Product response sent', [
+            Log::info('Product response sent', [
                 'response_id' => $response->id,
                 'request_id' => $request->id,
                 'shop_id' => $shop->id,
+                'price' => $price,
             ]);
 
         } catch (\Exception $e) {
-            $this->logError('Failed to send response', [
-                'error' => $e->getMessage(),
-            ]);
+            Log::error('Failed to create response', ['error' => $e->getMessage()]);
 
-            $this->sendErrorWithOptions(
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                "❌ Failed to send response: " . $e->getMessage(),
+                "❌ Response send cheyyaan pattiyilla.\n\n{$e->getMessage()}",
                 [
                     ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
+                    ['id' => 'menu', 'title' => '🏠 Menu'],
                 ]
             );
 
@@ -720,114 +512,137 @@ class ProductResponseFlowHandler extends AbstractFlowHandler
         }
     }
 
-    protected function createUnavailableResponse(ConversationSession $session): void
+    /**
+     * Create "don't have" response.
+     */
+    protected function createNoResponse(ConversationSession $session, ProductRequest $request, $shop): void
     {
         try {
-            $requestId = $this->getTemp($session, 'respond_request_id');
-            $request = ProductRequest::find($requestId);
-
-            if (!$request) {
-                throw new \Exception('Request not found');
-            }
-
-            $user = $this->getUser($session);
-            $shop = $user->shop;
-
             $this->responseService->createUnavailableResponse($request, $shop);
 
-            $this->sendButtonsWithMenu(
+            $this->whatsApp->sendButtons(
                 $session->phone,
-                ProductMessages::RESPOND_NO_THANKS,
-                [['id' => 'more_requests', 'title' => '📬 More Requests']]
+                "👍 Noted. Ee request pinne kaanilla.",
+                [
+                    ['id' => 'more_requests', 'title' => '📬 More Requests'],
+                    ['id' => 'menu', 'title' => '🏠 Menu'],
+                ]
             );
 
-            // Clear and go to next request
-            $this->clearResponseTempData($session);
-            $this->start($session);
+            $this->clearTempData($session);
+            $this->showPendingRequests($session);
 
         } catch (\Exception $e) {
-            $this->logError('Failed to create unavailable response', [
-                'error' => $e->getMessage(),
-            ]);
-
-            $this->start($session);
+            Log::error('Failed to create no response', ['error' => $e->getMessage()]);
+            $this->showPendingRequests($session);
         }
     }
 
+    /**
+     * Skip request (don't respond now).
+     */
     protected function skipRequest(ConversationSession $session): void
     {
-        $this->sendButtonsWithMenu(
+        $this->whatsApp->sendButtons(
             $session->phone,
-            ProductMessages::RESPOND_SKIPPED,
-            [['id' => 'more_requests', 'title' => '📬 More Requests']]
+            "⏭️ Skipped. 'Product Requests'-ൽ pinne respond cheyyaam.",
+            [
+                ['id' => 'more_requests', 'title' => '📬 More Requests'],
+                ['id' => 'menu', 'title' => '🏠 Menu'],
+            ]
         );
-        $this->clearResponseTempData($session);
-        $this->start($session);
-    }
 
-    protected function notifyCustomer(ProductRequest $request, $response, $shop): void
-    {
-        $customer = $request->user;
-
-        if (!$customer) {
-            return;
-        }
-
-        $message = "🔔 *New Response to #{$request->request_number}*\n\n" .
-            "🏪 *{$shop->shop_name}* has responded:\n\n" .
-            "💰 *Price:* ₹" . number_format($response->price) . "\n\n" .
-            ($response->description ? "📝 *Details:* {$response->description}\n\n" : "") .
-            "Check all responses from the main menu.";
-
-        // Send response image if available
-        if ($response->photo_url) {
-            $this->sendImage($customer->phone, $response->photo_url, $message);
-            
-            // Send buttons separately after image
-            $this->sendButtonsWithMenu(
-                $customer->phone,
-                "What would you like to do?",
-                [['id' => 'view_responses', 'title' => '📬 View All Responses']]
-            );
-        } else {
-            $this->sendButtonsWithMenu(
-                $customer->phone,
-                $message,
-                [['id' => 'view_responses', 'title' => '📬 View All Responses']]
-            );
-        }
-    }
-
-    protected function restartResponse(ConversationSession $session): void
-    {
-        // Keep the request ID, clear response data
-        $requestId = $this->getTemp($session, 'respond_request_id');
-        $this->clearResponseTempData($session);
-        $this->setTemp($session, 'respond_request_id', $requestId);
-
-        $this->sendTextWithMenu($session->phone, "🔄 Let's start over.");
-
-        $this->startResponseFlow($session);
-    }
-
-    protected function cancelResponse(ConversationSession $session): void
-    {
-        $this->clearResponseTempData($session);
-        $this->sendTextWithMenu($session->phone, "❌ Response cancelled.");
-        $this->start($session);
+        $this->clearTempData($session);
+        $this->showPendingRequests($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Helper Methods
+    | Post-Response
     |--------------------------------------------------------------------------
     */
 
-    protected function clearResponseTempData(ConversationSession $session): void
+    protected function handlePostResponse(IncomingMessage $message, ConversationSession $session): void
     {
-        $this->sessionManager->removeTempData($session, 'respond_request_id');
-        $this->sessionManager->removeTempData($session, 'response_price');
-        $this->sessionManager->removeTempData($session, 'response_description');
-        $this->sessionManager->removeTempData($session, 'response_image_url');
+        $action = $message->isButtonReply() ? $message->getSelectionId() : null;
+
+        match ($action) {
+            'more_requests' => $this->showPendingRequests($session),
+            'retry' => $this->askPrice($session),
+            default => $this->sessionManager->resetToMainMenu($session),
+        };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Customer Notification
+    |--------------------------------------------------------------------------
+    */
+
+    protected function notifyCustomer(ProductRequest $request, ProductResponse $response, $shop): void
+    {
+        $customer = $request->user;
+        if (!$customer) return;
+
+        $price = '₹' . number_format((float) $response->price);
+
+        $message = "🔔 *Response for #{$request->request_number}*\n\n" .
+            "🏪 {$shop->shop_name}\n" .
+            "💰 {$price}";
+
+        if ($response->description) {
+            $message .= "\n📝 {$response->description}";
+        }
+
+        // Send with photo if available
+        if ($response->photo_url) {
+            $this->whatsApp->sendImage($customer->phone, $response->photo_url, $message);
+        } else {
+            $this->whatsApp->sendText($customer->phone, $message);
+        }
+
+        $this->whatsApp->sendButtons(
+            $customer->phone,
+            "Check all responses?",
+            [
+                ['id' => 'view_responses', 'title' => '📬 View Responses'],
+                ['id' => 'menu', 'title' => '🏠 Menu'],
+            ]
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    protected function getUser(ConversationSession $session): ?\App\Models\User
+    {
+        if ($session->user_id) {
+            return \App\Models\User::find($session->user_id);
+        }
+        return \App\Models\User::where('phone', $session->phone)->first();
+    }
+
+    protected function clearTempData(ConversationSession $session): void
+    {
+        $keys = ['request_id', 'request_desc', 'price', 'description', 'photo_url'];
+        foreach ($keys as $key) {
+            $this->sessionManager->removeTempData($session, $key);
+        }
+    }
+
+    protected function formatDistance(float $km): string
+    {
+        if ($km < 0.1) return 'Very close';
+        if ($km < 1) return round($km * 1000) . 'm';
+        return round($km, 1) . 'km';
+    }
+
+    protected function truncate(string $text, int $max): string
+    {
+        if (mb_strlen($text) <= $max) return $text;
+        return mb_substr($text, 0, $max - 1) . '…';
     }
 }

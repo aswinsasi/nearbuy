@@ -4,22 +4,44 @@ namespace App\Models;
 
 use App\Enums\RequestStatus;
 use App\Enums\ShopCategory;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
+/**
+ * Product Request Model.
+ *
+ * Represents a customer's request for a product broadcast to nearby shops.
+ *
+ * @property int $id
+ * @property int $user_id
+ * @property string $request_number (FR-PRD-03: format NB-XXXX)
+ * @property ShopCategory|null $category
+ * @property string $description (FR-PRD-02)
+ * @property string|null $image_url
+ * @property float $latitude
+ * @property float $longitude
+ * @property int $radius_km (FR-PRD-05: proximity)
+ * @property RequestStatus $status
+ * @property Carbon $expires_at (FR-PRD-06: default 2 hours)
+ * @property int $shops_notified (FR-PRD-05)
+ * @property int $response_count
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ *
+ * @property-read User $user
+ * @property-read Collection<ProductResponse> $responses
+ *
+ * @srs-ref FR-PRD-01 to FR-PRD-06
+ */
 class ProductRequest extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
     protected $fillable = [
         'user_id',
         'request_number',
@@ -35,11 +57,6 @@ class ProductRequest extends Model
         'response_count',
     ];
 
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
     protected $casts = [
         'category' => ShopCategory::class,
         'latitude' => 'decimal:8',
@@ -51,22 +68,34 @@ class ProductRequest extends Model
         'response_count' => 'integer',
     ];
 
+    protected $attributes = [
+        'radius_km' => 5,
+        'shops_notified' => 0,
+        'response_count' => 0,
+    ];
+
     /**
-     * Boot the model.
+     * Boot: auto-generate request_number and expires_at.
      */
     protected static function boot()
     {
         parent::boot();
 
-        static::creating(function ($request) {
+        static::creating(function (self $request) {
+            // FR-PRD-03: Generate unique request number (NB-XXXX)
             if (empty($request->request_number)) {
                 $request->request_number = self::generateRequestNumber();
             }
 
+            // FR-PRD-06: Set expiration (default 2 hours)
             if (empty($request->expires_at)) {
-                $request->expires_at = now()->addHours(
-                    config('nearbuy.product_search.request_expiry_hours', 48)
-                );
+                $hours = config('nearbuy.products.request_expiry_hours', 2);
+                $request->expires_at = now()->addHours($hours);
+            }
+
+            // Default status
+            if (empty($request->status)) {
+                $request->status = RequestStatus::OPEN;
             }
         });
     }
@@ -86,7 +115,7 @@ class ProductRequest extends Model
     }
 
     /**
-     * Alias for user relationship.
+     * Alias for user.
      */
     public function customer(): BelongsTo
     {
@@ -94,7 +123,7 @@ class ProductRequest extends Model
     }
 
     /**
-     * Get responses to this request.
+     * Get responses from shops.
      */
     public function responses(): HasMany
     {
@@ -103,12 +132,12 @@ class ProductRequest extends Model
 
     /*
     |--------------------------------------------------------------------------
-    | Scopes
+    | Query Scopes
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Scope to filter open requests.
+     * Scope: open requests.
      */
     public function scopeOpen(Builder $query): Builder
     {
@@ -116,32 +145,17 @@ class ProductRequest extends Model
     }
 
     /**
-     * Scope to filter active requests (open or collecting).
+     * Scope: active (open or collecting, not expired).
      */
     public function scopeActive(Builder $query): Builder
     {
-        return $query->whereIn('status', [RequestStatus::OPEN, RequestStatus::COLLECTING]);
+        return $query
+            ->whereIn('status', [RequestStatus::OPEN, RequestStatus::COLLECTING])
+            ->where('expires_at', '>', now());
     }
 
     /**
-     * Scope to filter by status.
-     */
-    public function scopeWithStatus(Builder $query, RequestStatus $status): Builder
-    {
-        return $query->where('status', $status);
-    }
-
-    /**
-     * Scope to filter by category.
-     */
-    public function scopeOfCategory(Builder $query, ShopCategory|string $category): Builder
-    {
-        $categoryValue = $category instanceof ShopCategory ? $category->value : $category;
-        return $query->where('category', $categoryValue);
-    }
-
-    /**
-     * Scope to filter requests not yet expired.
+     * Scope: not expired.
      */
     public function scopeNotExpired(Builder $query): Builder
     {
@@ -149,7 +163,7 @@ class ProductRequest extends Model
     }
 
     /**
-     * Scope to filter expired requests.
+     * Scope: expired.
      */
     public function scopeExpired(Builder $query): Builder
     {
@@ -157,36 +171,7 @@ class ProductRequest extends Model
     }
 
     /**
-     * Scope to find requests near a shop's location.
-     * This is used to find requests a shop might be able to respond to.
-     */
-    public function scopeNearShop(Builder $query, Shop $shop): Builder
-    {
-        // Find requests where the shop falls within the request's radius
-        return $query->whereRaw(
-            "ST_Distance_Sphere(
-                POINT(longitude, latitude),
-                POINT(?, ?)
-            ) <= radius_km * 1000",
-            [$shop->longitude, $shop->latitude]
-        );
-    }
-
-    /**
-     * Scope to find requests matching a shop's category.
-     */
-    public function scopeMatchingShop(Builder $query, Shop $shop): Builder
-    {
-        return $query
-            ->nearShop($shop)
-            ->where(function (Builder $q) use ($shop) {
-                $q->whereNull('category')
-                    ->orWhere('category', $shop->category);
-            });
-    }
-
-    /**
-     * Scope to filter by user.
+     * Scope: by user.
      */
     public function scopeByUser(Builder $query, User|int $user): Builder
     {
@@ -194,94 +179,52 @@ class ProductRequest extends Model
         return $query->where('user_id', $userId);
     }
 
+    /**
+     * Scope: by category.
+     */
+    public function scopeOfCategory(Builder $query, ShopCategory|string $category): Builder
+    {
+        $value = $category instanceof ShopCategory ? $category->value : strtoupper($category);
+        return $query->where('category', $value);
+    }
+
+    /**
+     * Scope: requests a shop can respond to (within radius + matching category).
+     *
+     * @srs-ref FR-PRD-05 - Identify eligible shops by category AND proximity
+     */
+    public function scopeForShop(Builder $query, Shop $shop): Builder
+    {
+        return $query
+            ->active()
+            ->where(function (Builder $q) use ($shop) {
+                $q->whereNull('category')
+                    ->orWhere('category', $shop->category);
+            })
+            ->whereRaw('
+                (ST_Distance_Sphere(
+                    POINT(longitude, latitude),
+                    POINT(?, ?)
+                ) / 1000) <= radius_km
+            ', [$shop->longitude, $shop->latitude])
+            ->whereNotExists(function ($sub) use ($shop) {
+                $sub->selectRaw('1')
+                    ->from('product_responses')
+                    ->whereColumn('product_responses.request_id', 'product_requests.id')
+                    ->where('product_responses.shop_id', $shop->id);
+            });
+    }
+
     /*
     |--------------------------------------------------------------------------
-    | Accessors & Helpers
+    | Static Methods
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Check if request is open for responses.
-     */
-    public function isOpen(): bool
-    {
-        return $this->status->acceptsResponses() && $this->expires_at->isFuture();
-    }
-
-    /**
-     * Check if request is expired.
-     */
-    public function isExpired(): bool
-    {
-        return $this->expires_at->isPast();
-    }
-
-    /**
-     * Check if a shop has already responded.
-     */
-    public function hasResponseFrom(Shop $shop): bool
-    {
-        return $this->responses()->where('shop_id', $shop->id)->exists();
-    }
-
-    /**
-     * Get time remaining until expiry.
-     */
-    public function getTimeRemainingAttribute(): string
-    {
-        if ($this->isExpired()) {
-            return 'Expired';
-        }
-
-        return $this->expires_at->diffForHumans(['parts' => 2]);
-    }
-
-    /**
-     * Mark request as collecting responses.
-     */
-    public function markAsCollecting(): void
-    {
-        if ($this->status === RequestStatus::OPEN) {
-            $this->update(['status' => RequestStatus::COLLECTING]);
-        }
-    }
-
-    /**
-     * Close the request.
-     */
-    public function close(): void
-    {
-        if ($this->status->acceptsResponses()) {
-            $this->update(['status' => RequestStatus::CLOSED]);
-        }
-    }
-
-    /**
-     * Mark as expired.
-     */
-    public function markAsExpired(): void
-    {
-        $this->update(['status' => RequestStatus::EXPIRED]);
-    }
-
-    /**
-     * Increment response count.
-     */
-    public function incrementResponseCount(): void
-    {
-        $this->increment('response_count');
-    }
-
-    /**
-     * Update shops notified count.
-     */
-    public function updateShopsNotified(int $count): void
-    {
-        $this->update(['shops_notified' => $count]);
-    }
-
-    /**
-     * Generate a unique request number.
+     * Generate unique request number (NB-XXXX).
+     *
+     * @srs-ref FR-PRD-03
      */
     public static function generateRequestNumber(): string
     {
@@ -293,25 +236,7 @@ class ProductRequest extends Model
     }
 
     /**
-     * Find shops that can respond to this request.
-     */
-    public function findEligibleShops(int $limit = 20): \Illuminate\Database\Eloquent\Collection
-    {
-        $query = Shop::query()
-            ->active()
-            ->nearLocation($this->latitude, $this->longitude, $this->radius_km)
-            ->withDistanceFrom($this->latitude, $this->longitude)
-            ->orderByDistance($this->latitude, $this->longitude);
-
-        if ($this->category) {
-            $query->ofCategory($this->category);
-        }
-
-        return $query->limit($limit)->get();
-    }
-
-    /**
-     * Create a new product request.
+     * Create request for user.
      */
     public static function createForUser(
         User $user,
@@ -330,7 +255,138 @@ class ProductRequest extends Model
             'radius_km' => $radiusKm,
             'category' => $category,
             'image_url' => $imageUrl,
-            'status' => RequestStatus::OPEN,
         ]);
+    }
+
+    /**
+     * Find eligible shops for this request.
+     *
+     * @srs-ref FR-PRD-05 - Identify eligible shops by category AND proximity
+     */
+    public function findEligibleShops(int $limit = 50): \Illuminate\Database\Eloquent\Collection
+    {
+        $query = Shop::query()
+            ->select('shops.*')
+            ->selectRaw('
+                (ST_Distance_Sphere(
+                    POINT(shops.longitude, shops.latitude),
+                    POINT(?, ?)
+                ) / 1000) as distance_km
+            ', [$this->longitude, $this->latitude])
+            ->where('shops.is_active', true)
+            ->havingRaw('distance_km <= ?', [$this->radius_km])
+            ->orderBy('distance_km')
+            ->limit($limit);
+
+        // FR-PRD-05: Filter by category if specified
+        if ($this->category) {
+            $query->where('shops.category', $this->category);
+        }
+
+        return $query->get();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors & Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Check if request accepts responses.
+     */
+    public function isOpen(): bool
+    {
+        return in_array($this->status, [RequestStatus::OPEN, RequestStatus::COLLECTING])
+            && $this->expires_at->isFuture();
+    }
+
+    /**
+     * Check if expired.
+     */
+    public function isExpired(): bool
+    {
+        return $this->expires_at->isPast();
+    }
+
+    /**
+     * Check if shop has responded.
+     */
+    public function hasResponseFrom(Shop $shop): bool
+    {
+        return $this->responses()->where('shop_id', $shop->id)->exists();
+    }
+
+    /**
+     * Get time remaining.
+     */
+    public function getTimeRemainingAttribute(): string
+    {
+        if ($this->isExpired()) {
+            return 'Expired';
+        }
+
+        $diff = now()->diff($this->expires_at);
+
+        if ($diff->d > 0) {
+            return "{$diff->d}d {$diff->h}h";
+        }
+        if ($diff->h > 0) {
+            return "{$diff->h}h {$diff->i}m";
+        }
+        return "{$diff->i} min";
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Status Actions
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Mark as collecting (first response received).
+     */
+    public function markAsCollecting(): void
+    {
+        if ($this->status === RequestStatus::OPEN) {
+            $this->update(['status' => RequestStatus::COLLECTING]);
+        }
+    }
+
+    /**
+     * Close the request.
+     */
+    public function close(): void
+    {
+        $this->update(['status' => RequestStatus::CLOSED]);
+    }
+
+    /**
+     * Mark as expired.
+     */
+    public function markAsExpired(): void
+    {
+        $this->update(['status' => RequestStatus::EXPIRED]);
+    }
+
+    /**
+     * Record shops notified count.
+     */
+    public function recordShopsNotified(int $count): void
+    {
+        $this->update(['shops_notified' => $count]);
+    }
+
+    /**
+     * Increment response count.
+     */
+    public function incrementResponses(): void
+    {
+        $this->increment('response_count');
+
+        // Transition to collecting on first response
+        if ($this->status === RequestStatus::OPEN) {
+            $this->update(['status' => RequestStatus::COLLECTING]);
+        }
     }
 }

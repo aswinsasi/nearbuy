@@ -1,80 +1,57 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Products;
 
 use App\Models\ProductRequest;
 use App\Models\ProductResponse;
 use App\Models\Shop;
-use App\Services\Media\MediaService;
-use Illuminate\Support\Collection;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Service for managing shop responses to product requests.
+ * Product Response Service.
  *
- * Handles response creation, validation, and queries.
+ * Handles shop responses to product requests.
  *
- * @example
- * $service = app(ProductResponseService::class);
- *
- * // Check if already responded
- * if (!$service->hasAlreadyResponded($request, $shop)) {
- *     $response = $service->createResponse($request, $shop, [
- *         'price' => 15000,
- *         'description' => 'Samsung M34, Green, 1 year warranty',
- *         'image_url' => 'https://s3.../product.jpg',
- *     ]);
- * }
+ * @srs-ref FR-PRD-20 to FR-PRD-23
  */
 class ProductResponseService
 {
-    public function __construct(
-        protected MediaService $mediaService,
-        protected ProductSearchService $searchService,
-    ) {}
-
     /*
     |--------------------------------------------------------------------------
-    | Response Creation
+    | Response Creation (FR-PRD-20 to FR-PRD-23)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Create a response indicating product is available.
+     * Create available response with price.
      *
-     * @param ProductRequest $request
-     * @param Shop $shop
-     * @param array{
-     *     price: float,
-     *     description?: string,
-     *     image_url?: string
-     * } $data
-     * @return ProductResponse
-     * @throws \Exception
+     * @srs-ref FR-PRD-22 - Store response with photo URL, price, description
+     * @srs-ref FR-PRD-23 - Prevent duplicate responses
+     *
+     * @throws \Exception if duplicate or request closed
      */
     public function createResponse(ProductRequest $request, Shop $shop, array $data): ProductResponse
     {
-        // Verify request is still accepting responses
-        if (!$this->searchService->acceptsResponses($request)) {
-            throw new \Exception('This request is no longer accepting responses');
-        }
-
-        // Check for duplicate
+        // FR-PRD-23: Check for duplicate
         if ($this->hasAlreadyResponded($request, $shop)) {
-            throw new \Exception('You have already responded to this request');
+            throw new \Exception('Already responded to this request');
         }
 
-        $response = ProductResponse::create([
-            'request_id' => $request->id,
-            'shop_id' => $shop->id,
-            'is_available' => true,
-            'price' => $data['price'],
-            'description' => $data['description'] ?? null,
-            'photo_url' => $data['image_url'] ?? null,
-        ]);
+        // Check if request still accepts responses
+        if (!$request->isOpen()) {
+            throw new \Exception('Request no longer accepts responses');
+        }
 
-        // Increment response count on request
-        $this->searchService->incrementResponseCount($request);
+        $response = ProductResponse::createAvailable(
+            $request,
+            $shop,
+            (float) $data['price'],
+            $data['description'] ?? null,
+            $data['photo_url'] ?? $data['image_url'] ?? null
+        );
 
         Log::info('Product response created', [
             'response_id' => $response->id,
@@ -87,32 +64,20 @@ class ProductResponseService
     }
 
     /**
-     * Create a response indicating product is NOT available.
+     * Create unavailable response (shop doesn't have product).
      *
-     * @param ProductRequest $request
-     * @param Shop $shop
-     * @return ProductResponse
+     * @srs-ref FR-PRD-23 - Prevent duplicate responses
      */
     public function createUnavailableResponse(ProductRequest $request, Shop $shop): ProductResponse
     {
-        // Check for duplicate
+        // FR-PRD-23: Check for duplicate
         if ($this->hasAlreadyResponded($request, $shop)) {
-            throw new \Exception('You have already responded to this request');
+            throw new \Exception('Already responded to this request');
         }
 
-        $response = ProductResponse::create([
-            'request_id' => $request->id,
-            'shop_id' => $shop->id,
-            'is_available' => false,
-            'price' => null,
-            'description' => null,
-            'image_url' => null,
-        ]);
+        $response = ProductResponse::createUnavailable($request, $shop);
 
-        // Increment response count
-        $this->searchService->incrementResponseCount($request);
-
-        Log::info('Product unavailable response created', [
+        Log::info('Unavailable response created', [
             'response_id' => $response->id,
             'request_id' => $request->id,
             'shop_id' => $shop->id,
@@ -123,52 +88,39 @@ class ProductResponseService
 
     /*
     |--------------------------------------------------------------------------
+    | Duplicate Check (FR-PRD-23)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Check if shop already responded.
+     *
+     * @srs-ref FR-PRD-23 - Prevent duplicate responses from same shop
+     */
+    public function hasAlreadyResponded(ProductRequest $request, Shop $shop): bool
+    {
+        return ProductResponse::existsForShop($request, $shop);
+    }
+
+    /**
+     * Get shop's existing response to a request.
+     */
+    public function getShopResponse(ProductRequest $request, Shop $shop): ?ProductResponse
+    {
+        return ProductResponse::query()
+            ->forRequest($request)
+            ->fromShop($shop)
+            ->first();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Response Queries
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Check if shop has already responded to a request.
-     */
-    public function hasAlreadyResponded(ProductRequest $request, Shop $shop): bool
-    {
-        return ProductResponse::query()
-            ->where('request_id', $request->id)
-            ->where('shop_id', $shop->id)
-            ->exists();
-    }
-
-    /**
-     * Get shop's response to a request.
-     */
-    public function getShopResponse(ProductRequest $request, Shop $shop): ?ProductResponse
-    {
-        return ProductResponse::query()
-            ->where('request_id', $request->id)
-            ->where('shop_id', $shop->id)
-            ->first();
-    }
-
-    /**
-     * Get response count for a request.
-     */
-    public function getResponseCount(ProductRequest $request): int
-    {
-        return $request->responses()->count();
-    }
-
-    /**
-     * Get available response count (excluding "not available").
-     */
-    public function getAvailableResponseCount(ProductRequest $request): int
-    {
-        return $request->responses()
-            ->where('is_available', true)
-            ->count();
-    }
-
-    /**
-     * Get a response by ID with shop details.
+     * Get response by ID with shop details.
      */
     public function getResponseWithShop(int $responseId): ?ProductResponse
     {
@@ -180,8 +132,11 @@ class ProductResponseService
     /**
      * Get response with distance from customer.
      */
-    public function getResponseWithDistance(int $responseId, float $customerLat, float $customerLng): ?ProductResponse
-    {
+    public function getResponseWithDistance(
+        int $responseId,
+        float $customerLat,
+        float $customerLng
+    ): ?ProductResponse {
         return ProductResponse::query()
             ->select('product_responses.*')
             ->selectRaw('
@@ -202,135 +157,52 @@ class ProductResponseService
     public function getShopResponses(Shop $shop, int $limit = 20): Collection
     {
         return ProductResponse::query()
-            ->where('shop_id', $shop->id)
-            ->with(['request'])
-            ->orderBy('created_at', 'desc')
+            ->fromShop($shop)
+            ->with('request')
+            ->newest()
             ->limit($limit)
             ->get();
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Response Statistics
-    |--------------------------------------------------------------------------
-    */
-
     /**
-     * Get response statistics for a shop.
+     * Get response count for request.
      */
-    public function getShopResponseStats(Shop $shop): array
+    public function getResponseCount(ProductRequest $request): int
     {
-        $total = ProductResponse::where('shop_id', $shop->id)->count();
-        $available = ProductResponse::where('shop_id', $shop->id)->where('is_available', true)->count();
-        $thisWeek = ProductResponse::where('shop_id', $shop->id)
-            ->where('created_at', '>=', now()->startOfWeek())
-            ->count();
-
-        return [
-            'total_responses' => $total,
-            'available_responses' => $available,
-            'unavailable_responses' => $total - $available,
-            'this_week' => $thisWeek,
-        ];
+        return $request->responses()->count();
     }
 
     /**
-     * Get average response time for a shop.
+     * Get available response count.
      */
-    public function getAverageResponseTime(Shop $shop): ?float
+    public function getAvailableCount(ProductRequest $request): int
     {
-        $responses = ProductResponse::query()
-            ->where('shop_id', $shop->id)
-            ->join('product_requests', 'product_responses.request_id', '=', 'product_requests.id')
-            ->selectRaw('AVG(TIMESTAMPDIFF(MINUTE, product_requests.created_at, product_responses.created_at)) as avg_minutes')
-            ->first();
-
-        return $responses->avg_minutes;
+        return $request->responses()->available()->count();
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Response Update
+    | Price Parsing (FR-PRD-21)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Update a response.
+     * Parse price from input.
+     *
+     * @srs-ref FR-PRD-21 - Collect price via free-text
      */
-    public function updateResponse(ProductResponse $response, array $data): ProductResponse
-    {
-        $updateData = [];
-
-        if (isset($data['price'])) {
-            $updateData['price'] = $data['price'];
-        }
-
-        if (isset($data['description'])) {
-            $updateData['description'] = $data['description'];
-        }
-
-        if (isset($data['image_url'])) {
-            $updateData['photo_url'] = $data['image_url'];
-        }
-
-        if (!empty($updateData)) {
-            $response->update($updateData);
-        }
-
-        return $response->fresh();
-    }
-
-    /**
-     * Delete a response and its media.
-     */
-    public function deleteResponse(ProductResponse $response): bool
-    {
-        try {
-            // Delete media if exists
-            if ($response->image_url) {
-                $this->mediaService->deleteFromStorage($response->image_url);
-            }
-
-            $response->delete();
-
-            Log::info('Product response deleted', [
-                'response_id' => $response->id,
-            ]);
-
-            return true;
-
-        } catch (\Exception $e) {
-            Log::error('Failed to delete response', [
-                'response_id' => $response->id,
-                'error' => $e->getMessage(),
-            ]);
-
-            return false;
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validation
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Validate price input.
-     */
-    public function validatePrice(string $input): ?float
+    public function parsePrice(string $input): ?float
     {
         // Remove currency symbols, spaces, commas
-        $cleaned = preg_replace('/[₹,\s]/', '', $input);
+        $cleaned = preg_replace('/[₹,\s]/', '', trim($input));
 
-        // Check if numeric
         if (!is_numeric($cleaned)) {
             return null;
         }
 
         $price = (float) $cleaned;
 
-        // Check reasonable range
+        // Validate range (₹1 to ₹1 crore)
         if ($price <= 0 || $price > 10000000) {
             return null;
         }
@@ -339,29 +211,66 @@ class ProductResponseService
     }
 
     /**
-     * Parse price and details from combined input.
-     * Format: "15000 - description here" or just "15000"
+     * Parse price and description from combined input.
+     *
+     * Formats:
+     * - "15000" → price only
+     * - "15000, Samsung model" → price + description
+     * - "15000 - Black color" → price + description
+     *
+     * @srs-ref FR-PRD-21 - Collect price and model info
      */
     public function parsePriceAndDetails(string $input): array
     {
         $input = trim($input);
 
-        // Check for separator
-        if (str_contains($input, ' - ')) {
-            $parts = explode(' - ', $input, 2);
-            $price = $this->validatePrice($parts[0]);
-            $description = trim($parts[1] ?? '');
+        // Try separators: " - ", ", ", " "
+        $separators = [' - ', ', ', ' '];
 
-            return [
-                'price' => $price,
-                'description' => $description ?: null,
-            ];
+        foreach ($separators as $sep) {
+            if (str_contains($input, $sep)) {
+                $parts = explode($sep, $input, 2);
+                $price = $this->parsePrice($parts[0]);
+
+                if ($price !== null) {
+                    $desc = trim($parts[1] ?? '');
+                    return [
+                        'price' => $price,
+                        'description' => $desc ?: null,
+                    ];
+                }
+            }
         }
 
         // Just price
         return [
-            'price' => $this->validatePrice($input),
+            'price' => $this->parsePrice($input),
             'description' => null,
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Statistics
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get shop response stats.
+     */
+    public function getShopStats(Shop $shop): array
+    {
+        $total = ProductResponse::fromShop($shop)->count();
+        $available = ProductResponse::fromShop($shop)->available()->count();
+        $thisWeek = ProductResponse::fromShop($shop)
+            ->where('created_at', '>=', now()->startOfWeek())
+            ->count();
+
+        return [
+            'total' => $total,
+            'available' => $available,
+            'unavailable' => $total - $available,
+            'this_week' => $thisWeek,
         ];
     }
 }
