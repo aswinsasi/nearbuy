@@ -1,11 +1,13 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Fish Alert Model - Track alerts sent to customers.
@@ -14,86 +16,64 @@ use Illuminate\Database\Eloquent\Builder;
  * @property int $fish_catch_id
  * @property int $fish_subscription_id
  * @property int $user_id
- * @property string $alert_type
- * @property string $status
+ * @property string $alert_type - new_catch, low_stock, sold_out
+ * @property string $status - pending, queued, sent, delivered, failed
+ * @property float|null $distance_km - Distance from customer (for sorting)
+ * @property \Carbon\Carbon|null $scheduled_for - PM-020 time preference
  * @property \Carbon\Carbon|null $queued_at
  * @property \Carbon\Carbon|null $sent_at
- * @property \Carbon\Carbon|null $delivered_at
  * @property \Carbon\Carbon|null $failed_at
  * @property string|null $failure_reason
  * @property string|null $whatsapp_message_id
- * @property int|null $batch_id
- * @property bool $is_batched
- * @property bool $was_clicked
+ * @property string|null $click_action - coming, message, location, dismiss
  * @property \Carbon\Carbon|null $clicked_at
- * @property string|null $click_action
- * @property float|null $distance_km
- * @property \Carbon\Carbon|null $scheduled_for
  *
- * @srs-ref Section 2.3.4 - Alert Delivery
+ * @srs-ref PM-016 to PM-020 Alert requirements
  */
 class FishAlert extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
         'fish_catch_id',
         'fish_subscription_id',
         'user_id',
         'alert_type',
         'status',
+        'distance_km',
+        'scheduled_for',
         'queued_at',
         'sent_at',
-        'delivered_at',
         'failed_at',
         'failure_reason',
         'whatsapp_message_id',
-        'batch_id',
-        'is_batched',
-        'was_clicked',
-        'clicked_at',
         'click_action',
-        'distance_km',
-        'scheduled_for',
+        'clicked_at',
+        'batch_id',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
-        'queued_at' => 'datetime',
-        'sent_at' => 'datetime',
-        'delivered_at' => 'datetime',
-        'failed_at' => 'datetime',
-        'is_batched' => 'boolean',
-        'was_clicked' => 'boolean',
-        'clicked_at' => 'datetime',
         'distance_km' => 'decimal:2',
         'scheduled_for' => 'datetime',
+        'queued_at' => 'datetime',
+        'sent_at' => 'datetime',
+        'failed_at' => 'datetime',
+        'clicked_at' => 'datetime',
     ];
 
-    /**
-     * Alert types.
-     */
+    // Alert types
     public const TYPE_NEW_CATCH = 'new_catch';
     public const TYPE_LOW_STOCK = 'low_stock';
-    public const TYPE_PRICE_DROP = 'price_drop';
+    public const TYPE_SOLD_OUT = 'sold_out';
 
-    /**
-     * Alert statuses.
-     */
+    // Statuses
     public const STATUS_PENDING = 'pending';
     public const STATUS_QUEUED = 'queued';
     public const STATUS_SENT = 'sent';
     public const STATUS_DELIVERED = 'delivered';
     public const STATUS_FAILED = 'failed';
 
-    /**
-     * Click actions.
-     */
+    // Click actions (PM-018)
     public const ACTION_COMING = 'coming';
     public const ACTION_MESSAGE = 'message';
     public const ACTION_LOCATION = 'location';
@@ -105,36 +85,19 @@ class FishAlert extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get the catch this alert is for.
-     */
     public function catch(): BelongsTo
     {
         return $this->belongsTo(FishCatch::class, 'fish_catch_id');
     }
 
-    /**
-     * Get the subscription that triggered this alert.
-     */
     public function subscription(): BelongsTo
     {
         return $this->belongsTo(FishSubscription::class, 'fish_subscription_id');
     }
 
-    /**
-     * Get the user who received this alert.
-     */
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
-    }
-
-    /**
-     * Get the batch this alert belongs to.
-     */
-    public function batch(): BelongsTo
-    {
-        return $this->belongsTo(FishAlertBatch::class, 'batch_id');
     }
 
     /*
@@ -143,40 +106,24 @@ class FishAlert extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Scope to filter pending alerts.
-     */
     public function scopePending(Builder $query): Builder
     {
         return $query->where('status', self::STATUS_PENDING);
     }
 
-    /**
-     * Scope to filter queued alerts.
-     */
     public function scopeQueued(Builder $query): Builder
     {
         return $query->where('status', self::STATUS_QUEUED);
     }
 
-    /**
-     * Scope to filter sent alerts.
-     */
     public function scopeSent(Builder $query): Builder
     {
         return $query->whereIn('status', [self::STATUS_SENT, self::STATUS_DELIVERED]);
     }
 
     /**
-     * Scope to filter failed alerts.
-     */
-    public function scopeFailed(Builder $query): Builder
-    {
-        return $query->where('status', self::STATUS_FAILED);
-    }
-
-    /**
-     * Scope to filter scheduled alerts ready to send.
+     * Ready to send - queued and scheduled time passed.
+     * @srs-ref PM-020 Respect time preferences
      */
     public function scopeReadyToSend(Builder $query): Builder
     {
@@ -188,51 +135,21 @@ class FishAlert extends Model
     }
 
     /**
-     * Scope to filter by alert type.
+     * Order by nearest first (for priority delivery).
      */
-    public function scopeOfType(Builder $query, string $type): Builder
+    public function scopeNearestFirst(Builder $query): Builder
     {
-        return $query->where('alert_type', $type);
+        return $query->orderBy('distance_km', 'asc');
     }
 
-    /**
-     * Scope to filter by user.
-     */
-    public function scopeForUser(Builder $query, int $userId): Builder
-    {
-        return $query->where('user_id', $userId);
-    }
-
-    /**
-     * Scope to filter by catch.
-     */
     public function scopeForCatch(Builder $query, int $catchId): Builder
     {
         return $query->where('fish_catch_id', $catchId);
     }
 
-    /**
-     * Scope to filter clicked alerts.
-     */
-    public function scopeClicked(Builder $query): Builder
+    public function scopeForUser(Builder $query, int $userId): Builder
     {
-        return $query->where('was_clicked', true);
-    }
-
-    /**
-     * Scope to filter non-batched alerts.
-     */
-    public function scopeImmediate(Builder $query): Builder
-    {
-        return $query->where('is_batched', false);
-    }
-
-    /**
-     * Scope to filter batched alerts.
-     */
-    public function scopeBatched(Builder $query): Builder
-    {
-        return $query->where('is_batched', true);
+        return $query->where('user_id', $userId);
     }
 
     /*
@@ -241,71 +158,15 @@ class FishAlert extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get alert type display.
-     */
-    public function getTypeDisplayAttribute(): string
+    public function getDistanceDisplayAttribute(): string
     {
-        return match ($this->alert_type) {
-            self::TYPE_NEW_CATCH => '🐟 New Catch',
-            self::TYPE_LOW_STOCK => '⚠️ Low Stock',
-            self::TYPE_PRICE_DROP => '💰 Price Drop',
-            default => '📢 Alert',
-        };
+        if (!$this->distance_km) return '';
+
+        return $this->distance_km < 1
+            ? round($this->distance_km * 1000) . 'm'
+            : round($this->distance_km, 1) . ' km';
     }
 
-    /**
-     * Get status display.
-     */
-    public function getStatusDisplayAttribute(): string
-    {
-        return match ($this->status) {
-            self::STATUS_PENDING => '⏳ Pending',
-            self::STATUS_QUEUED => '📤 Queued',
-            self::STATUS_SENT => '✅ Sent',
-            self::STATUS_DELIVERED => '✅ Delivered',
-            self::STATUS_FAILED => '❌ Failed',
-            default => '❓ Unknown',
-        };
-    }
-
-    /**
-     * Get click action display.
-     */
-    public function getClickActionDisplayAttribute(): ?string
-    {
-        if (!$this->click_action) {
-            return null;
-        }
-
-        return match ($this->click_action) {
-            self::ACTION_COMING => '🏃 Coming',
-            self::ACTION_MESSAGE => '💬 Messaged',
-            self::ACTION_LOCATION => '📍 Got Location',
-            self::ACTION_DISMISS => '❌ Dismissed',
-            default => $this->click_action,
-        };
-    }
-
-    /**
-     * Get distance display.
-     */
-    public function getDistanceDisplayAttribute(): ?string
-    {
-        if (!$this->distance_km) {
-            return null;
-        }
-
-        if ($this->distance_km < 1) {
-            return round($this->distance_km * 1000) . 'm';
-        }
-
-        return round($this->distance_km, 1) . ' km';
-    }
-
-    /**
-     * Check if alert was successful.
-     */
     public function getIsSuccessfulAttribute(): bool
     {
         return in_array($this->status, [self::STATUS_SENT, self::STATUS_DELIVERED]);
@@ -318,9 +179,10 @@ class FishAlert extends Model
     */
 
     /**
-     * Mark as queued.
+     * Mark as queued with optional scheduled time.
+     * @srs-ref PM-020 Queue for preferred time window
      */
-    public function markQueued(\Carbon\Carbon $scheduledFor = null): void
+    public function markQueued(?\Carbon\Carbon $scheduledFor = null): void
     {
         $this->update([
             'status' => self::STATUS_QUEUED,
@@ -332,27 +194,16 @@ class FishAlert extends Model
     /**
      * Mark as sent.
      */
-    public function markSent(string $whatsappMessageId = null): void
+    public function markSent(?string $messageId = null): void
     {
         $this->update([
             'status' => self::STATUS_SENT,
             'sent_at' => now(),
-            'whatsapp_message_id' => $whatsappMessageId,
+            'whatsapp_message_id' => $messageId,
         ]);
 
-        $this->subscription?->recordAlertReceived();
+        // Increment catch alert count
         $this->catch?->incrementAlertsSent();
-    }
-
-    /**
-     * Mark as delivered.
-     */
-    public function markDelivered(): void
-    {
-        $this->update([
-            'status' => self::STATUS_DELIVERED,
-            'delivered_at' => now(),
-        ]);
     }
 
     /**
@@ -363,66 +214,92 @@ class FishAlert extends Model
         $this->update([
             'status' => self::STATUS_FAILED,
             'failed_at' => now(),
-            'failure_reason' => $reason,
+            'failure_reason' => substr($reason, 0, 255),
         ]);
     }
 
     /**
      * Record click action.
+     * @srs-ref PM-018 Button actions
+     * @srs-ref PM-019 Increment coming count for social proof
      */
     public function recordClick(string $action): void
     {
         $this->update([
-            'was_clicked' => true,
-            'clicked_at' => now(),
             'click_action' => $action,
+            'clicked_at' => now(),
         ]);
 
-        $this->subscription?->recordAlertClicked();
-
-        // Update catch stats based on action
+        // PM-019: Increment coming count for social proof
         if ($action === self::ACTION_COMING) {
-            $this->catch?->incrementComingCount();
-        } elseif ($action === self::ACTION_MESSAGE) {
-            $this->catch?->incrementMessageCount();
+            $this->catch?->incrementComing();
         }
     }
 
     /**
-     * Create alert for a catch and subscription.
+     * Create alert for catch and subscription.
      */
     public static function createForCatch(
         FishCatch $catch,
         FishSubscription $subscription,
-        string $alertType = self::TYPE_NEW_CATCH,
-        bool $isBatched = false,
-        \Carbon\Carbon $scheduledFor = null
+        string $type = self::TYPE_NEW_CATCH,
+        ?\Carbon\Carbon $scheduledFor = null
     ): self {
-        $distance = $subscription->calculateDistanceTo(
-            $catch->catch_latitude,
-            $catch->catch_longitude
-        );
+        // Calculate distance for priority sorting
+        $distance = null;
+        if ($subscription->latitude && $subscription->longitude) {
+            $catchLat = $catch->seller?->latitude ?? 0;
+            $catchLng = $catch->seller?->longitude ?? 0;
+            $distance = self::calculateDistance(
+                $subscription->latitude,
+                $subscription->longitude,
+                $catchLat,
+                $catchLng
+            );
+        }
 
         return self::create([
             'fish_catch_id' => $catch->id,
             'fish_subscription_id' => $subscription->id,
             'user_id' => $subscription->user_id,
-            'alert_type' => $alertType,
-            'status' => $isBatched ? self::STATUS_PENDING : self::STATUS_QUEUED,
-            'queued_at' => $isBatched ? null : now(),
-            'is_batched' => $isBatched,
+            'alert_type' => $type,
+            'status' => self::STATUS_QUEUED,
+            'queued_at' => now(),
             'distance_km' => $distance,
             'scheduled_for' => $scheduledFor,
         ]);
     }
 
     /**
-     * Check if alert already exists for catch and subscription.
+     * Check if alert exists for catch + user.
      */
-    public static function existsForCatchAndSubscription(int $catchId, int $subscriptionId): bool
+    public static function existsForCatchAndUser(int $catchId, int $userId): bool
     {
         return self::where('fish_catch_id', $catchId)
-            ->where('fish_subscription_id', $subscriptionId)
+            ->where('user_id', $userId)
             ->exists();
+    }
+
+    /**
+     * Calculate distance between two points (Haversine formula).
+     */
+    protected static function calculateDistance(
+        float $lat1,
+        float $lng1,
+        float $lat2,
+        float $lng2
+    ): float {
+        $earthRadius = 6371; // km
+
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLng = deg2rad($lng2 - $lng1);
+
+        $a = sin($dLat / 2) * sin($dLat / 2) +
+            cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
+            sin($dLng / 2) * sin($dLng / 2);
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return $earthRadius * $c;
     }
 }

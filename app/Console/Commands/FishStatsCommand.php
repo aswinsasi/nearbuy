@@ -8,59 +8,54 @@ use App\Models\FishAlert;
 use App\Models\FishCatch;
 use App\Models\FishSeller;
 use App\Models\FishSubscription;
+use App\Models\FishType;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Command to display fish module statistics.
+ * Fish module statistics.
+ *
+ * Run daily at 8 AM for admin reporting.
  *
  * Usage:
- * - php artisan fish:stats
- * - php artisan fish:stats --period=week
- * - php artisan fish:stats --json
- *
- * @srs-ref Pacha Meen Module - Analytics
+ *   php artisan fish:stats                    # Today's stats
+ *   php artisan fish:stats --period=week      # Last 7 days
+ *   php artisan fish:stats --period=month     # Last 30 days
+ *   php artisan fish:stats --json             # JSON output
  */
 class FishStatsCommand extends Command
 {
-    /**
-     * The name and signature of the console command.
-     */
     protected $signature = 'fish:stats 
-                            {--period=today : Period to report (today, week, month, all)}
-                            {--json : Output as JSON}';
+                            {--period=today : Period (today, week, month, all)}
+                            {--json : Output as JSON}
+                            {--brief : Brief summary only}';
 
-    /**
-     * The console command description.
-     */
-    protected $description = 'Display fish module statistics and analytics';
+    protected $description = 'Display fish module statistics (catches, alerts, sold out %, top fish)';
 
-    /**
-     * Execute the console command.
-     */
     public function handle(): int
     {
         $period = $this->option('period');
         $asJson = $this->option('json');
+        $brief = $this->option('brief');
 
-        $dateFilter = $this->getDateFilter($period);
-
-        $stats = $this->gatherStats($dateFilter);
+        $since = $this->getSinceDate($period);
+        $stats = $this->gatherStats($since);
 
         if ($asJson) {
             $this->line(json_encode($stats, JSON_PRETTY_PRINT));
             return Command::SUCCESS;
         }
 
-        $this->displayStats($stats, $period);
+        if ($brief) {
+            $this->displayBrief($stats, $period);
+        } else {
+            $this->displayFull($stats, $period);
+        }
 
         return Command::SUCCESS;
     }
 
-    /**
-     * Get date filter based on period.
-     */
-    protected function getDateFilter(string $period): ?\Carbon\Carbon
+    protected function getSinceDate(string $period): ?\Carbon\Carbon
     {
         return match ($period) {
             'today' => now()->startOfDay(),
@@ -71,209 +66,213 @@ class FishStatsCommand extends Command
         };
     }
 
-    /**
-     * Gather all statistics.
-     */
     protected function gatherStats(?\Carbon\Carbon $since): array
     {
-        $catchQuery = FishCatch::query();
-        $alertQuery = FishAlert::query();
-        $subscriptionQuery = FishSubscription::query();
-        $sellerQuery = FishSeller::query();
-
-        if ($since) {
-            $catchQuery->where('created_at', '>=', $since);
-            $alertQuery->where('created_at', '>=', $since);
-        }
-
         return [
-            'sellers' => [
-                'total' => FishSeller::count(),
-                'active' => FishSeller::where('is_active', true)->count(),
-                'verified' => FishSeller::whereNotNull('verified_at')->count(),
+            'period' => [
+                'since' => $since?->toDateTimeString(),
+                'until' => now()->toDateTimeString(),
             ],
-            'catches' => [
-                'total' => $catchQuery->count(),
-                'available' => FishCatch::where('status', 'available')->count(),
-                'low_stock' => FishCatch::where('status', 'low_stock')->count(),
-                'sold_out' => FishCatch::where('status', 'sold_out')->count(),
-                'expired' => $since 
-                    ? FishCatch::where('status', 'expired')->where('created_at', '>=', $since)->count()
-                    : FishCatch::where('status', 'expired')->count(),
-            ],
-            'subscriptions' => [
-                'total' => FishSubscription::count(),
-                'active' => FishSubscription::where('is_active', true)->where('is_paused', false)->count(),
-                'paused' => FishSubscription::where('is_paused', true)->count(),
-                'by_frequency' => [
-                    'instant' => FishSubscription::where('alert_frequency', 'instant')->count(),
-                    'hourly' => FishSubscription::where('alert_frequency', 'hourly')->count(),
-                    'daily' => FishSubscription::where('alert_frequency', 'daily')->count(),
-                ],
-            ],
-            'alerts' => [
-                'total' => $alertQuery->count(),
-                'sent' => $alertQuery->clone()->whereNotNull('sent_at')->count(),
-                'delivered' => $alertQuery->clone()->whereNotNull('delivered_at')->count(),
-                'clicked' => $alertQuery->clone()->whereNotNull('clicked_at')->count(),
-                'failed' => $alertQuery->clone()->whereNotNull('failed_at')->count(),
-                'pending' => $alertQuery->clone()->whereNull('sent_at')->whereNull('failed_at')->count(),
-            ],
-            'engagement' => [
-                'total_views' => FishCatch::sum('views'),
-                'total_coming_responses' => DB::table('fish_catch_responses')
-                    ->where('response_type', 'coming')
-                    ->when($since, fn($q) => $q->where('created_at', '>=', $since))
-                    ->count(),
-                'avg_response_rate' => $this->calculateResponseRate($since),
-            ],
-            'top_fish_types' => $this->getTopFishTypes($since),
-            'top_sellers' => $this->getTopSellers($since),
+            'sellers' => $this->getSellerStats(),
+            'catches' => $this->getCatchStats($since),
+            'subscriptions' => $this->getSubscriptionStats(),
+            'alerts' => $this->getAlertStats($since),
+            'top_fish' => $this->getTopFishTypes($since, 5),
+            'top_sellers' => $this->getTopSellers($since, 5),
         ];
     }
 
-    /**
-     * Calculate alert click/response rate.
-     */
-    protected function calculateResponseRate(?\Carbon\Carbon $since): float
+    protected function getSellerStats(): array
     {
-        $query = FishAlert::whereNotNull('sent_at');
+        return [
+            'total' => FishSeller::count(),
+            'active' => FishSeller::where('is_active', true)->count(),
+            'verified' => FishSeller::whereNotNull('verified_at')->count(),
+            'pending' => FishSeller::whereNull('verified_at')->where('is_active', true)->count(),
+        ];
+    }
+
+    protected function getCatchStats(?\Carbon\Carbon $since): array
+    {
+        $baseQuery = FishCatch::query();
+        if ($since) {
+            $baseQuery->where('created_at', '>=', $since);
+        }
+
+        $posted = $baseQuery->count();
         
+        // Current status counts (not filtered by time)
+        $available = FishCatch::where('status', 'available')->count();
+        $lowStock = FishCatch::where('status', 'low_stock')->count();
+        $soldOut = FishCatch::where('status', 'sold_out')
+            ->when($since, fn($q) => $q->where('created_at', '>=', $since))
+            ->count();
+        $expired = FishCatch::where('status', 'expired')
+            ->when($since, fn($q) => $q->where('created_at', '>=', $since))
+            ->count();
+
+        // Sold out % = catches that sold out / total posted
+        $soldOutRate = $posted > 0 ? round(($soldOut / $posted) * 100, 1) : 0;
+
+        return [
+            'posted' => $posted,
+            'available_now' => $available,
+            'low_stock' => $lowStock,
+            'sold_out' => $soldOut,
+            'expired' => $expired,
+            'sold_out_rate' => $soldOutRate,
+        ];
+    }
+
+    protected function getSubscriptionStats(): array
+    {
+        return [
+            'total' => FishSubscription::count(),
+            'active' => FishSubscription::where('is_active', true)->where('is_paused', false)->count(),
+            'paused' => FishSubscription::where('is_paused', true)->count(),
+            'by_frequency' => [
+                'anytime' => FishSubscription::where('alert_frequency', 'anytime')->count(),
+                'early_morning' => FishSubscription::where('alert_frequency', 'early_morning')->count(),
+                'morning' => FishSubscription::where('alert_frequency', 'morning')->count(),
+                'twice_daily' => FishSubscription::where('alert_frequency', 'twice_daily')->count(),
+            ],
+        ];
+    }
+
+    protected function getAlertStats(?\Carbon\Carbon $since): array
+    {
+        $query = FishAlert::query();
         if ($since) {
             $query->where('created_at', '>=', $since);
         }
 
-        $sent = $query->count();
+        $total = $query->count();
+        $sent = $query->clone()->where('status', 'sent')->count();
         $clicked = $query->clone()->whereNotNull('clicked_at')->count();
+        $failed = $query->clone()->where('status', 'failed')->count();
+        $pending = $query->clone()->where('status', 'pending')->count();
 
-        return $sent > 0 ? round(($clicked / $sent) * 100, 2) : 0;
+        return [
+            'total' => $total,
+            'sent' => $sent,
+            'clicked' => $clicked,
+            'failed' => $failed,
+            'pending' => $pending,
+            'click_rate' => $sent > 0 ? round(($clicked / $sent) * 100, 1) : 0,
+            'delivery_rate' => $total > 0 ? round(($sent / $total) * 100, 1) : 0,
+        ];
     }
 
-    /**
-     * Get top fish types by catch count.
-     */
-    protected function getTopFishTypes(?\Carbon\Carbon $since): array
+    protected function getTopFishTypes(?\Carbon\Carbon $since, int $limit): array
     {
-        $query = FishCatch::select('fish_type_id', DB::raw('count(*) as count'))
+        $query = FishCatch::select('fish_type_id', DB::raw('COUNT(*) as count'))
             ->groupBy('fish_type_id')
             ->orderByDesc('count')
-            ->limit(5);
+            ->limit($limit);
 
         if ($since) {
             $query->where('created_at', '>=', $since);
         }
 
-        return $query->with('fishType:id,name_en,name_ml')
-            ->get()
-            ->map(fn($item) => [
-                'fish_type' => $item->fishType?->name_en ?? 'Unknown',
-                'count' => $item->count,
-            ])
-            ->toArray();
+        return $query->get()->map(function ($item) {
+            $fish = FishType::find($item->fish_type_id);
+            return [
+                'fish' => $fish?->display_name ?? '🐟 Unknown',
+                'catches' => $item->count,
+            ];
+        })->toArray();
     }
 
-    /**
-     * Get top sellers by catch count.
-     */
-    protected function getTopSellers(?\Carbon\Carbon $since): array
+    protected function getTopSellers(?\Carbon\Carbon $since, int $limit): array
     {
-        $query = FishCatch::select('fish_seller_id', DB::raw('count(*) as count'))
+        $query = FishCatch::select('fish_seller_id', DB::raw('COUNT(*) as count'))
             ->groupBy('fish_seller_id')
             ->orderByDesc('count')
-            ->limit(5);
+            ->limit($limit);
 
         if ($since) {
             $query->where('created_at', '>=', $since);
         }
 
-        return $query->with('seller:id,business_name')
-            ->get()
-            ->map(fn($item) => [
-                'seller' => $item->seller?->business_name ?? 'Unknown',
+        return $query->get()->map(function ($item) {
+            $seller = FishSeller::find($item->fish_seller_id);
+            return [
+                'seller' => $seller?->business_name ?? 'Unknown',
                 'catches' => $item->count,
-            ])
-            ->toArray();
+            ];
+        })->toArray();
     }
 
-    /**
-     * Display stats in formatted output.
-     */
-    protected function displayStats(array $stats, string $period): void
+    protected function displayBrief(array $stats, string $period): void
+    {
+        $c = $stats['catches'];
+        $a = $stats['alerts'];
+        $s = $stats['subscriptions'];
+
+        $this->newLine();
+        $this->info("🐟 Fish Stats ({$period})");
+        $this->line("Catches: {$c['posted']} posted | {$c['sold_out_rate']}% sold out | {$c['expired']} expired");
+        $this->line("Alerts: {$a['sent']} sent | {$a['click_rate']}% clicked | {$a['pending']} pending");
+        $this->line("Subscribers: {$s['active']} active | {$s['paused']} paused");
+    }
+
+    protected function displayFull(array $stats, string $period): void
     {
         $this->newLine();
-        $this->info("🐟 Fish Module Statistics ({$period})");
-        $this->line(str_repeat('=', 50));
+        $this->info("🐟 Fish Module Stats ({$period})");
+        $this->line(str_repeat('═', 50));
 
         // Sellers
         $this->newLine();
         $this->comment('👥 Sellers');
-        $this->table(
-            ['Metric', 'Count'],
-            [
-                ['Total Sellers', $stats['sellers']['total']],
-                ['Active', $stats['sellers']['active']],
-                ['Verified', $stats['sellers']['verified']],
-            ]
-        );
+        $this->table(['Metric', 'Count'], [
+            ['Total', $stats['sellers']['total']],
+            ['Active', $stats['sellers']['active']],
+            ['Verified', $stats['sellers']['verified']],
+            ['Pending Verification', $stats['sellers']['pending']],
+        ]);
 
         // Catches
         $this->comment('🎣 Catches');
-        $this->table(
-            ['Status', 'Count'],
-            [
-                ['Total', $stats['catches']['total']],
-                ['Available', $stats['catches']['available']],
-                ['Low Stock', $stats['catches']['low_stock']],
-                ['Sold Out', $stats['catches']['sold_out']],
-                ['Expired', $stats['catches']['expired']],
-            ]
-        );
+        $this->table(['Status', 'Count'], [
+            ['Posted (period)', $stats['catches']['posted']],
+            ['Available Now', $stats['catches']['available_now']],
+            ['Low Stock', $stats['catches']['low_stock']],
+            ['Sold Out', $stats['catches']['sold_out']],
+            ['Expired', $stats['catches']['expired']],
+            ['*Sold Out Rate*', $stats['catches']['sold_out_rate'] . '%'],
+        ]);
 
-        // Subscriptions
+        // Subscriptions (PM-014 frequencies)
         $this->comment('🔔 Subscriptions');
-        $this->table(
-            ['Metric', 'Count'],
-            [
-                ['Total', $stats['subscriptions']['total']],
-                ['Active', $stats['subscriptions']['active']],
-                ['Paused', $stats['subscriptions']['paused']],
-                ['Instant Alerts', $stats['subscriptions']['by_frequency']['instant']],
-                ['Hourly Digest', $stats['subscriptions']['by_frequency']['hourly']],
-                ['Daily Digest', $stats['subscriptions']['by_frequency']['daily']],
-            ]
-        );
+        $this->table(['Metric', 'Count'], [
+            ['Total', $stats['subscriptions']['total']],
+            ['Active', $stats['subscriptions']['active']],
+            ['Paused', $stats['subscriptions']['paused']],
+            ['🔔 Anytime (instant)', $stats['subscriptions']['by_frequency']['anytime']],
+            ['🌅 Early Morning (5-7)', $stats['subscriptions']['by_frequency']['early_morning']],
+            ['☀️ Morning (7-9)', $stats['subscriptions']['by_frequency']['morning']],
+            ['📅 Twice Daily', $stats['subscriptions']['by_frequency']['twice_daily']],
+        ]);
 
         // Alerts
         $this->comment('📨 Alerts');
-        $this->table(
-            ['Status', 'Count'],
-            [
-                ['Total', $stats['alerts']['total']],
-                ['Sent', $stats['alerts']['sent']],
-                ['Delivered', $stats['alerts']['delivered']],
-                ['Clicked', $stats['alerts']['clicked']],
-                ['Failed', $stats['alerts']['failed']],
-                ['Pending', $stats['alerts']['pending']],
-            ]
-        );
+        $this->table(['Metric', 'Value'], [
+            ['Total', $stats['alerts']['total']],
+            ['Sent', $stats['alerts']['sent']],
+            ['Clicked', $stats['alerts']['clicked']],
+            ['Failed', $stats['alerts']['failed']],
+            ['Pending', $stats['alerts']['pending']],
+            ['*Click Rate*', $stats['alerts']['click_rate'] . '%'],
+            ['*Delivery Rate*', $stats['alerts']['delivery_rate'] . '%'],
+        ]);
 
-        // Engagement
-        $this->comment('📊 Engagement');
-        $this->table(
-            ['Metric', 'Value'],
-            [
-                ['Total Views', number_format($stats['engagement']['total_views'])],
-                ['Coming Responses', $stats['engagement']['total_coming_responses']],
-                ['Alert Response Rate', $stats['engagement']['avg_response_rate'] . '%'],
-            ]
-        );
-
-        // Top Fish Types
-        if (!empty($stats['top_fish_types'])) {
+        // Top Fish
+        if (!empty($stats['top_fish'])) {
             $this->comment('🏆 Top Fish Types');
             $this->table(
-                ['Fish Type', 'Catches'],
-                array_map(fn($item) => [$item['fish_type'], $item['count']], $stats['top_fish_types'])
+                ['Fish', 'Catches'],
+                array_map(fn($f) => [$f['fish'], $f['catches']], $stats['top_fish'])
             );
         }
 
@@ -282,7 +281,7 @@ class FishStatsCommand extends Command
             $this->comment('⭐ Top Sellers');
             $this->table(
                 ['Seller', 'Catches'],
-                array_map(fn($item) => [$item['seller'], $item['catches']], $stats['top_sellers'])
+                array_map(fn($s) => [$s['seller'], $s['catches']], $stats['top_sellers'])
             );
         }
     }

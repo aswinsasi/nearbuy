@@ -7,37 +7,43 @@ namespace App\Services\Flow\Handlers\Fish;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
 use App\Enums\FishSellerType;
-use App\Enums\UserType;
+use App\Enums\FishSellerVerificationStatus;
 use App\Models\ConversationSession;
 use App\Services\Fish\FishSellerService;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
+use App\Services\Media\MediaService;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\FishMessages;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Handler for fish seller registration flow.
+ * Fish Seller Registration Flow Handler.
  *
- * IMPORTANT: This handler supports TWO registration paths:
- * 1. Existing registered users (customers/shops) - adds fish seller profile
- * 2. New unregistered users - creates new user with FISH_SELLER type
+ * Simple, conversational flow for Kerala fishermen who may not be tech-savvy.
  *
- * @srs-ref Pacha Meen Module - Seller Registration
- * @srs-ref Section 2.2: Any user can become a fish seller
+ * Flow steps:
+ * 1. Ask seller type (3 buttons: Fisherman, Fish Shop, Vendor)
+ * 2. Ask location (Send Location button)
+ * 3. Ask location name (harbour/market/shop name)
+ * 4. Ask verification photo (PM-002)
+ * 5. Complete with "pending verification" status
+ *
+ * @srs-ref PM-001 to PM-004 Fish seller requirements
  */
 class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
 {
-    protected const STEP_SELLER_TYPE = 'select_type';
-    protected const STEP_BUSINESS_NAME = 'business_name';
-    protected const STEP_LOCATION = 'location';
-    protected const STEP_MARKET_NAME = 'market_name';
-    protected const STEP_CONFIRM = 'confirm';
+    // Flow steps
+    protected const STEP_ASK_TYPE = 'ask_type';
+    protected const STEP_ASK_LOCATION = 'ask_location';
+    protected const STEP_ASK_LOCATION_NAME = 'ask_location_name';
+    protected const STEP_ASK_PHOTO = 'ask_photo';
+    protected const STEP_COMPLETE = 'complete';
 
     public function __construct(
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
-        protected FishSellerService $sellerService
+        protected FishSellerService $sellerService,
+        protected ?MediaService $mediaService = null,
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -50,36 +56,53 @@ class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
     protected function getSteps(): array
     {
         return [
-            self::STEP_SELLER_TYPE,
-            self::STEP_BUSINESS_NAME,
-            self::STEP_LOCATION,
-            self::STEP_MARKET_NAME,
-            self::STEP_CONFIRM,
+            self::STEP_ASK_TYPE,
+            self::STEP_ASK_LOCATION,
+            self::STEP_ASK_LOCATION_NAME,
+            self::STEP_ASK_PHOTO,
+            self::STEP_COMPLETE,
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Flow Entry
+    |--------------------------------------------------------------------------
+    */
 
     public function start(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
-        // Check if user is already a fish seller
-        if ($user && $user->fishSeller) {
-            $this->sendButtonsWithMenu(
+        // Check if already a fish seller
+        if ($user?->fishSeller) {
+            $seller = $user->fishSeller;
+            $this->sendButtons(
                 $session->phone,
-                "🐟 *Already Registered*\n\nYou are already registered as a fish seller!\n\nBusiness: *{$user->fishSeller->business_name}*",
+                "🐟 *Already Registered!*\n\n" .
+                "Nee already fish seller aayi registered aanu:\n" .
+                "*{$seller->location_name}*\n" .
+                $seller->seller_type->display() . "\n\n" .
+                "Status: {$seller->verification_status->shortBadge()}",
                 [
                     ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
-                    ['id' => 'fish_seller_menu', 'title' => '📋 Seller Menu'],
+                    ['id' => 'fish_menu', 'title' => '📋 Seller Menu'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ]
             );
             return;
         }
 
-        $this->clearTemp($session);
-        $this->nextStep($session, self::STEP_SELLER_TYPE);
+        // Clear any previous temp data
+        $this->clearTempData($session);
 
-        $response = FishMessages::sellerRegistrationWelcome();
-        $this->sendFishMessage($session->phone, $response);
+        // Store user name if available (for existing users)
+        if ($user?->name) {
+            $this->setTempData($session, 'name', $user->name);
+        }
+
+        // Step 1: Ask seller type
+        $this->askSellerType($session);
     }
 
     public function handle(IncomingMessage $message, ConversationSession $session): void
@@ -90,295 +113,388 @@ class FishSellerRegistrationFlowHandler extends AbstractFlowHandler
 
         $step = $session->current_step;
 
-        Log::debug('FishSellerRegistrationFlowHandler', [
+        Log::debug('FishSellerRegistration step', [
             'step' => $step,
-            'message_type' => $message->type,
+            'type' => $message->type,
         ]);
 
         match ($step) {
-            self::STEP_SELLER_TYPE => $this->handleSellerType($message, $session),
-            self::STEP_BUSINESS_NAME => $this->handleBusinessName($message, $session),
-            self::STEP_LOCATION => $this->handleLocation($message, $session),
-            self::STEP_MARKET_NAME => $this->handleMarketName($message, $session),
-            self::STEP_CONFIRM => $this->handleConfirm($message, $session),
+            self::STEP_ASK_TYPE => $this->handleSellerType($message, $session),
+            self::STEP_ASK_LOCATION => $this->handleLocation($message, $session),
+            self::STEP_ASK_LOCATION_NAME => $this->handleLocationName($message, $session),
+            self::STEP_ASK_PHOTO => $this->handlePhoto($message, $session),
             default => $this->start($session),
         };
+    }
+
+    public function handleInvalidInput(IncomingMessage $message, ConversationSession $session): void
+    {
+        $this->promptCurrentStep($session);
+    }
+
+    protected function promptCurrentStep(ConversationSession $session): void
+    {
+        $step = $session->current_step;
+
+        match ($step) {
+            self::STEP_ASK_TYPE => $this->askSellerType($session),
+            self::STEP_ASK_LOCATION => $this->askLocation($session),
+            self::STEP_ASK_LOCATION_NAME => $this->askLocationName($session),
+            self::STEP_ASK_PHOTO => $this->askPhoto($session),
+            default => $this->start($session),
+        };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 1: Ask Seller Type
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askSellerType(ConversationSession $session): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            "🐟 *Meen Seller aayi register cheyyaam!*\n\n" .
+            "Nee aara?\n" .
+            "_Who are you?_",
+            FishSellerType::toButtons() // Exactly 3 buttons!
+        );
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::FISH_SELLER_REGISTER,
+            self::STEP_ASK_TYPE
+        );
     }
 
     protected function handleSellerType(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
 
-        $sellerType = match ($selectionId) {
-            'seller_type_fisherman', 'seller_fisherman' => FishSellerType::FISHERMAN,
-            'seller_type_harbour_vendor', 'seller_vendor' => FishSellerType::HARBOUR_VENDOR,
-            'seller_type_fish_shop', 'seller_shop' => FishSellerType::FISH_SHOP,
-            'seller_type_wholesaler', 'seller_wholesaler' => FishSellerType::WHOLESALER,
-            default => null,
-        };
+        // Try to parse seller type from button ID
+        $sellerType = FishSellerType::fromButtonId($selectionId);
+
+        if (!$sellerType) {
+            // Try direct value match
+            $sellerType = FishSellerType::tryFrom($selectionId);
+        }
 
         if ($sellerType) {
-            $this->setTemp($session, 'seller_type', $sellerType->value);
-            $this->nextStep($session, self::STEP_BUSINESS_NAME);
+            $this->setTempData($session, 'seller_type', $sellerType->value);
 
-            $response = FishMessages::askBusinessName($sellerType);
-            $this->sendFishMessage($session->phone, $response);
+            Log::info('Seller type selected', [
+                'phone' => $session->phone,
+                'type' => $sellerType->value,
+            ]);
+
+            // Step 2: Ask location
+            $this->askLocation($session);
             return;
         }
 
-        $response = FishMessages::askSellerType();
-        $this->sendFishMessage($session->phone, $response);
+        // Invalid selection - re-ask
+        $this->askSellerType($session);
     }
 
-    protected function handleBusinessName(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 2: Ask Location
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askLocation(ConversationSession $session): void
     {
-        $text = $this->getTextContent($message);
+        $sellerTypeValue = $this->getTempData($session, 'seller_type');
+        $sellerType = FishSellerType::from($sellerTypeValue);
 
-        if ($text && strlen(trim($text)) >= 2 && strlen(trim($text)) <= 100) {
-            $this->setTemp($session, 'business_name', trim($text));
-            $this->nextStep($session, self::STEP_LOCATION);
+        // Use type-specific location prompt
+        $this->whatsApp->requestLocation(
+            $session->phone,
+            $sellerType->locationPrompt() . "\n_Location ayakkuka_"
+        );
 
-            $response = FishMessages::askSellerLocation();
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        $this->sendTextWithMenu($session->phone, "Please enter a valid business name (2-100 characters).");
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::FISH_SELLER_REGISTER,
+            self::STEP_ASK_LOCATION
+        );
     }
 
     protected function handleLocation(IncomingMessage $message, ConversationSession $session): void
     {
         $location = $this->getLocation($message);
 
-        if ($location) {
-            $this->setTemp($session, 'latitude', $location['latitude']);
-            $this->setTemp($session, 'longitude', $location['longitude']);
+        if ($location && isset($location['latitude'], $location['longitude'])) {
+            $this->setTempData($session, 'latitude', $location['latitude']);
+            $this->setTempData($session, 'longitude', $location['longitude']);
 
-            $sellerType = $this->getTemp($session, 'seller_type');
-
-            if ($sellerType === 'market_stall') {
-                $this->nextStep($session, self::STEP_MARKET_NAME);
-                $response = FishMessages::askMarketName();
-                $this->sendFishMessage($session->phone, $response);
-            } else {
-                $this->nextStep($session, self::STEP_CONFIRM);
-                $this->showConfirmation($session);
-            }
-            return;
-        }
-
-        $response = FishMessages::askSellerLocation();
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    protected function handleMarketName(IncomingMessage $message, ConversationSession $session): void
-    {
-        $text = $this->getTextContent($message);
-
-        if ($this->isSkip($message)) {
-            $this->setTemp($session, 'market_name', null);
-        } elseif ($text && strlen(trim($text)) >= 2) {
-            $this->setTemp($session, 'market_name', trim($text));
-        } else {
-            $response = FishMessages::askMarketName();
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        $this->nextStep($session, self::STEP_CONFIRM);
-        $this->showConfirmation($session);
-    }
-
-    protected function handleConfirm(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        if ($selectionId === 'confirm_register') {
-            $this->registerFishSeller($session);
-            return;
-        }
-
-        if ($selectionId === 'cancel_register') {
-            $this->clearTemp($session);
-            $this->sendTextWithMenu($session->phone, "❌ Registration cancelled.");
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        $this->showConfirmation($session);
-    }
-
-    /**
-     * Register the user as a fish seller.
-     *
-     * FIXED: Now handles TWO cases:
-     * 1. Existing registered user → registerExistingUserAsSeller()
-     * 2. New unregistered user → createFishSeller()
-     *
-     * @srs-ref Section 2.2: Any user can become a fish seller
-     */
-    protected function registerFishSeller(ConversationSession $session): void
-    {
-        $user = $this->getUser($session);
-
-        // Get registration data from temp storage
-        $sellerTypeValue = $this->getTemp($session, 'seller_type');
-        $sellerType = FishSellerType::from($sellerTypeValue);
-        $businessName = $this->getTemp($session, 'business_name');
-        $latitude = (float) $this->getTemp($session, 'latitude');
-        $longitude = (float) $this->getTemp($session, 'longitude');
-        $marketName = $this->getTemp($session, 'market_name');
-
-        try {
-            // Check if user is already registered (has registered_at set)
-            if ($user && $user->registered_at) {
-                // EXISTING USER: Add fish seller profile without changing user type
-                // User keeps their type (CUSTOMER, SHOP) but also becomes a fish seller
-                Log::info('Registering existing user as fish seller', [
-                    'user_id' => $user->id,
-                    'user_type' => $user->type->value,
-                    'seller_type' => $sellerType->value,
-                ]);
-
-                $seller = $this->sellerService->registerExistingUserAsSeller(
-                    $user,
-                    $sellerType,
-                    $businessName,
-                    $latitude,
-                    $longitude,
-                    $marketName
-                );
-
-                $this->clearTemp($session);
-
-                // Show success message with context
-                $userTypeLabel = $user->type === UserType::SHOP ? 'shop owner' : 'customer';
-                $this->sendButtons(
-                    $session->phone,
-                    "✅ *Registration Successful!*\n\n" .
-                    "🐟 *{$businessName}*\n" .
-                    "Type: {$sellerType->label()}\n\n" .
-                    "You can now sell fish while continuing as a {$userTypeLabel}!\n\n" .
-                    "Ready to post your first catch?",
-                    [
-                        ['id' => 'fish_post_catch', 'title' => '🎣 Post Catch'],
-                        ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
-                    ],
-                    '🐟 Fish Seller'
-                );
-
-            } else {
-                // NEW USER: Create new user with FISH_SELLER type
-                Log::info('Creating new fish seller user', [
-                    'phone' => $session->phone,
-                    'seller_type' => $sellerType->value,
-                ]);
-
-                $updatedUser = $this->sellerService->createFishSeller([
-                    'phone' => $session->phone,
-                    'name' => $businessName, // Use business name as user name for new users
-                    'seller_type' => $sellerType->value,
-                    'business_name' => $businessName,
-                    'latitude' => $latitude,
-                    'longitude' => $longitude,
-                    'market_name' => $marketName,
-                ]);
-
-                $seller = $updatedUser->fishSeller;
-
-                // Link session to new user
-                $this->sellerService->linkSessionToUser($session, $updatedUser);
-
-                $this->clearTemp($session);
-
-                $response = FishMessages::sellerRegistrationComplete($seller);
-                $this->sendFishMessage($session->phone, $response);
+            // If location has name, use it as default
+            if (!empty($location['name'])) {
+                $this->setTempData($session, 'location_name_suggestion', $location['name']);
             }
 
-        } catch (\InvalidArgumentException $e) {
-            Log::error('Fish seller registration validation failed', [
-                'error' => $e->getMessage(),
-                'user_id' => $user?->id,
+            Log::info('Location received', [
+                'phone' => $session->phone,
+                'lat' => $location['latitude'],
+                'lng' => $location['longitude'],
             ]);
-            
-            $this->sendButtons(
-                $session->phone,
-                "❌ *Registration Failed*\n\n{$e->getMessage()}\n\nPlease try again.",
-                [
-                    ['id' => 'fish_seller_register', 'title' => '🔄 Try Again'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
-                ]
-            );
 
-        } catch (\Exception $e) {
-            Log::error('Failed to create fish seller', [
-                'error' => $e->getMessage(),
-                'user_id' => $user?->id,
-                'trace' => $e->getTraceAsString(),
-            ]);
-            
-            $this->sendButtons(
-                $session->phone,
-                "❌ *Registration Failed*\n\nSomething went wrong. Please try again later.",
-                [
-                    ['id' => 'fish_seller_register', 'title' => '🔄 Try Again'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
-                ]
-            );
-        }
-    }
-
-    protected function showConfirmation(ConversationSession $session): void
-    {
-        $user = $this->getUser($session);
-        $sellerTypeValue = $this->getTemp($session, 'seller_type');
-        $sellerType = FishSellerType::from($sellerTypeValue);
-        $businessName = $this->getTemp($session, 'business_name');
-        $marketName = $this->getTemp($session, 'market_name');
-
-        $typeLabel = $sellerType->label();
-
-        // Show different message for existing users
-        $additionalNote = '';
-        if ($user && $user->registered_at) {
-            $userTypeLabel = $user->type === UserType::SHOP ? 'shop owner' : 'customer';
-            $additionalNote = "\n\n_Note: You'll be able to sell fish while continuing as a {$userTypeLabel}._";
+            // Step 3: Ask location name
+            $this->askLocationName($session);
+            return;
         }
 
-        $text = "📋 *Confirm Registration*\n\n" .
-            "Type: {$typeLabel}\n" .
-            "Business: {$businessName}\n" .
-            ($marketName ? "Market: {$marketName}\n" : "") .
-            $additionalNote .
-            "\n\nIs this correct?";
-
-        $this->sendButtons(
+        // Not a location - re-prompt
+        $this->sendText(
             $session->phone,
-            $text,
-            [
-                ['id' => 'confirm_register', 'title' => '✅ Confirm'],
-                ['id' => 'cancel_register', 'title' => '❌ Cancel'],
-            ],
-            '🐟 Fish Seller Registration'
+            "❌ Location kittiyilla. Please 📍 button tap cheythu location share cheyyuka."
+        );
+        $this->askLocation($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 3: Ask Location Name (PM-001: harbour/market name)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askLocationName(ConversationSession $session): void
+    {
+        $sellerTypeValue = $this->getTempData($session, 'seller_type');
+        $sellerType = FishSellerType::from($sellerTypeValue);
+        $suggestion = $this->getTempData($session, 'location_name_suggestion');
+
+        $text = $sellerType->locationNamePrompt();
+
+        if ($suggestion) {
+            $text .= "\n\n_Suggested: {$suggestion}_";
+        }
+
+        $this->sendText($session->phone, $text);
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::FISH_SELLER_REGISTER,
+            self::STEP_ASK_LOCATION_NAME
         );
     }
 
-    protected function sendFishMessage(string $phone, array $response): void
+    protected function handleLocationName(IncomingMessage $message, ConversationSession $session): void
     {
-        $type = $response['type'] ?? 'text';
+        $text = $this->getTextContent($message);
 
-        switch ($type) {
-            case 'text':
-                $this->sendText($phone, $response['text']);
-                break;
-            case 'buttons':
-                $this->sendButtons($phone, $response['body'] ?? '', $response['buttons'] ?? [], $response['header'] ?? null, $response['footer'] ?? null);
-                break;
-            case 'list':
-                $this->sendList($phone, $response['body'] ?? '', $response['button'] ?? 'Select', $response['sections'] ?? [], $response['header'] ?? null, $response['footer'] ?? null);
-                break;
-            default:
-                $this->sendText($phone, $response['text'] ?? '');
+        if ($text && mb_strlen(trim($text)) >= 2 && mb_strlen(trim($text)) <= 100) {
+            $locationName = trim($text);
+            $this->setTempData($session, 'location_name', $locationName);
+
+            Log::info('Location name received', [
+                'phone' => $session->phone,
+                'name' => $locationName,
+            ]);
+
+            // Step 4: Ask for verification photo
+            $this->askPhoto($session);
+            return;
         }
+
+        // Invalid - re-ask
+        $this->sendText($session->phone, "❌ Please valid name type cheyyuka (2-100 characters).");
+        $this->askLocationName($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 4: Ask Verification Photo (PM-002)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askPhoto(ConversationSession $session): void
+    {
+        $sellerTypeValue = $this->getTempData($session, 'seller_type');
+        $sellerType = FishSellerType::from($sellerTypeValue);
+
+        // Type-specific photo prompt
+        $this->sendButtons(
+            $session->phone,
+            $sellerType->verificationPhotoPrompt() . "\n\n" .
+            "_Verification-nu vendiyaanu. Photo nalla quality aayirikkane._",
+            [
+                ['id' => 'skip_photo', 'title' => '⏭️ Skip for now'],
+            ]
+        );
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::FISH_SELLER_REGISTER,
+            self::STEP_ASK_PHOTO
+        );
+    }
+
+    protected function handlePhoto(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Check if skipped
+        if ($message->isInteractive()) {
+            $selectionId = $this->getSelectionId($message);
+            if ($selectionId === 'skip_photo') {
+                Log::info('Photo skipped', ['phone' => $session->phone]);
+                $this->completeRegistration($session);
+                return;
+            }
+        }
+
+        // Check if image received
+        if ($message->isImage() && $message->getMediaId()) {
+            // Download and store the image
+            $photoUrl = $this->downloadAndStorePhoto($message);
+
+            if ($photoUrl) {
+                $this->setTempData($session, 'verification_photo_url', $photoUrl);
+                Log::info('Verification photo received', [
+                    'phone' => $session->phone,
+                    'url' => $photoUrl,
+                ]);
+            }
+
+            $this->completeRegistration($session);
+            return;
+        }
+
+        // Not an image - prompt again
+        $this->sendText(
+            $session->phone,
+            "📸 Photo ayakkuka or Skip button tap cheyyuka."
+        );
+    }
+
+    /**
+     * Download photo from WhatsApp and store.
+     */
+    protected function downloadAndStorePhoto(IncomingMessage $message): ?string
+    {
+        if (!$this->mediaService) {
+            Log::warning('MediaService not available');
+            return null;
+        }
+
+        try {
+            // MediaService::downloadAndStore(mediaId, folder, filename)
+            $result = $this->mediaService->downloadAndStore(
+                $message->getMediaId(),
+                'fish-sellers/verification'
+            );
+
+            return $result['url'] ?? null;
+        } catch (\Exception $e) {
+            Log::error('Failed to download verification photo', [
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 5: Complete Registration
+    |--------------------------------------------------------------------------
+    */
+
+    protected function completeRegistration(ConversationSession $session): void
+    {
+        $user = $this->getUser($session);
+
+        // Gather data
+        $sellerTypeValue = $this->getTempData($session, 'seller_type');
+        $sellerType = FishSellerType::from($sellerTypeValue);
+        $locationName = $this->getTempData($session, 'location_name');
+        $latitude = (float) $this->getTempData($session, 'latitude');
+        $longitude = (float) $this->getTempData($session, 'longitude');
+        $verificationPhotoUrl = $this->getTempData($session, 'verification_photo_url');
+
+        try {
+            if ($user && $user->registered_at) {
+                // Existing user - add fish seller profile
+                $seller = $this->sellerService->registerExistingUserAsSeller(
+                    $user,
+                    $sellerType,
+                    $locationName,
+                    $latitude,
+                    $longitude,
+                    $verificationPhotoUrl
+                );
+            } else {
+                // New user - create user and seller
+                $name = $this->getTempData($session, 'name') ?? $locationName;
+
+                $seller = $this->sellerService->registerFishSeller([
+                    'phone' => $session->phone,
+                    'name' => $name,
+                    'seller_type' => $sellerType,
+                    'location_name' => $locationName,
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'verification_photo_url' => $verificationPhotoUrl,
+                ]);
+
+                // Link session to new user
+                $this->sellerService->linkSessionToUser($session, $seller->user);
+            }
+
+            // Clear temp data
+            $this->clearTempData($session);
+
+            // Show success message
+            $this->showSuccess($session, $seller);
+
+        } catch (\Exception $e) {
+            Log::error('Fish seller registration failed', [
+                'phone' => $session->phone,
+                'error' => $e->getMessage(),
+            ]);
+
+            $this->sendButtons(
+                $session->phone,
+                "❌ *Registration Failed*\n\n{$e->getMessage()}\n\n" .
+                "_Please try again._",
+                [
+                    ['id' => 'fish_seller_register', 'title' => '🔄 Try Again'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
+            );
+        }
+    }
+
+    /**
+     * Show registration success message.
+     */
+    protected function showSuccess(ConversationSession $session, $seller): void
+    {
+        $hasPhoto = !empty($seller->verification_photo_url);
+        $photoNote = $hasPhoto
+            ? "📸 Photo received!"
+            : "📸 No photo - add later for faster verification.";
+
+        $this->sendButtons(
+            $session->phone,
+            "✅ *Registration Complete!* 🐟\n\n" .
+            "*{$seller->location_name}*\n" .
+            "{$seller->seller_type->display()}\n\n" .
+            "{$photoNote}\n\n" .
+            "⏳ *Verification pending*\n" .
+            "Team review cheyyum (usually 24hrs).\n\n" .
+            "_Ithintidayil catches post cheyyaam!_\n" .
+            "_You can post catches while verification is pending._",
+            [
+                ['id' => 'fish_post_catch', 'title' => '🎣 Post First Catch'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ]
+        );
+
+        // Update session step
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::FISH_SELLER_REGISTER,
+            self::STEP_COMPLETE
+        );
     }
 }

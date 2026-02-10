@@ -1,90 +1,78 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use App\Enums\FishSellerType;
+use App\Enums\FishSellerVerificationStatus;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Database\Eloquent\Builder;
 
 /**
- * Fish Seller Model - Fish seller profiles.
+ * Fish Seller Model.
  *
  * @property int $id
  * @property int $user_id
- * @property string $business_name
  * @property FishSellerType $seller_type
+ * @property string $location_name - harbour/market/shop name (PM-001)
  * @property float $latitude
  * @property float $longitude
- * @property string|null $address
- * @property string|null $market_name
- * @property string|null $landmark
- * @property string|null $alternate_phone
- * @property string|null $upi_id
- * @property array|null $operating_hours
- * @property array|null $catch_days
- * @property int $total_catches
- * @property int $total_sales
- * @property float $average_rating
+ * @property FishSellerVerificationStatus $verification_status (PM-003)
+ * @property string|null $verification_photo_url (PM-002)
+ * @property float $rating - 1-5 stars, default 0 (PM-004)
  * @property int $rating_count
- * @property bool $is_verified
- * @property \Carbon\Carbon|null $verified_at
- * @property string|null $verification_doc_url
+ * @property int $total_sales - default 0 (PM-004)
+ * @property int $total_catches
  * @property bool $is_active
- * @property bool $is_accepting_orders
- * @property int $default_alert_radius_km
+ * @property \Carbon\Carbon|null $verified_at
+ * @property \Carbon\Carbon $created_at
+ * @property \Carbon\Carbon $updated_at
  *
- * @srs-ref Section 5.1.2 - fish_sellers table
+ * @srs-ref Section 5.1.2 fish_sellers table
+ * @srs-ref PM-001 to PM-004 Fish seller requirements
  */
 class FishSeller extends Model
 {
     use HasFactory, SoftDeletes;
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
         'user_id',
-        'business_name',
         'seller_type',
+        'location_name',
         'latitude',
         'longitude',
-        'address',
-        'market_name',
-        'landmark',
-        'alternate_phone',
-        'upi_id',
-        'operating_hours',
-        'catch_days',
-        'total_catches',
-        'total_sales',
-        'average_rating',
+        'verification_status',
+        'verification_photo_url',
+        'rating',
         'rating_count',
-        'is_verified',
-        'verified_at',
-        'verification_doc_url',
+        'total_sales',
+        'total_catches',
         'is_active',
-        'is_accepting_orders',
-        'default_alert_radius_km',
+        'verified_at',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
         'seller_type' => FishSellerType::class,
+        'verification_status' => FishSellerVerificationStatus::class,
         'latitude' => 'decimal:8',
         'longitude' => 'decimal:8',
-        'operating_hours' => 'array',
-        'catch_days' => 'array',
-        'average_rating' => 'decimal:2',
-        'is_verified' => 'boolean',
-        'verified_at' => 'datetime',
+        'rating' => 'decimal:2',
         'is_active' => 'boolean',
-        'is_accepting_orders' => 'boolean',
+        'verified_at' => 'datetime',
+    ];
+
+    protected $attributes = [
+        'verification_status' => 'pending',
+        'rating' => 0,
+        'rating_count' => 0,
+        'total_sales' => 0,
+        'total_catches' => 0,
+        'is_active' => true,
     ];
 
     /*
@@ -102,19 +90,11 @@ class FishSeller extends Model
     }
 
     /**
-     * Alias for user relationship (owner).
-     */
-    public function owner(): BelongsTo
-    {
-        return $this->user();
-    }
-
-    /**
      * Get all catches posted by this seller.
      */
     public function catches(): HasMany
     {
-        return $this->hasMany(FishCatch::class);
+        return $this->hasMany(FishCatch::class, 'seller_id');
     }
 
     /**
@@ -134,7 +114,7 @@ class FishSeller extends Model
     */
 
     /**
-     * Scope to filter active sellers.
+     * Scope: active sellers.
      */
     public function scopeActive(Builder $query): Builder
     {
@@ -142,15 +122,26 @@ class FishSeller extends Model
     }
 
     /**
-     * Scope to filter verified sellers.
+     * Scope: verified sellers.
      */
     public function scopeVerified(Builder $query): Builder
     {
-        return $query->where('is_verified', true);
+        return $query->where('verification_status', FishSellerVerificationStatus::VERIFIED);
     }
 
     /**
-     * Scope to filter by seller type.
+     * Scope: can post catches (pending or verified).
+     */
+    public function scopeCanPost(Builder $query): Builder
+    {
+        return $query->whereIn('verification_status', [
+            FishSellerVerificationStatus::PENDING,
+            FishSellerVerificationStatus::VERIFIED,
+        ]);
+    }
+
+    /**
+     * Scope: by seller type.
      */
     public function scopeOfType(Builder $query, FishSellerType $type): Builder
     {
@@ -158,38 +149,32 @@ class FishSeller extends Model
     }
 
     /**
-     * Scope to find sellers near a location.
+     * Scope: near location.
      */
-    public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
+    public function scopeNearLocation(Builder $query, float $lat, float $lng, float $radiusKm = 5): Builder
     {
         return $query
             ->whereNotNull('latitude')
             ->whereNotNull('longitude')
             ->whereRaw(
-                "ST_Distance_Sphere(
-                    POINT(longitude, latitude),
-                    POINT(?, ?)
-                ) <= ?",
-                [$longitude, $latitude, $radiusKm * 1000]
+                "ST_Distance_Sphere(POINT(longitude, latitude), POINT(?, ?)) <= ?",
+                [$lng, $lat, $radiusKm * 1000]
             );
     }
 
     /**
-     * Scope to select with distance from a point.
+     * Scope: with distance from point.
      */
-    public function scopeWithDistanceFrom(Builder $query, float $latitude, float $longitude): Builder
+    public function scopeWithDistanceFrom(Builder $query, float $lat, float $lng): Builder
     {
         return $query->selectRaw(
-            "*, ST_Distance_Sphere(
-                POINT(longitude, latitude),
-                POINT(?, ?)
-            ) / 1000 as distance_km",
-            [$longitude, $latitude]
+            "*, ST_Distance_Sphere(POINT(longitude, latitude), POINT(?, ?)) / 1000 as distance_km",
+            [$lng, $lat]
         );
     }
 
     /**
-     * Scope to filter sellers with active catches.
+     * Scope: with active catches.
      */
     public function scopeWithActiveCatches(Builder $query): Builder
     {
@@ -200,11 +185,11 @@ class FishSeller extends Model
     }
 
     /**
-     * Scope by rating.
+     * Scope: minimum rating.
      */
     public function scopeMinRating(Builder $query, float $minRating): Builder
     {
-        return $query->where('average_rating', '>=', $minRating);
+        return $query->where('rating', '>=', $minRating);
     }
 
     /*
@@ -214,31 +199,40 @@ class FishSeller extends Model
     */
 
     /**
-     * Get display name with type.
+     * Display name with icon.
      */
     public function getDisplayNameAttribute(): string
     {
-        return $this->seller_type->emoji() . ' ' . $this->business_name;
+        return $this->seller_type->icon() . ' ' . $this->location_name;
     }
 
     /**
-     * Get seller type display.
+     * Seller type display.
      */
     public function getSellerTypeDisplayAttribute(): string
     {
-        return $this->seller_type->label();
+        return $this->seller_type->display();
     }
 
     /**
-     * Get formatted phone.
+     * Phone from user.
      */
-    public function getFormattedPhoneAttribute(): string
+    public function getPhoneAttribute(): ?string
     {
-        return $this->user?->formatted_phone ?? '';
+        return $this->user?->phone;
     }
 
     /**
-     * Get rating display with stars.
+     * Name from user.
+     */
+    public function getNameAttribute(): ?string
+    {
+        return $this->user?->name;
+    }
+
+    /**
+     * Rating display with stars.
+     * @srs-ref PM-004 Rating 1-5 stars
      */
     public function getRatingDisplayAttribute(): string
     {
@@ -246,78 +240,52 @@ class FishSeller extends Model
             return 'New Seller';
         }
 
-        $stars = str_repeat('⭐', (int) round($this->average_rating));
-        return $stars . ' ' . number_format($this->average_rating, 1) .
-            ' (' . $this->rating_count . ' ratings)';
-    }
-
-    /**
-     * Get short rating display.
-     */
-    public function getShortRatingAttribute(): string
-    {
-        if ($this->rating_count === 0) {
-            return 'New';
-        }
-
-        return '⭐ ' . number_format($this->average_rating, 1) .
+        $stars = str_repeat('⭐', (int) round($this->rating));
+        return $stars . ' ' . number_format($this->rating, 1) .
             ' (' . $this->rating_count . ')';
     }
 
     /**
-     * Get location display.
+     * Short rating display.
      */
-    public function getLocationDisplayAttribute(): string
+    public function getShortRatingAttribute(): string
     {
-        $parts = [];
-
-        if ($this->market_name) {
-            $parts[] = $this->market_name;
+        if ($this->rating_count === 0) {
+            return '🆕 New';
         }
-
-        if ($this->landmark) {
-            $parts[] = $this->landmark;
-        }
-
-        if ($this->address && count($parts) === 0) {
-            $parts[] = $this->address;
-        }
-
-        return implode(', ', $parts) ?: 'Location available';
+        return '⭐ ' . number_format($this->rating, 1) . ' (' . $this->rating_count . ')';
     }
 
     /**
-     * Check if seller is currently open.
+     * Verification status display.
      */
-    public function getIsOpenNowAttribute(): bool
+    public function getVerificationBadgeAttribute(): string
     {
-        if (!$this->operating_hours) {
-            return true; // Assume always open if no hours set
-        }
-
-        $dayKey = strtolower(now()->format('D')); // mon, tue, etc.
-        $hours = $this->operating_hours[$dayKey] ?? null;
-
-        if (!$hours) {
-            return false;
-        }
-
-        $now = now()->format('H:i');
-        return $now >= ($hours['open'] ?? '00:00') &&
-            $now <= ($hours['close'] ?? '23:59');
+        return $this->verification_status->shortBadge();
     }
 
     /**
-     * Check if today is a catch day.
+     * Can post catches?
      */
-    public function getIsCatchDayAttribute(): bool
+    public function getCanPostAttribute(): bool
     {
-        if (!$this->catch_days) {
-            return true; // Assume every day if not set
-        }
+        return $this->is_active && $this->verification_status->canPostCatches();
+    }
 
-        $todayNum = (int) now()->format('w'); // 0 = Sunday
-        return in_array($todayNum, $this->catch_days);
+    /**
+     * Is verified?
+     */
+    public function getIsVerifiedAttribute(): bool
+    {
+        return $this->verification_status === FishSellerVerificationStatus::VERIFIED;
+    }
+
+    /**
+     * Is pending?
+     */
+    public function getIsPendingAttribute(): bool
+    {
+        return $this->verification_status === FishSellerVerificationStatus::PENDING;
     }
 
     /*
@@ -327,7 +295,7 @@ class FishSeller extends Model
     */
 
     /**
-     * Increment total catches count.
+     * Increment total catches.
      */
     public function incrementCatches(): void
     {
@@ -335,7 +303,8 @@ class FishSeller extends Model
     }
 
     /**
-     * Increment total sales count.
+     * Increment total sales.
+     * @srs-ref PM-004 Track total sales count
      */
     public function incrementSales(): void
     {
@@ -343,28 +312,88 @@ class FishSeller extends Model
     }
 
     /**
-     * Update average rating.
+     * Update rating.
+     * @srs-ref PM-004 Track seller rating 1-5 stars
      */
     public function updateRating(int $newRating): void
     {
-        $totalRating = ($this->average_rating * $this->rating_count) + $newRating;
+        // Clamp to 1-5
+        $newRating = max(1, min(5, $newRating));
+
+        $totalRating = ($this->rating * $this->rating_count) + $newRating;
         $newCount = $this->rating_count + 1;
 
         $this->update([
-            'average_rating' => $totalRating / $newCount,
+            'rating' => $totalRating / $newCount,
             'rating_count' => $newCount,
         ]);
     }
 
     /**
      * Mark as verified.
+     * @srs-ref PM-003 Verification status
      */
     public function verify(): void
     {
         $this->update([
-            'is_verified' => true,
+            'verification_status' => FishSellerVerificationStatus::VERIFIED,
             'verified_at' => now(),
         ]);
+    }
+
+    /**
+     * Suspend seller.
+     * @srs-ref PM-003 Verification status: suspended
+     */
+    public function suspend(): void
+    {
+        $this->update([
+            'verification_status' => FishSellerVerificationStatus::SUSPENDED,
+            'is_active' => false,
+        ]);
+    }
+
+    /**
+     * Reactivate seller (back to pending).
+     */
+    public function reactivate(): void
+    {
+        $this->update([
+            'verification_status' => FishSellerVerificationStatus::PENDING,
+            'is_active' => true,
+        ]);
+    }
+
+    /**
+     * Update location.
+     */
+    public function updateLocation(float $lat, float $lng, ?string $locationName = null): void
+    {
+        $data = [
+            'latitude' => $lat,
+            'longitude' => $lng,
+        ];
+
+        if ($locationName) {
+            $data['location_name'] = $locationName;
+        }
+
+        $this->update($data);
+
+        // Also update user location
+        $this->user?->update([
+            'latitude' => $lat,
+            'longitude' => $lng,
+        ]);
+    }
+
+    /**
+     * Set verification photo.
+     * @srs-ref PM-002 Photo verification
+     */
+    public function setVerificationPhoto(string $url): void
+    {
+        $this->update(['verification_photo_url' => $url]);
     }
 
     /**
@@ -379,28 +408,34 @@ class FishSeller extends Model
     }
 
     /**
-     * Convert to alert message format.
-     */
-    public function toAlertFormat(): array
-    {
-        return [
-            'name' => $this->business_name,
-            'type' => $this->seller_type->label(),
-            'location' => $this->location_display,
-            'rating' => $this->short_rating,
-            'phone' => $this->user?->phone,
-        ];
-    }
-
-    /**
      * Convert to WhatsApp list item.
      */
     public function toListItem(): array
     {
         return [
             'id' => 'seller_' . $this->id,
-            'title' => substr($this->display_name, 0, 24),
-            'description' => substr($this->location_display . ' • ' . $this->short_rating, 0, 72),
+            'title' => mb_substr($this->display_name, 0, 24),
+            'description' => mb_substr($this->short_rating . ' • ' . $this->verification_badge, 0, 72),
+        ];
+    }
+
+    /**
+     * Get stats for menu display.
+     */
+    public function getStats(): array
+    {
+        $todayCatches = $this->catches()->whereDate('created_at', today())->count();
+        $activeCatches = $this->getActiveCatchCount();
+
+        return [
+            'active_catches' => $activeCatches,
+            'today_catches' => $todayCatches,
+            'total_catches' => $this->total_catches,
+            'total_sales' => $this->total_sales,
+            'rating' => $this->rating,
+            'rating_count' => $this->rating_count,
+            'is_verified' => $this->is_verified,
+            'verification_status' => $this->verification_status->value,
         ];
     }
 }

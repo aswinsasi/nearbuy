@@ -5,593 +5,438 @@ declare(strict_types=1);
 namespace App\Services\Fish;
 
 use App\Enums\FishAlertFrequency;
-use App\Enums\FishCatchStatus;
+use App\Jobs\Fish\SendFishAlertJob;
 use App\Models\FishAlert;
-use App\Models\FishAlertBatch;
 use App\Models\FishCatch;
 use App\Models\FishSubscription;
-use App\Models\User;
+use App\Services\WhatsApp\WhatsAppService;
+use App\Services\WhatsApp\Messages\FishMessages;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Service for managing fish catch alerts.
+ * Fish Alert Service - THE viral moment!
  *
- * Handles:
- * - Finding matching subscribers for a catch
- * - Creating and queuing alerts
- * - Sending immediate alerts
- * - Managing batched alerts
- * - Alert tracking and analytics
+ * When fresh fish arrives, this service:
+ * 1. Finds ALL matching subscribers within radius (PM-016)
+ * 2. Orders by distance (nearest first - most likely to come)
+ * 3. Respects time preferences (PM-020)
+ * 4. Dispatches alerts in batches of 50 (WhatsApp rate limits)
+ * 5. Tracks social proof (PM-019)
  *
- * @srs-ref Pacha Meen Module - Section 2.3.4 Alert Delivery
- * @srs-ref Pacha Meen Module - Section 2.5.2 Customer Alert Message Format
+ * Target: Alerts sent within 2 minutes of posting!
+ *
+ * @srs-ref PM-016 to PM-020 Alert requirements
  */
 class FishAlertService
 {
     /**
-     * Maximum alerts to send per batch.
+     * Batch size for WhatsApp rate limits.
      */
     public const BATCH_SIZE = 50;
 
     /**
-     * Retry delay in minutes for failed alerts.
+     * Delay between batches (seconds).
      */
-    public const RETRY_DELAY_MINUTES = 5;
-
-    /**
-     * Maximum retry attempts.
-     */
-    public const MAX_RETRY_ATTEMPTS = 3;
+    public const BATCH_DELAY_SECONDS = 1;
 
     public function __construct(
-        protected FishSubscriptionService $subscriptionService
+        protected FishSubscriptionService $subscriptionService,
+        protected WhatsAppService $whatsApp,
     ) {}
 
     /**
-     * Process a new catch and create alerts for matching subscribers.
+     * Process new catch - find subscribers and dispatch alerts.
      *
-     * @param FishCatch $catch
-     * @return array {
-     *     @type int $immediate_count Number of immediate alerts queued
-     *     @type int $batched_count Number of alerts added to batches
-     *     @type int $total_subscribers Total matching subscribers
-     * }
+     * @srs-ref PM-016 Alert ALL subscribed customers within radius
+     *
+     * @return array{total_subscribers: int, immediate: int, scheduled: int}
      */
     public function processNewCatch(FishCatch $catch): array
     {
         if (!$catch->is_active) {
-            Log::warning('Attempted to process inactive catch', ['catch_id' => $catch->id]);
-            return ['immediate_count' => 0, 'batched_count' => 0, 'total_subscribers' => 0];
+            Log::warning('Catch not active, skipping alerts', ['catch_id' => $catch->id]);
+            return ['total_subscribers' => 0, 'immediate' => 0, 'scheduled' => 0];
         }
 
-        // Find all matching subscriptions
+        // Find ALL matching subscriptions (PM-016)
         $subscriptions = $this->subscriptionService->findMatchingSubscriptions($catch);
 
-        $immediateCount = 0;
-        $batchedCount = 0;
+        if ($subscriptions->isEmpty()) {
+            Log::info('No matching subscribers', ['catch_id' => $catch->id]);
+            return ['total_subscribers' => 0, 'immediate' => 0, 'scheduled' => 0];
+        }
+
+        $immediate = 0;
+        $scheduled = 0;
+
+        // Create alerts ordered by distance (nearest first)
+        $alerts = collect();
 
         foreach ($subscriptions as $subscription) {
-            // Skip if alert already exists for this catch/subscription
-            if (FishAlert::existsForCatchAndSubscription($catch->id, $subscription->id)) {
+            // Skip if already alerted
+            if (FishAlert::existsForCatchAndUser($catch->id, $subscription->user_id)) {
                 continue;
             }
 
-            if ($subscription->alert_frequency === FishAlertFrequency::IMMEDIATE) {
-                // Create immediate alert
-                $this->createImmediateAlert($catch, $subscription);
-                $immediateCount++;
+            // Determine scheduled time based on preference (PM-020)
+            $scheduledFor = $this->calculateScheduledTime($subscription);
+
+            $alert = FishAlert::createForCatch(
+                $catch,
+                $subscription,
+                FishAlert::TYPE_NEW_CATCH,
+                $scheduledFor
+            );
+
+            $alerts->push($alert);
+
+            if ($scheduledFor) {
+                $scheduled++;
             } else {
-                // Add to batch
-                $this->addToBatch($catch, $subscription);
-                $batchedCount++;
+                $immediate++;
             }
         }
 
-        Log::info('Processed new catch for alerts', [
+        // Dispatch alerts - NEAREST FIRST, in batches
+        $this->dispatchAlerts($alerts->sortBy('distance_km'));
+
+        Log::info('Alerts created for catch', [
             'catch_id' => $catch->id,
-            'immediate_count' => $immediateCount,
-            'batched_count' => $batchedCount,
-            'total_subscribers' => $subscriptions->count(),
+            'total' => $alerts->count(),
+            'immediate' => $immediate,
+            'scheduled' => $scheduled,
         ]);
 
         return [
-            'immediate_count' => $immediateCount,
-            'batched_count' => $batchedCount,
-            'total_subscribers' => $subscriptions->count(),
+            'total_subscribers' => $alerts->count(),
+            'immediate' => $immediate,
+            'scheduled' => $scheduled,
         ];
     }
 
     /**
-     * Create an immediate alert for a catch and subscription.
+     * Dispatch alerts in batches with delays.
      */
-    public function createImmediateAlert(FishCatch $catch, FishSubscription $subscription): FishAlert
+    protected function dispatchAlerts(Collection $alerts): void
     {
-        $alert = FishAlert::createForCatch(
-            $catch,
-            $subscription,
-            FishAlert::TYPE_NEW_CATCH,
-            false // not batched
-        );
+        $batches = $alerts->chunk(self::BATCH_SIZE);
+        $delay = 0;
 
-        Log::debug('Immediate alert created', [
-            'alert_id' => $alert->id,
+        foreach ($batches as $batch) {
+            foreach ($batch as $alert) {
+                // Priority queue for fast delivery
+                SendFishAlertJob::dispatch($alert)
+                    ->onQueue('fish-alerts')
+                    ->delay(now()->addSeconds($delay));
+            }
+
+            // Add delay between batches
+            $delay += self::BATCH_DELAY_SECONDS;
+        }
+    }
+
+    /**
+     * Calculate scheduled time based on preference.
+     *
+     * @srs-ref PM-020 Respect alert time preferences
+     */
+    protected function calculateScheduledTime(FishSubscription $subscription): ?\Carbon\Carbon
+    {
+        $frequency = $subscription->alert_frequency;
+
+        // Immediate - no scheduling
+        if ($frequency === FishAlertFrequency::IMMEDIATE || $frequency === null) {
+            return null;
+        }
+
+        $now = now();
+        $hour = $now->hour;
+
+        // Morning only preference (6-8 AM)
+        if ($frequency === FishAlertFrequency::MORNING_ONLY) {
+            if ($hour >= 6 && $hour < 8) {
+                return null; // Send now - within window
+            }
+            // Schedule for next 6 AM
+            if ($hour >= 8) {
+                return $now->copy()->addDay()->setTime(6, 0);
+            }
+            return $now->copy()->setTime(6, 0);
+        }
+
+        // Twice daily (6 AM and 4 PM)
+        if ($frequency === FishAlertFrequency::TWICE_DAILY) {
+            if (($hour >= 6 && $hour < 7) || ($hour >= 16 && $hour < 17)) {
+                return null; // Send now - within window
+            }
+            // Schedule for next window
+            if ($hour < 6) {
+                return $now->copy()->setTime(6, 0);
+            }
+            if ($hour < 16) {
+                return $now->copy()->setTime(16, 0);
+            }
+            return $now->copy()->addDay()->setTime(6, 0);
+        }
+
+        // Weekly digest - schedule for Sunday 8 AM
+        if ($frequency === FishAlertFrequency::WEEKLY_DIGEST) {
+            $nextSunday = $now->copy()->next('Sunday')->setTime(8, 0);
+            return $nextSunday;
+        }
+
+        return null; // Default: send immediately
+    }
+
+    /**
+     * Send single alert immediately.
+     *
+     * @srs-ref PM-017 Include all required info
+     * @srs-ref PM-018 Include action buttons
+     * @srs-ref PM-019 Include social proof
+     */
+    public function sendAlert(FishAlert $alert): bool
+    {
+        $catch = $alert->catch;
+        $subscription = $alert->subscription;
+
+        if (!$catch || !$subscription) {
+            $alert->markFailed('Missing catch or subscription');
+            return false;
+        }
+
+        // Check if catch still active
+        if (!$catch->is_active) {
+            $alert->markFailed('Catch no longer active');
+            return false;
+        }
+
+        // Check if subscription still active
+        if (!$subscription->is_active) {
+            $alert->markFailed('Subscription inactive');
+            return false;
+        }
+
+        try {
+            // Get alert message with photo as image + caption
+            $phone = $subscription->user?->phone;
+            if (!$phone) {
+                $alert->markFailed('No phone number');
+                return false;
+            }
+
+            // Send alert - photo first if available
+            if ($catch->photo_url) {
+                // PM-017: Photo with caption containing all info
+                $caption = FishMessages::buildAlertCaption($catch, $alert);
+                $result = $this->whatsApp->sendImage($phone, $catch->photo_url, $caption);
+            } else {
+                // No photo - send buttons message
+                $message = FishMessages::newCatchAlert($catch, $alert);
+                $result = $this->sendMessage($phone, $message);
+            }
+
+            // Send buttons separately if image was sent
+            if ($catch->photo_url) {
+                $buttons = FishMessages::alertButtons($catch, $alert);
+                $this->sendMessage($phone, $buttons);
+            }
+
+            $messageId = $result['messages'][0]['id'] ?? null;
+            $alert->markSent($messageId);
+
+            Log::info('Alert sent', [
+                'alert_id' => $alert->id,
+                'catch_id' => $catch->id,
+                'distance' => $alert->distance_display,
+            ]);
+
+            return true;
+
+        } catch (\Exception $e) {
+            Log::error('Alert send failed', [
+                'alert_id' => $alert->id,
+                'error' => $e->getMessage(),
+            ]);
+            $alert->markFailed($e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Send WhatsApp message based on type.
+     */
+    protected function sendMessage(string $phone, array $message): array
+    {
+        $type = $message['type'] ?? 'text';
+
+        return match ($type) {
+            'buttons' => $this->whatsApp->sendButtons(
+                $phone,
+                $message['body'] ?? '',
+                $message['buttons'] ?? [],
+                $message['header'] ?? null,
+                $message['footer'] ?? null
+            ),
+            'image' => $this->whatsApp->sendImage(
+                $phone,
+                $message['image'] ?? '',
+                $message['caption'] ?? null
+            ),
+            default => $this->whatsApp->sendText($phone, $message['body'] ?? ''),
+        };
+    }
+
+    /**
+     * Handle "I'm Coming" click.
+     *
+     * @srs-ref PM-019 Increment coming count for social proof
+     */
+    public function handleComingClick(FishAlert $alert): void
+    {
+        $alert->recordClick(FishAlert::ACTION_COMING);
+
+        $catch = $alert->catch;
+        $user = $alert->user;
+
+        if (!$catch || !$user) return;
+
+        // Send confirmation to customer
+        $confirmation = FishMessages::comingConfirmation($catch);
+        $this->sendMessage($user->phone, $confirmation);
+
+        // Notify seller
+        $this->notifySellerCustomerComing($catch, $user, $alert->distance_km);
+
+        Log::info('Customer coming', [
             'catch_id' => $catch->id,
-            'user_id' => $subscription->user_id,
+            'user_id' => $user->id,
+            'total_coming' => $catch->customers_coming,
         ]);
-
-        return $alert;
     }
 
     /**
-     * Add catch to a batched alert.
+     * Notify seller when customer is coming.
      */
-    public function addToBatch(FishCatch $catch, FishSubscription $subscription): FishAlert
-    {
-        // Get or create pending batch for this subscription
-        $batch = FishAlertBatch::getOrCreatePending($subscription);
+    protected function notifySellerCustomerComing(
+        FishCatch $catch,
+        $customer,
+        ?float $distance
+    ): void {
+        $seller = $catch->seller;
+        if (!$seller?->user?->phone) return;
 
-        // Add catch to batch
-        $batch->addCatch($catch->id);
-
-        // Create alert record linked to batch
-        $alert = FishAlert::createForCatch(
+        $message = FishMessages::sellerComingNotification(
             $catch,
-            $subscription,
-            FishAlert::TYPE_NEW_CATCH,
-            true, // batched
-            $batch->scheduled_for
+            $customer,
+            $catch->customers_coming,
+            $distance
         );
 
-        $alert->update(['batch_id' => $batch->id]);
-
-        return $alert;
+        $this->sendMessage($seller->user->phone, $message);
     }
 
     /**
-     * Get queued alerts ready to send.
+     * Send low stock alerts to customers who said "I'm Coming".
      */
-    public function getReadyAlerts(int $limit = null): Collection
+    public function sendLowStockAlerts(FishCatch $catch): int
     {
-        $query = FishAlert::readyToSend()
-            ->immediate()
-            ->with(['catch.seller', 'catch.fishType', 'subscription', 'user']);
+        // Find alerts where customer clicked "coming"
+        $comingAlerts = FishAlert::forCatch($catch->id)
+            ->where('click_action', FishAlert::ACTION_COMING)
+            ->with('user')
+            ->get();
 
-        if ($limit) {
-            $query->limit($limit);
+        $sent = 0;
+
+        foreach ($comingAlerts as $alert) {
+            if (!$alert->user?->phone) continue;
+
+            // Don't send if already sent low stock alert
+            if (FishAlert::where('fish_catch_id', $catch->id)
+                ->where('user_id', $alert->user_id)
+                ->where('alert_type', FishAlert::TYPE_LOW_STOCK)
+                ->exists()) {
+                continue;
+            }
+
+            $message = FishMessages::lowStockAlert($catch, $alert);
+            $this->sendMessage($alert->user->phone, $message);
+            $sent++;
         }
 
-        return $query->get();
-    }
-
-    /**
-     * Get pending batches ready to send.
-     */
-    public function getReadyBatches(int $limit = null): Collection
-    {
-        $query = FishAlertBatch::readyToSend()
-            ->with(['subscription', 'user']);
-
-        if ($limit) {
-            $query->limit($limit);
-        }
-
-        return $query->get();
-    }
-
-    /**
-     * Mark alert as sent.
-     */
-    public function markAlertSent(FishAlert $alert, ?string $whatsappMessageId = null): FishAlert
-    {
-        $alert->markSent($whatsappMessageId);
-
-        return $alert->fresh();
-    }
-
-    /**
-     * Mark alert as delivered.
-     */
-    public function markAlertDelivered(FishAlert $alert): FishAlert
-    {
-        $alert->markDelivered();
-
-        return $alert->fresh();
-    }
-
-    /**
-     * Mark alert as failed.
-     */
-    public function markAlertFailed(FishAlert $alert, string $reason): FishAlert
-    {
-        $alert->markFailed($reason);
-
-        Log::warning('Alert delivery failed', [
-            'alert_id' => $alert->id,
-            'reason' => $reason,
+        Log::info('Low stock alerts sent', [
+            'catch_id' => $catch->id,
+            'count' => $sent,
         ]);
 
-        return $alert->fresh();
+        return $sent;
     }
 
     /**
-     * Record alert click action.
+     * Build message data for alert (used by job).
      */
-    public function recordAlertClick(FishAlert $alert, string $action): FishAlert
+    public function buildAlertMessageData(FishAlert $alert): array
     {
-        $alert->recordClick($action);
+        $catch = $alert->catch;
 
-        Log::info('Alert click recorded', [
-            'alert_id' => $alert->id,
-            'action' => $action,
-        ]);
-
-        return $alert->fresh();
+        return [
+            'phone' => $alert->subscription?->user?->phone,
+            'type' => $catch->photo_url ? 'image_with_buttons' : 'buttons',
+            'image_url' => $catch->photo_url,
+            'caption' => $catch->photo_url ? FishMessages::buildAlertCaption($catch, $alert) : null,
+            'message' => FishMessages::newCatchAlert($catch, $alert),
+            'buttons' => FishMessages::alertButtons($catch, $alert),
+        ];
     }
 
     /**
-     * Mark batch as sent.
+     * Get alert stats for a catch.
      */
-    public function markBatchSent(FishAlertBatch $batch, ?string $whatsappMessageId = null): FishAlertBatch
+    public function getCatchAlertStats(FishCatch $catch): array
     {
-        $batch->markSent($whatsappMessageId);
+        $alerts = FishAlert::forCatch($catch->id)->get();
 
-        return $batch->fresh();
-    }
-
-    /**
-     * Mark batch as failed.
-     */
-    public function markBatchFailed(FishAlertBatch $batch, string $reason): FishAlertBatch
-    {
-        $batch->markFailed($reason);
-
-        Log::warning('Batch delivery failed', [
-            'batch_id' => $batch->id,
-            'reason' => $reason,
-        ]);
-
-        return $batch->fresh();
+        return [
+            'total' => $alerts->count(),
+            'sent' => $alerts->where('status', FishAlert::STATUS_SENT)->count(),
+            'failed' => $alerts->where('status', FishAlert::STATUS_FAILED)->count(),
+            'coming' => $alerts->where('click_action', FishAlert::ACTION_COMING)->count(),
+            'click_rate' => $alerts->count() > 0
+                ? round($alerts->whereNotNull('click_action')->count() / $alerts->count() * 100, 1)
+                : 0,
+        ];
     }
 
     /**
      * Find alert by ID.
      */
-    public function findById(int $alertId): ?FishAlert
+    public function findById(int $id): ?FishAlert
     {
         return FishAlert::with(['catch.seller', 'catch.fishType', 'subscription', 'user'])
-            ->find($alertId);
+            ->find($id);
     }
 
     /**
-     * Find alert by WhatsApp message ID.
+     * Parse alert action from button ID.
+     * Format: fish_action_catchId_alertId
      */
-    public function findByWhatsAppMessageId(string $messageId): ?FishAlert
+    public function parseAlertAction(string $buttonId): ?array
     {
-        return FishAlert::where('whatsapp_message_id', $messageId)->first();
-    }
+        if (!str_starts_with($buttonId, 'fish_')) {
+            return null;
+        }
 
-    /**
-     * Get alerts for a user.
-     */
-    public function getUserAlerts(User $user, int $limit = 20): Collection
-    {
-        return FishAlert::forUser($user->id)
-            ->with(['catch.seller', 'catch.fishType'])
-            ->sent()
-            ->orderBy('sent_at', 'desc')
-            ->limit($limit)
-            ->get();
-    }
-
-    /**
-     * Get alerts for a specific catch.
-     */
-    public function getCatchAlerts(FishCatch $catch): Collection
-    {
-        return FishAlert::forCatch($catch->id)
-            ->with(['subscription', 'user'])
-            ->orderBy('created_at', 'desc')
-            ->get();
-    }
-
-    /**
-     * Get alert statistics for a catch.
-     */
-    public function getCatchAlertStats(FishCatch $catch): array
-    {
-        $alerts = $catch->alerts;
+        $parts = explode('_', $buttonId);
+        if (count($parts) < 4) {
+            return null;
+        }
 
         return [
-            'total_alerts' => $alerts->count(),
-            'sent' => $alerts->where('status', FishAlert::STATUS_SENT)->count()
-                + $alerts->where('status', FishAlert::STATUS_DELIVERED)->count(),
-            'delivered' => $alerts->where('status', FishAlert::STATUS_DELIVERED)->count(),
-            'failed' => $alerts->where('status', FishAlert::STATUS_FAILED)->count(),
-            'clicked' => $alerts->where('was_clicked', true)->count(),
-            'click_rate' => $alerts->count() > 0
-                ? round($alerts->where('was_clicked', true)->count() / $alerts->count() * 100, 1)
-                : 0,
-            'actions' => [
-                'coming' => $alerts->where('click_action', FishAlert::ACTION_COMING)->count(),
-                'message' => $alerts->where('click_action', FishAlert::ACTION_MESSAGE)->count(),
-                'location' => $alerts->where('click_action', FishAlert::ACTION_LOCATION)->count(),
-            ],
-        ];
-    }
-
-    /**
-     * Create a low stock alert for existing subscribers.
-     */
-    public function sendLowStockAlerts(FishCatch $catch): int
-    {
-        if ($catch->status !== FishCatchStatus::LOW_STOCK) {
-            return 0;
-        }
-
-        // Find users who already received alert and clicked "coming"
-        $alertedUsers = FishAlert::forCatch($catch->id)
-            ->sent()
-            ->where('click_action', FishAlert::ACTION_COMING)
-            ->pluck('user_id')
-            ->toArray();
-
-        if (empty($alertedUsers)) {
-            return 0;
-        }
-
-        $count = 0;
-
-        foreach ($alertedUsers as $userId) {
-            // Create low stock alert
-            $subscription = FishSubscription::where('user_id', $userId)
-                ->active()
-                ->first();
-
-            if ($subscription && !FishAlert::where('fish_catch_id', $catch->id)
-                ->where('user_id', $userId)
-                ->where('alert_type', FishAlert::TYPE_LOW_STOCK)
-                ->exists()
-            ) {
-                FishAlert::create([
-                    'fish_catch_id' => $catch->id,
-                    'fish_subscription_id' => $subscription->id,
-                    'user_id' => $userId,
-                    'alert_type' => FishAlert::TYPE_LOW_STOCK,
-                    'status' => FishAlert::STATUS_QUEUED,
-                    'queued_at' => now(),
-                    'is_batched' => false,
-                ]);
-                $count++;
-            }
-        }
-
-        if ($count > 0) {
-            Log::info('Low stock alerts created', [
-                'catch_id' => $catch->id,
-                'count' => $count,
-            ]);
-        }
-
-        return $count;
-    }
-
-    /**
-     * Build alert message data for WhatsApp.
-     *
-     * @srs-ref Section 2.5.2 - Customer Alert Message Format
-     */
-    public function buildAlertMessageData(FishAlert $alert): array
-    {
-        $catch = $alert->catch;
-        $seller = $catch->seller;
-        $fishType = $catch->fishType;
-
-        $header = $alert->alert_type === FishAlert::TYPE_LOW_STOCK
-            ? "⚠️ Low Stock Alert!"
-            : "🐟 Fresh {$fishType->name_en} Available!";
-
-        $body = $this->formatAlertBody($catch, $seller, $fishType, $alert);
-
-        $buttons = $this->buildAlertButtons($catch, $alert);
-
-        return [
-            'header' => $header,
-            'body' => $body,
-            'buttons' => $buttons,
-            'image_url' => $catch->photo_url,
-            'catch_data' => $catch->toAlertFormat(),
-            'seller_data' => $seller->toAlertFormat(),
-        ];
-    }
-
-    /**
-     * Build batch digest message data.
-     */
-    public function buildBatchMessageData(FishAlertBatch $batch): array
-    {
-        $catches = $batch->catches();
-        $subscription = $batch->subscription;
-
-        $header = "🐟 Fish Alert Digest";
-
-        $bodyLines = [
-            "Fresh catches near {$subscription->location_display}:",
-            "",
-        ];
-
-        foreach ($catches as $catch) {
-            $fishName = $catch->fishType?->display_name ?? '🐟 Fish';
-            $price = $catch->price_display;
-            $seller = $catch->seller?->business_name ?? 'Seller';
-            $freshness = $catch->freshness_display;
-
-            $bodyLines[] = "• {$fishName} @ {$price}";
-            $bodyLines[] = "  📍 {$seller} • {$freshness}";
-            $bodyLines[] = "";
-        }
-
-        $body = implode("\n", $bodyLines);
-
-        return [
-            'header' => $header,
-            'body' => $body,
-            'catch_count' => $batch->catch_count,
-            'catches' => $catches->map(fn($c) => $c->toAlertFormat())->toArray(),
-        ];
-    }
-
-    /**
-     * Process scheduled batches by frequency.
-     */
-    public function processScheduledBatches(FishAlertFrequency $frequency): int
-    {
-        $batches = FishAlertBatch::pending()
-            ->ofFrequency($frequency)
-            ->where('scheduled_for', '<=', now())
-            ->where('catch_count', '>', 0)
-            ->get();
-
-        $processed = 0;
-
-        foreach ($batches as $batch) {
-            // Filter out expired catches
-            $activeCatchIds = FishCatch::whereIn('id', $batch->catch_ids ?? [])
-                ->active()
-                ->pluck('id')
-                ->toArray();
-
-            if (empty($activeCatchIds)) {
-                // No active catches, mark batch as sent (nothing to send)
-                $batch->update([
-                    'status' => FishAlertBatch::STATUS_SENT,
-                    'sent_at' => now(),
-                    'catch_ids' => [],
-                    'catch_count' => 0,
-                ]);
-                continue;
-            }
-
-            // Update batch with only active catches
-            $batch->update([
-                'catch_ids' => $activeCatchIds,
-                'catch_count' => count($activeCatchIds),
-            ]);
-
-            // Mark as ready for sending (will be picked up by job)
-            $processed++;
-        }
-
-        return $processed;
-    }
-
-    /**
-     * Clean up old alerts.
-     */
-    public function cleanupOldAlerts(int $daysOld = 30): int
-    {
-        $cutoff = now()->subDays($daysOld);
-
-        $count = FishAlert::where('created_at', '<', $cutoff)->delete();
-
-        if ($count > 0) {
-            Log::info('Cleaned up old alerts', ['count' => $count, 'days_old' => $daysOld]);
-        }
-
-        return $count;
-    }
-
-    /**
-     * Get alert analytics for a time period.
-     */
-    public function getAnalytics(\Carbon\Carbon $from, \Carbon\Carbon $to): array
-    {
-        $alerts = FishAlert::whereBetween('created_at', [$from, $to])->get();
-
-        return [
-            'total_alerts' => $alerts->count(),
-            'sent' => $alerts->whereIn('status', [FishAlert::STATUS_SENT, FishAlert::STATUS_DELIVERED])->count(),
-            'delivered' => $alerts->where('status', FishAlert::STATUS_DELIVERED)->count(),
-            'failed' => $alerts->where('status', FishAlert::STATUS_FAILED)->count(),
-            'clicked' => $alerts->where('was_clicked', true)->count(),
-            'click_rate' => $alerts->count() > 0
-                ? round($alerts->where('was_clicked', true)->count() / $alerts->count() * 100, 1)
-                : 0,
-            'by_type' => [
-                'new_catch' => $alerts->where('alert_type', FishAlert::TYPE_NEW_CATCH)->count(),
-                'low_stock' => $alerts->where('alert_type', FishAlert::TYPE_LOW_STOCK)->count(),
-            ],
-            'by_action' => [
-                'coming' => $alerts->where('click_action', FishAlert::ACTION_COMING)->count(),
-                'message' => $alerts->where('click_action', FishAlert::ACTION_MESSAGE)->count(),
-                'location' => $alerts->where('click_action', FishAlert::ACTION_LOCATION)->count(),
-            ],
-        ];
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Helper Methods
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Format alert body text.
-     */
-    protected function formatAlertBody(
-        FishCatch $catch,
-        $seller,
-        $fishType,
-        FishAlert $alert
-    ): string {
-        $distance = $alert->distance_km
-            ? ($alert->distance_km < 1
-                ? round($alert->distance_km * 1000) . 'm'
-                : round($alert->distance_km, 1) . ' km')
-            : '';
-
-        $lines = [
-            "{$fishType->emoji} *{$fishType->name_en}* ({$fishType->name_ml})",
-            "",
-            "💰 *{$catch->price_display}*",
-            "📦 Quantity: {$catch->quantity_display}",
-            "⏰ Arrived: {$catch->freshness_display}",
-            "",
-            "📍 *{$seller->business_name}*",
-            "{$catch->location_display}",
-        ];
-
-        if ($distance) {
-            $lines[] = "🚗 {$distance} away";
-        }
-
-        if ($seller->rating_count > 0) {
-            $lines[] = "";
-            $lines[] = "{$seller->short_rating}";
-        }
-
-        return implode("\n", $lines);
-    }
-
-    /**
-     * Build alert action buttons.
-     */
-    protected function buildAlertButtons(FishCatch $catch, FishAlert $alert): array
-    {
-        return [
-            [
-                'id' => "fish_coming_{$catch->id}_{$alert->id}",
-                'title' => "🏃 I'm Coming!",
-            ],
-            [
-                'id' => "fish_message_{$catch->id}_{$alert->id}",
-                'title' => "💬 Message Seller",
-            ],
-            [
-                'id' => "fish_location_{$catch->id}_{$alert->id}",
-                'title' => "📍 Get Location",
-            ],
+            'action' => $parts[1], // coming, message, location
+            'catch_id' => (int) $parts[2],
+            'alert_id' => (int) $parts[3],
         ];
     }
 }

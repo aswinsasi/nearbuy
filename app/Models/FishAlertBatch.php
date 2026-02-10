@@ -1,76 +1,70 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use App\Enums\FishAlertFrequency;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Str;
 
 /**
- * Fish Alert Batch Model - Batched alert management.
+ * Fish Alert Batch Model.
  *
- * For users who prefer morning_only, twice_daily, or weekly_digest alerts.
+ * Tracks batched alerts for subscribers with scheduled preferences
+ * (Early Morning, Morning, Twice Daily).
  *
  * @property int $id
+ * @property string $batch_id - Unique batch identifier
  * @property int $fish_subscription_id
  * @property int $user_id
  * @property FishAlertFrequency $frequency
  * @property \Carbon\Carbon $scheduled_for
- * @property array $catch_ids
- * @property int $catch_count
- * @property string $status
+ * @property array|null $catch_ids - Array of catch IDs in batch
+ * @property int $alert_count - Total alerts in batch
+ * @property int $sent_count - Successfully sent
+ * @property int $failed_count - Failed to send
+ * @property string $status - pending, processing, sent, failed
  * @property \Carbon\Carbon|null $sent_at
- * @property \Carbon\Carbon|null $failed_at
- * @property string|null $failure_reason
- * @property string|null $whatsapp_message_id
- * @property bool $was_opened
- * @property \Carbon\Carbon|null $opened_at
- * @property int $clicks_count
+ * @property string|null $error_message
+ *
+ * @srs-ref PM-020 Respect alert time preferences
  */
 class FishAlertBatch extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
+        'batch_id',
         'fish_subscription_id',
         'user_id',
         'frequency',
         'scheduled_for',
         'catch_ids',
-        'catch_count',
+        'alert_count',
+        'sent_count',
+        'failed_count',
         'status',
         'sent_at',
-        'failed_at',
-        'failure_reason',
-        'whatsapp_message_id',
-        'was_opened',
-        'opened_at',
-        'clicks_count',
+        'error_message',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
         'frequency' => FishAlertFrequency::class,
         'scheduled_for' => 'datetime',
         'catch_ids' => 'array',
         'sent_at' => 'datetime',
-        'failed_at' => 'datetime',
-        'was_opened' => 'boolean',
-        'opened_at' => 'datetime',
     ];
 
     /**
-     * Batch statuses.
+     * Status constants.
      */
     public const STATUS_PENDING = 'pending';
+    public const STATUS_PROCESSING = 'processing';
     public const STATUS_SENT = 'sent';
     public const STATUS_FAILED = 'failed';
 
@@ -80,36 +74,19 @@ class FishAlertBatch extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get the subscription this batch belongs to.
-     */
     public function subscription(): BelongsTo
     {
         return $this->belongsTo(FishSubscription::class, 'fish_subscription_id');
     }
 
-    /**
-     * Get the user who will receive this batch.
-     */
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
     }
 
-    /**
-     * Get the alerts in this batch.
-     */
     public function alerts(): HasMany
     {
         return $this->hasMany(FishAlert::class, 'batch_id');
-    }
-
-    /**
-     * Get the catches in this batch.
-     */
-    public function catches()
-    {
-        return FishCatch::whereIn('id', $this->catch_ids ?? [])->get();
     }
 
     /*
@@ -118,54 +95,26 @@ class FishAlertBatch extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Scope to filter pending batches.
-     */
     public function scopePending(Builder $query): Builder
     {
         return $query->where('status', self::STATUS_PENDING);
     }
 
-    /**
-     * Scope to filter sent batches.
-     */
-    public function scopeSent(Builder $query): Builder
-    {
-        return $query->where('status', self::STATUS_SENT);
-    }
-
-    /**
-     * Scope to filter batches ready to send.
-     */
     public function scopeReadyToSend(Builder $query): Builder
     {
         return $query->pending()
             ->where('scheduled_for', '<=', now())
-            ->where('catch_count', '>', 0);
+            ->where('alert_count', '>', 0);
     }
 
-    /**
-     * Scope to filter by frequency.
-     */
-    public function scopeOfFrequency(Builder $query, FishAlertFrequency $frequency): Builder
+    public function scopeForFrequency(Builder $query, FishAlertFrequency $frequency): Builder
     {
         return $query->where('frequency', $frequency);
     }
 
-    /**
-     * Scope to filter by user.
-     */
     public function scopeForUser(Builder $query, int $userId): Builder
     {
         return $query->where('user_id', $userId);
-    }
-
-    /**
-     * Scope to filter by subscription.
-     */
-    public function scopeForSubscription(Builder $query, int $subscriptionId): Builder
-    {
-        return $query->where('fish_subscription_id', $subscriptionId);
     }
 
     /*
@@ -174,57 +123,26 @@ class FishAlertBatch extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get status display.
-     */
     public function getStatusDisplayAttribute(): string
     {
         return match ($this->status) {
             self::STATUS_PENDING => '⏳ Pending',
+            self::STATUS_PROCESSING => '🔄 Processing',
             self::STATUS_SENT => '✅ Sent',
             self::STATUS_FAILED => '❌ Failed',
             default => '❓ Unknown',
         };
     }
 
-    /**
-     * Get frequency display.
-     */
-    public function getFrequencyDisplayAttribute(): string
+    public function getCatchCountAttribute(): int
     {
-        return $this->frequency->emoji() . ' ' . $this->frequency->label();
+        return count($this->catch_ids ?? []);
     }
 
-    /**
-     * Get catches summary.
-     */
-    public function getCatchesSummaryAttribute(): string
+    public function getSuccessRateAttribute(): float
     {
-        return $this->catch_count . ' fresh catch' . ($this->catch_count > 1 ? 'es' : '');
-    }
-
-    /**
-     * Check if batch has content.
-     */
-    public function getHasContentAttribute(): bool
-    {
-        return $this->catch_count > 0;
-    }
-
-    /**
-     * Get click rate.
-     */
-    public function getClickRateAttribute(): float
-    {
-        if (!$this->was_opened) {
-            return 0;
-        }
-
-        if ($this->catch_count === 0) {
-            return 0;
-        }
-
-        return round(($this->clicks_count / $this->catch_count) * 100, 1);
+        if ($this->alert_count === 0) return 0;
+        return round(($this->sent_count / $this->alert_count) * 100, 1);
     }
 
     /*
@@ -238,197 +156,134 @@ class FishAlertBatch extends Model
      */
     public function addCatch(int $catchId): void
     {
-        $catchIds = $this->catch_ids ?? [];
-
-        if (!in_array($catchId, $catchIds)) {
-            $catchIds[] = $catchId;
+        $ids = $this->catch_ids ?? [];
+        if (!in_array($catchId, $ids)) {
+            $ids[] = $catchId;
             $this->update([
-                'catch_ids' => $catchIds,
-                'catch_count' => count($catchIds),
+                'catch_ids' => $ids,
+                'alert_count' => count($ids),
             ]);
         }
     }
 
     /**
-     * Remove catch from batch.
+     * Mark as processing.
      */
-    public function removeCatch(int $catchId): void
+    public function markProcessing(): void
     {
-        $catchIds = $this->catch_ids ?? [];
-        $catchIds = array_values(array_diff($catchIds, [$catchId]));
-
-        $this->update([
-            'catch_ids' => $catchIds,
-            'catch_count' => count($catchIds),
-        ]);
+        $this->update(['status' => self::STATUS_PROCESSING]);
     }
 
     /**
      * Mark as sent.
      */
-    public function markSent(string $whatsappMessageId = null): void
+    public function markSent(int $sentCount = null, int $failedCount = null): void
     {
         $this->update([
             'status' => self::STATUS_SENT,
             'sent_at' => now(),
-            'whatsapp_message_id' => $whatsappMessageId,
-        ]);
-
-        // Update associated alerts
-        $this->alerts()->pending()->update([
-            'status' => FishAlert::STATUS_SENT,
-            'sent_at' => now(),
+            'sent_count' => $sentCount ?? $this->alert_count,
+            'failed_count' => $failedCount ?? 0,
         ]);
     }
 
     /**
      * Mark as failed.
      */
-    public function markFailed(string $reason): void
+    public function markFailed(string $error): void
     {
         $this->update([
             'status' => self::STATUS_FAILED,
-            'failed_at' => now(),
-            'failure_reason' => $reason,
-        ]);
-
-        // Update associated alerts
-        $this->alerts()->pending()->update([
-            'status' => FishAlert::STATUS_FAILED,
-            'failed_at' => now(),
-            'failure_reason' => $reason,
+            'error_message' => substr($error, 0, 500),
+            'failed_count' => $this->alert_count,
         ]);
     }
 
     /**
-     * Record batch opened.
+     * Get catches in this batch.
      */
-    public function recordOpened(): void
+    public function getCatches(): \Illuminate\Support\Collection
     {
-        if (!$this->was_opened) {
-            $this->update([
-                'was_opened' => true,
-                'opened_at' => now(),
-            ]);
+        if (empty($this->catch_ids)) {
+            return collect();
         }
-    }
-
-    /**
-     * Record click on batch content.
-     */
-    public function recordClick(): void
-    {
-        $this->increment('clicks_count');
+        return FishCatch::whereIn('id', $this->catch_ids)
+            ->with(['fishType', 'seller'])
+            ->get();
     }
 
     /**
      * Get or create pending batch for subscription.
      */
-    public static function getOrCreatePending(FishSubscription $subscription): self
+    public static function getOrCreateForSubscription(FishSubscription $subscription): self
     {
         // Find existing pending batch
-        $batch = self::forSubscription($subscription->id)
+        $batch = self::query()
+            ->where('fish_subscription_id', $subscription->id)
+            ->where('frequency', $subscription->alert_frequency)
             ->pending()
-            ->ofFrequency($subscription->alert_frequency)
             ->first();
 
         if ($batch) {
             return $batch;
         }
 
-        // Calculate next scheduled time based on frequency
-        $scheduledFor = self::calculateNextScheduledTime($subscription->alert_frequency);
-
+        // Create new batch
         return self::create([
+            'batch_id' => 'BAT-' . strtoupper(Str::random(8)),
             'fish_subscription_id' => $subscription->id,
             'user_id' => $subscription->user_id,
             'frequency' => $subscription->alert_frequency,
-            'scheduled_for' => $scheduledFor,
+            'scheduled_for' => $subscription->alert_frequency->nextScheduledTime(),
             'catch_ids' => [],
-            'catch_count' => 0,
+            'alert_count' => 0,
+            'sent_count' => 0,
+            'failed_count' => 0,
             'status' => self::STATUS_PENDING,
         ]);
     }
 
     /**
-     * Calculate next scheduled time based on frequency.
-     */
-    protected static function calculateNextScheduledTime(FishAlertFrequency $frequency): \Carbon\Carbon
-    {
-        $now = now();
-
-        return match ($frequency) {
-            FishAlertFrequency::MORNING_ONLY => self::getNextMorningTime($now),
-            FishAlertFrequency::TWICE_DAILY => self::getNextTwiceDailyTime($now),
-            FishAlertFrequency::WEEKLY_DIGEST => self::getNextWeeklyTime($now),
-            default => $now,
-        };
-    }
-
-    /**
-     * Get next morning time (6 AM).
-     */
-    protected static function getNextMorningTime(\Carbon\Carbon $now): \Carbon\Carbon
-    {
-        $morning = $now->copy()->setTime(6, 0);
-
-        if ($now->gte($morning)) {
-            $morning->addDay();
-        }
-
-        return $morning;
-    }
-
-    /**
-     * Get next twice daily time (6 AM or 4 PM).
-     */
-    protected static function getNextTwiceDailyTime(\Carbon\Carbon $now): \Carbon\Carbon
-    {
-        $morning = $now->copy()->setTime(6, 0);
-        $afternoon = $now->copy()->setTime(16, 0);
-
-        if ($now->lt($morning)) {
-            return $morning;
-        }
-
-        if ($now->lt($afternoon)) {
-            return $afternoon;
-        }
-
-        return $morning->addDay();
-    }
-
-    /**
-     * Get next weekly time (Sunday 8 AM).
-     */
-    protected static function getNextWeeklyTime(\Carbon\Carbon $now): \Carbon\Carbon
-    {
-        $sunday = $now->copy()->next('Sunday')->setTime(8, 0);
-
-        if ($now->isSunday() && $now->lt($now->copy()->setTime(8, 0))) {
-            return $now->copy()->setTime(8, 0);
-        }
-
-        return $sunday;
-    }
-
-    /**
-     * Build summary message for batch.
+     * Build summary message.
      */
     public function buildSummaryMessage(): string
     {
-        $catches = $this->catches();
-        $lines = [];
-
-        foreach ($catches as $catch) {
-            $fishName = $catch->fishType?->display_name ?? '🐟 Fish';
-            $price = $catch->price_display;
-            $seller = $catch->seller?->business_name ?? 'Seller';
-            $freshness = $catch->freshness_display;
-
-            $lines[] = "• {$fishName} @ {$price}\n  📍 {$seller} • {$freshness}";
+        $catches = $this->getCatches();
+        
+        if ($catches->isEmpty()) {
+            return "No fresh fish available.";
         }
 
-        return implode("\n\n", $lines);
+        $lines = ["🐟 *{$catches->count()} Fresh Catches!*\n"];
+
+        foreach ($catches->take(5) as $catch) {
+            $fish = $catch->fishType?->display_name ?? '🐟 Fish';
+            $price = $catch->price_per_kg ? '₹' . (int) $catch->price_per_kg . '/kg' : '';
+            $seller = $catch->seller?->business_name ?? '';
+            $lines[] = "• {$fish} {$price}\n  📍 {$seller}";
+        }
+
+        if ($catches->count() > 5) {
+            $lines[] = "\n_+" . ($catches->count() - 5) . " more..._";
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Boot
+    |--------------------------------------------------------------------------
+    */
+
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($model) {
+            if (empty($model->batch_id)) {
+                $model->batch_id = 'BAT-' . strtoupper(Str::random(8));
+            }
+        });
     }
 }

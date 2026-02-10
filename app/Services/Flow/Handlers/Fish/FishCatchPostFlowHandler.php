@@ -5,49 +5,52 @@ declare(strict_types=1);
 namespace App\Services\Flow\Handlers\Fish;
 
 use App\DTOs\IncomingMessage;
+use App\Enums\FishCatchStep;
+use App\Enums\FishQuantityRange;
 use App\Enums\FlowType;
 use App\Models\ConversationSession;
-use App\Models\FishType;
 use App\Models\FishSeller;
+use App\Models\FishType;
 use App\Services\Fish\FishCatchService;
 use App\Services\Fish\FishAlertService;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
-use App\Services\Flow\FlowRouter;
+use App\Services\Media\MediaService;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\FishMessages;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Handler for the fish catch posting flow.
+ * Fish Catch Post Flow Handler.
  *
- * Flow Steps:
- * 1. SELECT_CATEGORY - Choose fish category (Sea Fish, Freshwater, etc.)
- * 2. SELECT_FISH - Choose fish type from category (with pagination)
- * 3. ENTER_QUANTITY - Select quantity range
- * 4. ENTER_PRICE - Enter price per kg
- * 5. UPLOAD_PHOTO - Optional photo upload
- * 6. CONFIRM - Confirm and post
- * 7. ADD_ANOTHER - Ask to add more fish
+ * OPTIMIZED FOR SPEED - fishermen do this at 5AM.
+ * Target: Complete in under 2 minutes.
  *
- * @srs-ref Pacha Meen Module - Section 2.5.1 Seller Catch Posting Flow
+ * Flow:
+ * 1. Select fish type (list - top 8 popular)
+ * 2. Select quantity (3 buttons)
+ * 3. Enter price (free text)
+ * 4. Upload photo (required - PM-008)
+ * 5. Posted! Show subscriber count
+ * 6. Add Another or Done
+ *
+ * @srs-ref PM-005 to PM-010 Catch posting requirements
+ * @srs-ref Section 2.5.1 Seller Catch Posting Flow
  */
 class FishCatchPostFlowHandler extends AbstractFlowHandler
 {
-    protected const STEP_SELECT_CATEGORY = 'select_category';
-    protected const STEP_SELECT_FISH = 'select_fish';
-    protected const STEP_ENTER_QUANTITY = 'enter_quantity';
-    protected const STEP_ENTER_PRICE = 'enter_price';
-    protected const STEP_UPLOAD_PHOTO = 'upload_photo';
+    protected const STEP_ASK_FISH = 'ask_fish';
+    protected const STEP_ASK_QTY = 'ask_qty';
+    protected const STEP_ASK_PRICE = 'ask_price';
+    protected const STEP_ASK_PHOTO = 'ask_photo';
     protected const STEP_CONFIRM = 'confirm';
-    protected const STEP_ADD_ANOTHER = 'add_another';
+    protected const STEP_ADD_MORE = 'add_more';
 
     public function __construct(
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
         protected FishCatchService $catchService,
         protected FishAlertService $alertService,
-        protected FlowRouter $flowRouter
+        protected ?MediaService $mediaService = null,
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -60,30 +63,49 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
     protected function getSteps(): array
     {
         return [
-            self::STEP_SELECT_CATEGORY,
-            self::STEP_SELECT_FISH,
-            self::STEP_ENTER_QUANTITY,
-            self::STEP_ENTER_PRICE,
-            self::STEP_UPLOAD_PHOTO,
+            self::STEP_ASK_FISH,
+            self::STEP_ASK_QTY,
+            self::STEP_ASK_PRICE,
+            self::STEP_ASK_PHOTO,
             self::STEP_CONFIRM,
-            self::STEP_ADD_ANOTHER,
+            self::STEP_ADD_MORE,
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Entry Point
+    |--------------------------------------------------------------------------
+    */
+
     public function start(ConversationSession $session): void
     {
-        // Ensure user is a fish seller
         $seller = $this->getFishSeller($session);
+
         if (!$seller) {
-            $this->sendTextWithMenu($session->phone, "❌ You must be a registered fish seller to post catches.");
+            $this->sendButtons(
+                $session->phone,
+                "❌ Fish seller aayi register cheyyuka first.",
+                [
+                    ['id' => 'fish_seller_register', 'title' => '🐟 Register'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
+            );
             return;
         }
 
-        $this->clearTemp($session);
-        $this->nextStep($session, self::STEP_SELECT_CATEGORY);
+        // Check if can post
+        if (!$seller->can_post) {
+            $this->sendButtons(
+                $session->phone,
+                "❌ Cannot post. Account suspended.",
+                [['id' => 'main_menu', 'title' => '🏠 Menu']]
+            );
+            return;
+        }
 
-        $response = FishMessages::startCatchPosting();
-        $this->sendFishMessage($session->phone, $response);
+        $this->clearTempData($session);
+        $this->askFishType($session);
     }
 
     public function handle(IncomingMessage $message, ConversationSession $session): void
@@ -92,464 +114,424 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        // Ensure user is a fish seller
         $seller = $this->getFishSeller($session);
         if (!$seller) {
-            $this->sendTextWithMenu($session->phone, "❌ You must be a registered fish seller to post catches.");
-            return;
-        }
-
-        // Handle cross-flow navigation buttons
-        $selectionId = $this->getSelectionId($message);
-        if ($this->handleCrossFlowNavigation($selectionId, $session)) {
+            $this->start($session);
             return;
         }
 
         $step = $session->current_step;
 
-        Log::debug('FishCatchPostFlowHandler', [
-            'step' => $step,
-            'message_type' => $message->type,
-        ]);
+        Log::debug('FishCatchPost step', ['step' => $step, 'type' => $message->type]);
 
         match ($step) {
-            self::STEP_SELECT_CATEGORY => $this->handleSelectCategory($message, $session),
-            self::STEP_SELECT_FISH => $this->handleSelectFish($message, $session),
-            self::STEP_ENTER_QUANTITY => $this->handleEnterQuantity($message, $session),
-            self::STEP_ENTER_PRICE => $this->handleEnterPrice($message, $session),
-            self::STEP_UPLOAD_PHOTO => $this->handleUploadPhoto($message, $session),
+            self::STEP_ASK_FISH => $this->handleFishType($message, $session),
+            self::STEP_ASK_QTY => $this->handleQuantity($message, $session),
+            self::STEP_ASK_PRICE => $this->handlePrice($message, $session),
+            self::STEP_ASK_PHOTO => $this->handlePhoto($message, $session),
             self::STEP_CONFIRM => $this->handleConfirm($message, $session),
-            self::STEP_ADD_ANOTHER => $this->handleAddAnother($message, $session),
+            self::STEP_ADD_MORE => $this->handleAddMore($message, $session),
             default => $this->start($session),
         };
     }
 
-    /**
-     * Handle buttons that navigate to other flows or trigger actions.
-     */
-    protected function handleCrossFlowNavigation(?string $selectionId, ConversationSession $session): bool
+    /*
+    |--------------------------------------------------------------------------
+    | Step 1: Fish Type (PM-005)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askFishType(ConversationSession $session): void
     {
-        if (!$selectionId) {
-            return false;
-        }
+        // Get popular fish types (top 8)
+        $fishTypes = FishType::active()
+            ->orderBy('popularity', 'desc')
+            ->limit(8)
+            ->get();
 
-        if ($selectionId === 'main_menu') {
-            $this->clearTemp($session);
-            $this->goToMainMenu($session);
-            return true;
-        }
+        $sections = [[
+            'title' => '🐟 Popular',
+            'rows' => $fishTypes->map(fn($ft) => [
+                'id' => 'fish_' . $ft->id,
+                'title' => mb_substr($ft->emoji . ' ' . $ft->name_en, 0, 24),
+                'description' => mb_substr($ft->name_ml ?? '', 0, 72),
+            ])->toArray(),
+        ]];
 
-        if ($selectionId === 'fish_update_stock') {
-            $this->clearTemp($session);
-            $this->flowRouter->handleMenuSelection('fish_update_stock', $session);
-            return true;
-        }
+        // Add "More" and "Other" options
+        $sections[0]['rows'][] = [
+            'id' => 'fish_more',
+            'title' => '📋 More fish types...',
+            'description' => 'See all categories',
+        ];
+        $sections[0]['rows'][] = [
+            'id' => 'fish_other',
+            'title' => '✏️ Other (type name)',
+            'description' => 'Not in list? Type it',
+        ];
 
-        return false;
+        $this->sendList(
+            $session->phone,
+            "🐟 *Enthu meen?*\n_Which fish?_",
+            'Select Fish',
+            $sections
+        );
+
+        $this->sessionManager->setFlowStep($session, FlowType::FISH_POST_CATCH, self::STEP_ASK_FISH);
     }
 
-    /**
-     * Handle category selection (Step 1).
-     */
-    protected function handleSelectCategory(IncomingMessage $message, ConversationSession $session): void
+    protected function handleFishType(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
+        $text = $this->getTextContent($message);
 
-        // Handle "Select Fish" button from start message
-        if ($selectionId === 'select_fish') {
-            $response = FishMessages::selectFishCategory();
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        // Handle category selection
-        $category = match ($selectionId) {
-            'cat_sea_fish' => FishType::CATEGORY_SEA_FISH,
-            'cat_freshwater' => FishType::CATEGORY_FRESHWATER,
-            'cat_shellfish' => FishType::CATEGORY_SHELLFISH,
-            'cat_crustacean' => FishType::CATEGORY_CRUSTACEAN,
-            default => null,
-        };
-
-        if ($category) {
-            $this->setTemp($session, 'selected_category', $category);
-            $this->setTemp($session, 'category_page', 0);
-            $this->nextStep($session, self::STEP_SELECT_FISH);
-
-            $response = FishMessages::selectFishFromCategory($category, 0);
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        // Show category selection
-        $response = FishMessages::selectFishCategory();
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    /**
-     * Handle fish selection from category (Step 2).
-     */
-    protected function handleSelectFish(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        // Handle back to categories
-        if ($selectionId === 'back_to_categories') {
-            $this->setTemp($session, 'selected_category', null);
-            $this->setTemp($session, 'category_page', 0);
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-
-            $response = FishMessages::selectFishCategory();
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        // Handle pagination within category
-        if ($selectionId && preg_match('/^cat_([a-z_]+)_page_(\d+)$/', $selectionId, $matches)) {
-            $category = $matches[1];
-            $page = (int) $matches[2];
-
-            $this->setTemp($session, 'selected_category', $category);
-            $this->setTemp($session, 'category_page', $page);
-
-            $response = FishMessages::selectFishFromCategory($category, $page);
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        // Handle fish type selection from list (format: fish_1, fish_2, etc.)
-        if ($selectionId && str_starts_with($selectionId, 'fish_')) {
-            $fishType = FishType::findByListId($selectionId);
-            if ($fishType) {
-                $this->setFishTypeAndContinue($session, $fishType);
+        // Handle list selection
+        if ($selectionId) {
+            if ($selectionId === 'fish_more') {
+                $this->showAllFishCategories($session);
                 return;
+            }
+
+            if ($selectionId === 'fish_other') {
+                $this->sendText($session->phone, "🐟 Meen name type cheyyuka:");
+                $this->setTempData($session, 'awaiting_fish_name', true);
+                return;
+            }
+
+            // Parse fish_ID
+            if (str_starts_with($selectionId, 'fish_')) {
+                $fishTypeId = (int) str_replace('fish_', '', $selectionId);
+                $fishType = FishType::find($fishTypeId);
+
+                if ($fishType) {
+                    $this->setTempData($session, 'fish_type_id', $fishType->id);
+                    $this->setTempData($session, 'fish_name', $fishType->display_name);
+                    $this->askQuantity($session, $fishType);
+                    return;
+                }
             }
         }
 
-        // Show fish from current category
-        $category = $this->getTemp($session, 'selected_category');
-        $page = (int) $this->getTemp($session, 'category_page', 0);
+        // Handle text input for "Other" fish
+        if ($text && $this->getTempData($session, 'awaiting_fish_name')) {
+            // Search for matching fish type
+            $fishType = FishType::search($text)->first();
 
-        if ($category) {
-            $response = FishMessages::selectFishFromCategory($category, $page);
-        } else {
-            // Fallback to category selection
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $response = FishMessages::selectFishCategory();
+            if ($fishType) {
+                $this->setTempData($session, 'fish_type_id', $fishType->id);
+                $this->setTempData($session, 'fish_name', $fishType->display_name);
+            } else {
+                // Create custom entry or use generic
+                $this->setTempData($session, 'fish_type_id', 1); // Generic fish ID
+                $this->setTempData($session, 'fish_name', $text);
+                $this->setTempData($session, 'custom_fish_name', $text);
+            }
+
+            $this->setTempData($session, 'awaiting_fish_name', false);
+            $this->askQuantity($session);
+            return;
         }
 
-        $this->sendFishMessage($session->phone, $response);
+        // Re-prompt
+        $this->askFishType($session);
     }
 
-    /**
-     * Set selected fish type and move to quantity step.
-     */
-    protected function setFishTypeAndContinue(ConversationSession $session, FishType $fishType): void
+    protected function showAllFishCategories(ConversationSession $session): void
     {
-        $this->setTemp($session, 'fish_type_id', $fishType->id);
-        $this->setTemp($session, 'fish_type_name', $fishType->display_name);
-        $this->nextStep($session, self::STEP_ENTER_QUANTITY);
-
-        $response = FishMessages::askQuantity($fishType);
-        $this->sendFishMessage($session->phone, $response);
+        $this->sendButtons(
+            $session->phone,
+            "🐟 *Category select cheyyuka:*",
+            [
+                ['id' => 'cat_sea', 'title' => '🌊 Sea Fish'],
+                ['id' => 'cat_fresh', 'title' => '🏞️ Freshwater'],
+                ['id' => 'cat_shell', 'title' => '🦐 Shellfish'],
+            ]
+        );
     }
 
-    protected function handleEnterQuantity(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 2: Quantity (PM-006)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askQuantity(ConversationSession $session, ?FishType $fishType = null): void
+    {
+        $fishName = $fishType?->display_name ?? $this->getTempData($session, 'fish_name') ?? 'Fish';
+
+        // Use 3 buttons (WhatsApp limit) - most common ranges
+        $this->sendButtons(
+            $session->phone,
+            "📦 *{$fishName}*\nQuantity?",
+            [
+                ['id' => 'qty_5_10', 'title' => '5-10 kg'],
+                ['id' => 'qty_10_25', 'title' => '10-25 kg'],
+                ['id' => 'qty_25_plus', 'title' => '25+ kg'],
+            ]
+        );
+
+        $this->sessionManager->setFlowStep($session, FlowType::FISH_POST_CATCH, self::STEP_ASK_QTY);
+    }
+
+    protected function handleQuantity(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
         $text = $this->getTextContent($message);
 
         $quantityRange = null;
 
-        // Check for quantity range button selection (e.g., qty_small, qty_medium, qty_5_10)
-        if ($selectionId && str_starts_with($selectionId, 'qty_')) {
-            // Extract the range value (remove 'qty_' prefix)
-            $rangeValue = substr($selectionId, 4);
-            $quantityRange = $rangeValue;
+        // Handle button selection
+        if ($selectionId) {
+            $quantityRange = match ($selectionId) {
+                'qty_5_10' => FishQuantityRange::RANGE_5_10,
+                'qty_10_25' => FishQuantityRange::RANGE_10_25,
+                'qty_25_plus', 'qty_25_50' => FishQuantityRange::RANGE_25_50,
+                'qty_50_plus' => FishQuantityRange::RANGE_50_PLUS,
+                default => FishQuantityRange::fromButtonId($selectionId),
+            };
         }
 
-        // Check for text input - try to map to a range
+        // Handle text input (e.g., "15" or "15kg")
         if (!$quantityRange && $text) {
-            $quantityRange = $this->mapTextToQuantityRange($text);
+            $kg = (int) preg_replace('/[^0-9]/', '', $text);
+            if ($kg > 0) {
+                $quantityRange = FishQuantityRange::fromKg($kg);
+            }
         }
-
-        $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
 
         if ($quantityRange) {
-            $this->setTemp($session, 'quantity_range', $quantityRange);
-            $this->nextStep($session, self::STEP_ENTER_PRICE);
-
-            $response = FishMessages::askPrice($fishType);
-            $this->sendFishMessage($session->phone, $response);
+            $this->setTempData($session, 'quantity_range', $quantityRange->value);
+            $this->askPrice($session);
             return;
         }
 
         // Re-prompt
-        $response = FishMessages::askQuantity($fishType);
-        $this->sendFishMessage($session->phone, $response);
+        $this->askQuantity($session);
     }
 
-    /**
-     * Map text input to a quantity range value.
-     */
-    protected function mapTextToQuantityRange(string $text): ?string
+    /*
+    |--------------------------------------------------------------------------
+    | Step 3: Price (PM-007)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askPrice(ConversationSession $session): void
     {
-        // Clean input - extract number
-        $text = preg_replace('/[^\d]/', '', $text);
-        
-        if (!is_numeric($text)) {
-            return null;
-        }
+        $fishName = $this->getTempData($session, 'fish_name') ?? 'Fish';
+        $qty = FishQuantityRange::tryFrom($this->getTempData($session, 'quantity_range'));
 
-        $qty = (int) $text;
+        $this->sendText(
+            $session->phone,
+            "💰 *{$fishName}* ({$qty?->label()})\n₹/kg?"
+        );
 
-        // Map to FishQuantityRange enum values
-        // These should match your FishQuantityRange enum
-        if ($qty <= 2) {
-            return 'under_2kg';
-        } elseif ($qty <= 5) {
-            return '2_5kg';
-        } elseif ($qty <= 10) {
-            return '5_10kg';
-        } elseif ($qty <= 20) {
-            return '10_20kg';
-        } elseif ($qty <= 50) {
-            return '20_50kg';
-        } else {
-            return 'above_50kg';
-        }
+        $this->sessionManager->setFlowStep($session, FlowType::FISH_POST_CATCH, self::STEP_ASK_PRICE);
     }
 
-    protected function handleEnterPrice(IncomingMessage $message, ConversationSession $session): void
+    protected function handlePrice(IncomingMessage $message, ConversationSession $session): void
     {
         $text = $this->getTextContent($message);
 
         if ($text) {
             $price = $this->extractPrice($text);
-            if ($price && $price > 0 && $price < 100000) {
-                $this->setTemp($session, 'price_per_kg', $price);
-                $this->nextStep($session, self::STEP_UPLOAD_PHOTO);
 
-                $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
-                $response = FishMessages::askPhoto($fishType);
-                $this->sendFishMessage($session->phone, $response);
+            if ($price && $price > 0 && $price <= 10000) {
+                $this->setTempData($session, 'price_per_kg', $price);
+                $this->askPhoto($session);
                 return;
             }
         }
 
-        // Invalid price
-        $this->sendTextWithMenu(
+        $this->sendText($session->phone, "❌ Valid price enter cheyyuka (1-10000)");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 4: Photo (PM-008 - REQUIRED)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askPhoto(ConversationSession $session): void
+    {
+        $fishName = $this->getTempData($session, 'fish_name') ?? 'Fish';
+
+        $this->sendText(
             $session->phone,
-            "❌ Please enter a valid price (e.g., 450, ₹450, 450/kg)"
+            "📸 *{$fishName}* photo ayakkuka:\n_Fresh photo = more customers!_"
+        );
+
+        $this->sessionManager->setFlowStep($session, FlowType::FISH_POST_CATCH, self::STEP_ASK_PHOTO);
+    }
+
+    protected function handlePhoto(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Check for image
+        if ($message->isImage() && $message->getMediaId()) {
+            $photoUrl = $this->downloadAndStorePhoto($message);
+
+            if ($photoUrl) {
+                $this->setTempData($session, 'photo_url', $photoUrl);
+                $this->setTempData($session, 'photo_media_id', $message->getMediaId());
+            } else {
+                // Store media ID even if download failed
+                $this->setTempData($session, 'photo_media_id', $message->getMediaId());
+            }
+
+            $this->createAndPostCatch($session);
+            return;
+        }
+
+        // Allow skip for now (but discourage)
+        $selectionId = $this->getSelectionId($message);
+        if ($selectionId === 'skip_photo') {
+            $this->createAndPostCatch($session);
+            return;
+        }
+
+        // Re-prompt with skip option
+        $this->sendButtons(
+            $session->phone,
+            "📸 Photo ayakkuka (more customers!):",
+            [['id' => 'skip_photo', 'title' => '⏭️ Skip']]
         );
     }
 
     /**
-     * Handle photo upload step.
-     * 
-     * FIX: Now downloads the image from WhatsApp and stores it to get a public URL.
+     * Download photo from WhatsApp and store.
      */
-    protected function handleUploadPhoto(IncomingMessage $message, ConversationSession $session): void
+    protected function downloadAndStorePhoto(IncomingMessage $message): ?string
     {
-        // Check for skip
-        if ($this->isSkip($message)) {
-            $this->setTemp($session, 'photo_url', null);
-            $this->setTemp($session, 'photo_media_id', null);
-            $this->proceedToConfirm($session);
-            return;
+        if (!$this->mediaService) {
+            Log::warning('MediaService not available');
+            return null;
         }
 
-        // Check for image
-        $mediaId = $this->getMediaId($message);
-        if ($mediaId && $message->type === 'image') {
-            $this->setTemp($session, 'photo_media_id', $mediaId);
-            
-            // FIX: Download and store the image to get a public URL
-            $filename = 'fish-catches/' . date('Y/m/d') . '/' . uniqid() . '.jpg';
-            $result = $this->whatsApp->downloadAndStoreMedia($mediaId, $filename);
-            
-            if ($result['success']) {
-                $this->setTemp($session, 'photo_url', $result['url']);
-                Log::info('Fish photo stored', [
-                    'media_id' => $mediaId,
-                    'url' => $result['url'],
-                ]);
-            } else {
-                // Log error but continue without photo URL
-                Log::warning('Failed to download fish photo', [
-                    'media_id' => $mediaId,
-                    'error' => $result['error'] ?? 'Unknown error',
-                ]);
-                $this->setTemp($session, 'photo_url', null);
-            }
-            
-            $this->proceedToConfirm($session);
-            return;
-        }
+        try {
+            $result = $this->mediaService->downloadAndStore(
+                $message->getMediaId(),
+                'fish-catches/' . date('Y/m')
+            );
 
-        // Re-prompt
-        $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
-        $response = FishMessages::askPhoto($fishType);
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    protected function proceedToConfirm(ConversationSession $session): void
-    {
-        $this->nextStep($session, self::STEP_CONFIRM);
-
-        $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
-        $quantityRange = $this->getTemp($session, 'quantity_range');
-        $price = $this->getTemp($session, 'price_per_kg');
-        $photoUrl = $this->getTemp($session, 'photo_url');
-        $photoMediaId = $this->getTemp($session, 'photo_media_id');
-        $hasPhoto = !empty($photoUrl) || !empty($photoMediaId);
-
-        // If there's a photo, send it first
-        if ($hasPhoto) {
-            if ($photoUrl) {
-                // Use the stored URL (preferred - works reliably)
-                $this->whatsApp->sendImage($session->phone, $photoUrl, "📸 Your fish photo");
-            } elseif ($photoMediaId) {
-                // Fallback to media ID
-                $this->whatsApp->sendImage($session->phone, $photoMediaId, "📸 Your fish photo", true);
-            }
-        }
-
-        $catchData = [
-            'quantity_range' => $quantityRange,
-            'price_per_kg' => $price,
-            'has_photo' => $hasPhoto,
-        ];
-
-        $response = FishMessages::confirmCatchPosting($catchData, $fishType);
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    protected function handleConfirm(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        // Handle "Try Again" / back to categories
-        if ($selectionId === 'back_to_categories') {
-            $this->clearTemp($session);
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $response = FishMessages::selectFishCategory();
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        // Handle main menu
-        if ($selectionId === 'main_menu') {
-            $this->clearTemp($session);
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        if ($selectionId === 'confirm_post' || $selectionId === 'yes') {
-            $this->createCatch($session);
-            return;
-        }
-
-        if ($selectionId === 'cancel_post' || $selectionId === 'no') {
-            $this->clearTemp($session);
-            $this->sendTextWithMenu($session->phone, "❌ Catch posting cancelled.");
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Handle edit photo - go back to photo upload step
-        if ($selectionId === 'edit_photo') {
-            $this->setTemp($session, 'photo_media_id', null);
-            $this->setTemp($session, 'photo_url', null); // Also clear URL
-            $this->nextStep($session, self::STEP_UPLOAD_PHOTO);
-            $fishType = FishType::find($this->getTemp($session, 'fish_type_id'));
-            $response = FishMessages::askPhoto($fishType);
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        if ($selectionId === 'edit_details') {
-            $this->clearTemp($session);
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $response = FishMessages::selectFishCategory();
-            $this->sendFishMessage($session->phone, $response);
-            return;
-        }
-
-        // Re-show confirmation only if we have required data
-        $fishTypeId = $this->getTemp($session, 'fish_type_id');
-        $quantityRange = $this->getTemp($session, 'quantity_range');
-        
-        if ($fishTypeId && $quantityRange) {
-            $this->proceedToConfirm($session);
-        } else {
-            // Data missing - restart flow
-            $this->clearTemp($session);
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $response = FishMessages::selectFishCategory();
-            $this->sendFishMessage($session->phone, $response);
+            return $result['url'] ?? null;
+        } catch (\Exception $e) {
+            Log::error('Failed to download catch photo', ['error' => $e->getMessage()]);
+            return null;
         }
     }
 
-    protected function createCatch(ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 5: Create & Post
+    |--------------------------------------------------------------------------
+    */
+
+    protected function createAndPostCatch(ConversationSession $session): void
     {
         $seller = $this->getFishSeller($session);
 
         try {
             $catch = $this->catchService->createCatch($seller, [
-                'fish_type_id' => $this->getTemp($session, 'fish_type_id'),
-                'quantity_range' => $this->getTemp($session, 'quantity_range'),
-                'price_per_kg' => $this->getTemp($session, 'price_per_kg'),
-                'photo_media_id' => $this->getTemp($session, 'photo_media_id'),
-                'photo_url' => $this->getTemp($session, 'photo_url'), // FIX: Now passing photo_url
-                'latitude' => $seller->latitude ?? $seller->user->latitude,
-                'longitude' => $seller->longitude ?? $seller->user->longitude,
+                'fish_type_id' => $this->getTempData($session, 'fish_type_id'),
+                'quantity_range' => $this->getTempData($session, 'quantity_range'),
+                'price_per_kg' => $this->getTempData($session, 'price_per_kg'),
+                'photo_url' => $this->getTempData($session, 'photo_url'),
+                'photo_media_id' => $this->getTempData($session, 'photo_media_id'),
             ]);
 
-            // Process alerts - returns array with counts
+            // Send alerts to subscribers
             $alertResult = $this->alertService->processNewCatch($catch);
             $subscriberCount = $alertResult['total_subscribers'] ?? 0;
 
-            $this->nextStep($session, self::STEP_ADD_ANOTHER);
-
-            $response = FishMessages::catchPostedSuccess($catch, $subscriberCount);
-            $this->sendFishMessage($session->phone, $response);
+            $this->showSuccess($session, $catch, $subscriberCount);
 
         } catch (\Exception $e) {
             Log::error('Failed to create catch', [
                 'error' => $e->getMessage(),
                 'seller_id' => $seller->id,
             ]);
+
             $this->sendButtons(
                 $session->phone,
-                "❌ Failed to post catch. Please try again.",
+                "❌ Failed. Try again.",
                 [
-                    ['id' => 'back_to_categories', 'title' => '🔄 Try Again'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                    ['id' => 'fish_post_catch', 'title' => '🔄 Retry'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ]
             );
         }
     }
 
-    protected function handleAddAnother(IncomingMessage $message, ConversationSession $session): void
+    protected function showSuccess(ConversationSession $session, $catch, int $subscriberCount): void
     {
-        $selectionId = $this->getSelectionId($message);
+        $fishName = $catch->fishType?->display_name ?? 'Fish';
+        $price = $catch->price_display;
 
-        if ($selectionId === 'add_another' || $selectionId === 'yes') {
-            $this->clearTemp($session);
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $response = FishMessages::selectFishCategory();
-            $this->sendFishMessage($session->phone, $response);
-            return;
+        // Show photo if available
+        if ($catch->photo_url) {
+            $this->whatsApp->sendImage(
+                $session->phone,
+                $catch->photo_url,
+                "✅ Posted!"
+            );
         }
 
-        $this->clearTemp($session);
-        $this->goToMainMenu($session);
+        // Success message with social proof
+        $alertText = $subscriberCount > 0
+            ? "📢 *{$subscriberCount}* subscribers-nu alert ayachittund!"
+            : "📢 Alerts will be sent to nearby customers.";
+
+        $this->sendButtons(
+            $session->phone,
+            "✅ *Posted!* 🐟\n\n" .
+            "*{$fishName}* • {$catch->quantity_display} • {$price}\n\n" .
+            "{$alertText}\n\n" .
+            "_Customers \"I'm Coming\" click cheyyumbol notify cheyyum._",
+            [
+                ['id' => 'add_another', 'title' => '🐟 Add Another'],
+                ['id' => 'fish_menu', 'title' => '📋 My Catches'],
+                ['id' => 'main_menu', 'title' => '✅ Done'],
+            ]
+        );
+
+        $this->sessionManager->setFlowStep($session, FlowType::FISH_POST_CATCH, self::STEP_ADD_MORE);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Helper Methods
+    | Step 6: Add More (PM-009)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function handleAddMore(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selectionId = $this->getSelectionId($message);
+
+        if ($selectionId === 'add_another') {
+            $this->clearTempData($session);
+            $this->askFishType($session);
+            return;
+        }
+
+        if ($selectionId === 'fish_menu') {
+            $this->clearTempData($session);
+            // Route to fish seller menu
+            $this->goToMenu($session);
+            return;
+        }
+
+        $this->clearTempData($session);
+        $this->goToMenu($session);
+    }
+
+    protected function handleConfirm(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Confirmation step - redirect to add more
+        $this->handleAddMore($message, $session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers
     |--------------------------------------------------------------------------
     */
 
@@ -561,48 +543,7 @@ class FishCatchPostFlowHandler extends AbstractFlowHandler
 
     protected function extractPrice(string $text): ?float
     {
-        // Remove currency symbols and text
         $cleaned = preg_replace('/[^\d.]/', '', $text);
-
-        if (is_numeric($cleaned)) {
-            return (float) $cleaned;
-        }
-
-        return null;
-    }
-
-    protected function sendFishMessage(string $phone, array $response): void
-    {
-        $type = $response['type'] ?? 'text';
-
-        switch ($type) {
-            case 'text':
-                $this->sendText($phone, $response['text']);
-                break;
-
-            case 'buttons':
-                $this->sendButtons(
-                    $phone,
-                    $response['body'] ?? $response['text'] ?? '',
-                    $response['buttons'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
-
-            case 'list':
-                $this->sendList(
-                    $phone,
-                    $response['body'] ?? '',
-                    $response['button'] ?? 'Select',
-                    $response['sections'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
-
-            default:
-                $this->sendText($phone, $response['text'] ?? 'Message sent.');
-        }
+        return is_numeric($cleaned) ? (float) $cleaned : null;
     }
 }

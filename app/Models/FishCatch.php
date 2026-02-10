@@ -1,99 +1,83 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use App\Enums\FishCatchStatus;
 use App\Enums\FishQuantityRange;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
 /**
- * Fish Catch Model - Individual catch postings.
+ * Fish Catch Model.
  *
  * @property int $id
- * @property int $fish_seller_id
+ * @property int $seller_id
  * @property int $fish_type_id
  * @property string $catch_number
  * @property FishQuantityRange $quantity_range
- * @property float|null $quantity_kg
  * @property float $price_per_kg
  * @property string|null $photo_url
  * @property string|null $photo_media_id
- * @property float|null $latitude
- * @property float|null $longitude
- * @property string|null $location_name
  * @property FishCatchStatus $status
- * @property \Carbon\Carbon|null $sold_out_at
- * @property \Carbon\Carbon|null $arrived_at
- * @property \Carbon\Carbon $expires_at
- * @property int $view_count
+ * @property int $customers_coming - PM-019 live claim count
  * @property int $alerts_sent
- * @property int $coming_count
- * @property int $message_count
- * @property string|null $freshness_tag
- * @property string|null $notes
+ * @property int $view_count
+ * @property \Carbon\Carbon $arrived_at - PM-010 auto-timestamp
+ * @property \Carbon\Carbon $expires_at
+ * @property \Carbon\Carbon|null $sold_out_at
  *
- * @srs-ref Section 5.1.3 - fish_catches table
- * @srs-ref Section 2.3.2 - Catch Posting
+ * @srs-ref Section 5.1.3 fish_catches table
+ * @srs-ref PM-010 Auto-timestamp, calculate freshness
  */
 class FishCatch extends Model
 {
     use HasFactory, SoftDeletes;
 
-    /**
-     * The table associated with the model.
-     */
     protected $table = 'fish_catches';
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
-        'fish_seller_id',
+        'seller_id',
         'fish_type_id',
         'catch_number',
         'quantity_range',
-        'quantity_kg',
         'price_per_kg',
         'photo_url',
         'photo_media_id',
-        'latitude',
-        'longitude',
-        'location_name',
         'status',
-        'sold_out_at',
+        'customers_coming',
+        'alerts_sent',
+        'view_count',
         'arrived_at',
         'expires_at',
-        'view_count',
-        'alerts_sent',
-        'coming_count',
-        'message_count',
-        'freshness_tag',
-        'notes',
+        'sold_out_at',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
         'quantity_range' => FishQuantityRange::class,
-        'quantity_kg' => 'decimal:2',
-        'price_per_kg' => 'decimal:2',
-        'latitude' => 'decimal:8',
-        'longitude' => 'decimal:8',
         'status' => FishCatchStatus::class,
-        'sold_out_at' => 'datetime',
+        'price_per_kg' => 'decimal:2',
         'arrived_at' => 'datetime',
         'expires_at' => 'datetime',
+        'sold_out_at' => 'datetime',
+    ];
+
+    protected $attributes = [
+        'status' => 'available',
+        'customers_coming' => 0,
+        'alerts_sent' => 0,
+        'view_count' => 0,
     ];
 
     /**
      * Default expiry hours.
+     * @srs-ref PM-024 Auto-expire after 6 hours
      */
     public const DEFAULT_EXPIRY_HOURS = 6;
 
@@ -103,44 +87,19 @@ class FishCatch extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get the seller who posted this catch.
-     */
     public function seller(): BelongsTo
     {
-        return $this->belongsTo(FishSeller::class, 'fish_seller_id');
+        return $this->belongsTo(FishSeller::class, 'seller_id');
     }
 
-    /**
-     * Get the fish type.
-     */
     public function fishType(): BelongsTo
     {
         return $this->belongsTo(FishType::class);
     }
 
-    /**
-     * Get alerts sent for this catch.
-     */
-    public function alerts(): HasMany
-    {
-        return $this->hasMany(FishAlert::class);
-    }
-
-    /**
-     * Get customer responses to this catch.
-     */
     public function responses(): HasMany
     {
         return $this->hasMany(FishCatchResponse::class);
-    }
-
-    /**
-     * Get "I'm Coming" responses.
-     */
-    public function comingResponses(): HasMany
-    {
-        return $this->responses()->where('response_type', 'coming');
     }
 
     /*
@@ -149,17 +108,11 @@ class FishCatch extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Scope to filter available catches.
-     */
     public function scopeAvailable(Builder $query): Builder
     {
         return $query->where('status', FishCatchStatus::AVAILABLE);
     }
 
-    /**
-     * Scope to filter active catches (not expired).
-     */
     public function scopeActive(Builder $query): Builder
     {
         return $query->whereIn('status', [
@@ -168,145 +121,87 @@ class FishCatch extends Model
         ])->where('expires_at', '>', now());
     }
 
-    /**
-     * Scope to filter expired catches.
-     */
-    public function scopeExpired(Builder $query): Builder
+    public function scopeOfSeller(Builder $query, int $sellerId): Builder
     {
-        return $query->where(function ($q) {
-            $q->where('status', FishCatchStatus::EXPIRED)
-                ->orWhere('expires_at', '<=', now());
-        });
+        return $query->where('seller_id', $sellerId);
     }
 
-    /**
-     * Scope to filter by fish type.
-     */
     public function scopeOfFishType(Builder $query, int $fishTypeId): Builder
     {
         return $query->where('fish_type_id', $fishTypeId);
     }
 
-    /**
-     * Scope to filter by multiple fish types.
-     */
-    public function scopeOfFishTypes(Builder $query, array $fishTypeIds): Builder
+    public function scopeNearLocation(Builder $query, float $lat, float $lng, float $radiusKm = 5): Builder
     {
-        return $query->whereIn('fish_type_id', $fishTypeIds);
+        return $query->join('fish_sellers', 'fish_catches.seller_id', '=', 'fish_sellers.id')
+            ->whereRaw(
+                "ST_Distance_Sphere(POINT(fish_sellers.longitude, fish_sellers.latitude), POINT(?, ?)) <= ?",
+                [$lng, $lat, $radiusKm * 1000]
+            )
+            ->select('fish_catches.*');
     }
 
-    /**
-     * Scope to filter by seller.
-     */
-    public function scopeOfSeller(Builder $query, int $sellerId): Builder
+    public function scopeWithDistanceFrom(Builder $query, float $lat, float $lng): Builder
     {
-        return $query->where('fish_seller_id', $sellerId);
-    }
-
-    /**
-     * Scope to find catches near a location.
-     */
-    public function scopeNearLocation(Builder $query, float $latitude, float $longitude, float $radiusKm = 5): Builder
-    {
-        // Only join if not already joined
-        if (!$this->hasJoin($query, 'fish_sellers')) {
-            $query->join('fish_sellers', 'fish_catches.fish_seller_id', '=', 'fish_sellers.id');
-        }
-
-        return $query->whereRaw(
-            "ST_Distance_Sphere(
-                POINT(COALESCE(fish_catches.longitude, fish_sellers.longitude), 
-                    COALESCE(fish_catches.latitude, fish_sellers.latitude)),
-                POINT(?, ?)
-            ) <= ?",
-            [$longitude, $latitude, $radiusKm * 1000]
-        );
-        // REMOVED: ->select('fish_catches.*')
-    }
-
-    /**
-     * Scope to select with distance from a point.
-     */
-    public function scopeWithDistanceFrom(Builder $query, float $latitude, float $longitude): Builder
-    {
-        // Only join if not already joined
-        if (!$this->hasJoin($query, 'fish_sellers')) {
-            $query->join('fish_sellers', 'fish_catches.fish_seller_id', '=', 'fish_sellers.id');
-        }
-
-        return $query
+        return $query->join('fish_sellers', 'fish_catches.seller_id', '=', 'fish_sellers.id')
             ->selectRaw(
-                "fish_catches.*, ST_Distance_Sphere(
-                    POINT(COALESCE(fish_catches.longitude, fish_sellers.longitude), 
-                        COALESCE(fish_catches.latitude, fish_sellers.latitude)),
-                    POINT(?, ?)
-                ) / 1000 as distance_km",
-                [$longitude, $latitude]
+                "fish_catches.*, ST_Distance_Sphere(POINT(fish_sellers.longitude, fish_sellers.latitude), POINT(?, ?)) / 1000 as distance_km",
+                [$lng, $lat]
             );
     }
 
-    /**
-     * Check if a table is already joined.
-     */
-    protected function hasJoin(Builder $query, string $table): bool
-    {
-        $joins = $query->getQuery()->joins;
-        
-        if ($joins === null) {
-            return false;
-        }
-
-        foreach ($joins as $join) {
-            if ($join->table === $table) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Scope to order by freshest first.
-     */
     public function scopeFreshestFirst(Builder $query): Builder
     {
         return $query->orderBy('arrived_at', 'desc');
     }
 
-    /**
-     * Scope to order by nearest first.
-     */
-    public function scopeNearestFirst(Builder $query): Builder
-    {
-        return $query->orderBy('distance_km', 'asc');
-    }
-
-    /**
-     * Scope for browse view.
-     */
-    public function scopeForBrowse(Builder $query): Builder
-    {
-        return $query->with(['seller', 'fishType'])
-            ->active()
-            ->freshestFirst();
-    }
-
     /*
     |--------------------------------------------------------------------------
-    | Accessors
+    | Accessors - Freshness (PM-010)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get display title.
+     * Get freshness display.
+     * @srs-ref PM-010 Calculate freshness
      */
-    public function getDisplayTitleAttribute(): string
+    public function getFreshnessDisplayAttribute(): string
     {
-        return $this->fishType?->display_name ?? '🐟 Fish';
+        if (!$this->arrived_at) {
+            return 'Just now';
+        }
+
+        $mins = $this->arrived_at->diffInMinutes(now());
+
+        if ($mins < 5) return 'Just arrived! 🔥';
+        if ($mins < 30) return $mins . ' mins ago';
+        if ($mins < 60) return $mins . ' mins';
+
+        $hours = floor($mins / 60);
+        if ($hours < 2) return '1 hr ago';
+        if ($hours < 6) return $hours . ' hrs ago';
+
+        return $this->arrived_at->format('h:i A');
     }
 
     /**
-     * Get price display.
+     * Get freshness tag.
+     */
+    public function getFreshnessTagAttribute(): string
+    {
+        if (!$this->arrived_at) return '🔥 Fresh';
+
+        $mins = $this->arrived_at->diffInMinutes(now());
+
+        if ($mins < 30) return '🔥 Super Fresh';
+        if ($mins < 60) return '✨ Fresh';
+        if ($mins < 120) return '👍 Good';
+
+        return '⏰ Posted earlier';
+    }
+
+    /**
+     * Price display.
      */
     public function getPriceDisplayAttribute(): string
     {
@@ -314,38 +209,15 @@ class FishCatch extends Model
     }
 
     /**
-     * Get quantity display.
+     * Quantity display.
      */
     public function getQuantityDisplayAttribute(): string
     {
-        if ($this->quantity_kg) {
-            return $this->quantity_kg . ' kg';
-        }
-
         return $this->quantity_range?->label() ?? 'Available';
     }
 
     /**
-     * Get freshness display (time since arrival).
-     */
-    public function getFreshnessDisplayAttribute(): string
-    {
-        if (!$this->arrived_at) {
-            return 'Just posted';
-        }
-
-        $minutes = $this->arrived_at->diffInMinutes(now());
-
-        if ($minutes < 60) {
-            return $minutes . ' mins ago';
-        }
-
-        $hours = floor($minutes / 60);
-        return $hours . ' hr' . ($hours > 1 ? 's' : '') . ' ago';
-    }
-
-    /**
-     * Get status display.
+     * Status display.
      */
     public function getStatusDisplayAttribute(): string
     {
@@ -353,32 +225,7 @@ class FishCatch extends Model
     }
 
     /**
-     * Get location for this catch.
-     */
-    public function getCatchLatitudeAttribute(): float
-    {
-        return $this->latitude ?? $this->seller?->latitude ?? 0;
-    }
-
-    public function getCatchLongitudeAttribute(): float
-    {
-        return $this->longitude ?? $this->seller?->longitude ?? 0;
-    }
-
-    /**
-     * Get location display.
-     */
-    public function getLocationDisplayAttribute(): string
-    {
-        if ($this->location_name) {
-            return $this->location_name;
-        }
-
-        return $this->seller?->location_display ?? 'Location available';
-    }
-
-    /**
-     * Check if catch is still active.
+     * Is still active?
      */
     public function getIsActiveAttribute(): bool
     {
@@ -386,28 +233,17 @@ class FishCatch extends Model
     }
 
     /**
-     * Get time remaining until expiry.
+     * Time remaining.
      */
     public function getTimeRemainingAttribute(): string
     {
-        if ($this->expires_at <= now()) {
-            return 'Expired';
-        }
+        if ($this->expires_at <= now()) return 'Expired';
 
-        $minutes = now()->diffInMinutes($this->expires_at);
+        $mins = now()->diffInMinutes($this->expires_at);
+        if ($mins < 60) return $mins . ' mins left';
 
-        if ($minutes < 60) {
-            return $minutes . ' mins left';
-        }
-
-        $hours = floor($minutes / 60);
-        $mins = $minutes % 60;
-
-        if ($hours < 24) {
-            return $hours . 'h ' . $mins . 'm left';
-        }
-
-        return $this->expires_at->diffForHumans();
+        $hours = floor($mins / 60);
+        return $hours . 'h left';
     }
 
     /*
@@ -421,21 +257,21 @@ class FishCatch extends Model
      */
     public static function generateCatchNumber(): string
     {
-        $date = now()->format('Ymd');
+        $date = now()->format('md');
         $random = strtoupper(Str::random(4));
-        $number = "FC-{$date}-{$random}";
+        $number = "FC{$date}{$random}";
 
-        // Ensure uniqueness
         while (self::where('catch_number', $number)->exists()) {
             $random = strtoupper(Str::random(4));
-            $number = "FC-{$date}-{$random}";
+            $number = "FC{$date}{$random}";
         }
 
         return $number;
     }
 
     /**
-     * Mark as low stock.
+     * Mark low stock.
+     * @srs-ref PM-022 Update stock status
      */
     public function markLowStock(): void
     {
@@ -443,7 +279,8 @@ class FishCatch extends Model
     }
 
     /**
-     * Mark as sold out.
+     * Mark sold out.
+     * @srs-ref PM-022 Update stock status
      */
     public function markSoldOut(): void
     {
@@ -451,12 +288,12 @@ class FishCatch extends Model
             'status' => FishCatchStatus::SOLD_OUT,
             'sold_out_at' => now(),
         ]);
-
         $this->seller?->incrementSales();
     }
 
     /**
-     * Mark as expired.
+     * Mark expired.
+     * @srs-ref PM-024 Auto-expire after 6 hours
      */
     public function markExpired(): void
     {
@@ -464,28 +301,16 @@ class FishCatch extends Model
     }
 
     /**
-     * Restore stock (mark available again).
+     * Increment customers coming.
+     * @srs-ref PM-019 Live claim count
      */
-    public function restoreStock(): void
+    public function incrementComing(): void
     {
-        if ($this->status->canTransitionTo(FishCatchStatus::AVAILABLE)) {
-            $this->update([
-                'status' => FishCatchStatus::AVAILABLE,
-                'sold_out_at' => null,
-            ]);
-        }
+        $this->increment('customers_coming');
     }
 
     /**
-     * Increment view count.
-     */
-    public function incrementViews(): void
-    {
-        $this->increment('view_count');
-    }
-
-    /**
-     * Increment alerts sent count.
+     * Increment alerts sent.
      */
     public function incrementAlertsSent(int $count = 1): void
     {
@@ -493,25 +318,16 @@ class FishCatch extends Model
     }
 
     /**
-     * Increment coming count.
+     * Increment views.
      */
-    public function incrementComingCount(): void
+    public function incrementViews(): void
     {
-        $this->increment('coming_count');
+        $this->increment('view_count');
     }
 
     /**
-     * Increment message count.
-     */
-    public function incrementMessageCount(): void
-    {
-        $this->increment('message_count');
-    }
-
-    /**
-     * Convert to alert message format.
-     *
-     * @srs-ref Section 2.5.2 - Customer Alert Message Format
+     * Convert to alert format.
+     * @srs-ref PM-017 Alert message format
      */
     public function toAlertFormat(): array
     {
@@ -519,42 +335,38 @@ class FishCatch extends Model
             'catch_number' => $this->catch_number,
             'fish_name' => $this->fishType?->name_en,
             'fish_name_ml' => $this->fishType?->name_ml,
-            'emoji' => $this->fishType?->emoji ?? '🐟',
-            'seller_name' => $this->seller?->business_name,
-            'location' => $this->location_display,
-            'arrived_at' => $this->arrived_at?->format('h:i A'),
+            'fish_emoji' => $this->fishType?->emoji ?? '🐟',
+            'seller_name' => $this->seller?->location_name,
             'freshness' => $this->freshness_display,
+            'freshness_tag' => $this->freshness_tag,
             'quantity' => $this->quantity_display,
             'price' => $this->price_display,
             'price_per_kg' => $this->price_per_kg,
             'seller_rating' => $this->seller?->short_rating,
+            'customers_coming' => $this->customers_coming,
             'photo_url' => $this->photo_url,
             'status' => $this->status->value,
         ];
     }
 
     /**
-     * Convert to WhatsApp list item.
+     * Convert to list item.
      */
     public function toListItem(): array
     {
-        $title = $this->fishType?->emoji . ' ' . $this->fishType?->name_en;
-        $description = $this->price_display . ' • ' . $this->freshness_display;
-
-        if ($this->status === FishCatchStatus::LOW_STOCK) {
-            $description .= ' • ⚠️ Low stock';
-        }
+        $title = ($this->fishType?->emoji ?? '🐟') . ' ' . ($this->fishType?->name_en ?? 'Fish');
+        $desc = $this->price_display . ' • ' . $this->freshness_display;
 
         return [
             'id' => 'catch_' . $this->id,
-            'title' => substr($title, 0, 24),
-            'description' => substr($description, 0, 72),
+            'title' => mb_substr($title, 0, 24),
+            'description' => mb_substr($desc, 0, 72),
         ];
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Boot
+    | Boot - Auto-timestamp (PM-010)
     |--------------------------------------------------------------------------
     */
 
@@ -566,15 +378,12 @@ class FishCatch extends Model
             if (empty($model->catch_number)) {
                 $model->catch_number = self::generateCatchNumber();
             }
-
             if (empty($model->arrived_at)) {
-                $model->arrived_at = now();
+                $model->arrived_at = now(); // PM-010 auto-timestamp
             }
-
             if (empty($model->expires_at)) {
                 $model->expires_at = now()->addHours(self::DEFAULT_EXPIRY_HOURS);
             }
-
             if (empty($model->status)) {
                 $model->status = FishCatchStatus::AVAILABLE;
             }

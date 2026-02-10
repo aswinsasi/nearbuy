@@ -1,143 +1,188 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
  * Types of fish sellers in Pacha Meen.
  *
- * @srs-ref Section 2.2 - User Classes
+ * Simplified to 3 types per SRS PM-001:
+ * - Fisherman (മത്സ്യത്തൊഴിലാളി) - catches fish directly
+ * - Fish Shop (മീൻ കട) - has a permanent shop
+ * - Vendor (വെണ്ടർ) - sells at harbour/market stall
+ *
+ * @srs-ref PM-001 Seller type: shop/fisherman/vendor
  */
 enum FishSellerType: string
 {
     case FISHERMAN = 'fisherman';
-    case HARBOUR_VENDOR = 'harbour_vendor';
     case FISH_SHOP = 'fish_shop';
-    case WHOLESALER = 'wholesaler';
+    case VENDOR = 'vendor';
 
     /**
-     * Get the display label.
+     * Display label.
      */
     public function label(): string
     {
         return match ($this) {
             self::FISHERMAN => 'Fisherman',
-            self::HARBOUR_VENDOR => 'Harbour Vendor',
             self::FISH_SHOP => 'Fish Shop',
-            self::WHOLESALER => 'Wholesaler',
+            self::VENDOR => 'Vendor',
         };
     }
 
     /**
-     * Get Malayalam label.
+     * Malayalam label.
      */
     public function labelMl(): string
     {
         return match ($this) {
-            self::FISHERMAN => 'മുക്കുവൻ',
-            self::HARBOUR_VENDOR => 'തുറമുഖ വില്പനക്കാരൻ',
+            self::FISHERMAN => 'മത്സ്യത്തൊഴിലാളി',
             self::FISH_SHOP => 'മീൻ കട',
-            self::WHOLESALER => 'മൊത്തവ്യാപാരി',
+            self::VENDOR => 'വെണ്ടർ',
         };
     }
 
     /**
-     * Get emoji for display.
+     * Bilingual label.
      */
-    public function emoji(): string
+    public function bilingualLabel(): string
+    {
+        return $this->label() . '/' . $this->labelMl();
+    }
+
+    /**
+     * Icon/emoji.
+     */
+    public function icon(): string
     {
         return match ($this) {
-            self::FISHERMAN => '🚣',
-            self::HARBOUR_VENDOR => '⚓',
+            self::FISHERMAN => '🎣',
             self::FISH_SHOP => '🏪',
-            self::WHOLESALER => '🚛',
+            self::VENDOR => '🚶',
         };
     }
 
     /**
-     * Get button title for WhatsApp.
+     * Display with icon.
      */
-    public function buttonTitle(): string
+    public function display(): string
     {
-        return $this->emoji() . ' ' . $this->label();
+        return $this->icon() . ' ' . $this->label();
     }
 
     /**
-     * Get description for registration.
+     * Display with icon (bilingual).
+     */
+    public function displayBilingual(): string
+    {
+        return $this->icon() . ' ' . $this->bilingualLabel();
+    }
+
+    /**
+     * Description.
      */
     public function description(): string
     {
         return match ($this) {
-            self::FISHERMAN => 'I catch fish directly from the sea',
-            self::HARBOUR_VENDOR => 'I sell fish at the harbour/market',
-            self::FISH_SHOP => 'I have a fish shop in town',
-            self::WHOLESALER => 'I sell fish in bulk to retailers',
+            self::FISHERMAN => 'I catch fish from the sea',
+            self::FISH_SHOP => 'I have a fish shop',
+            self::VENDOR => 'I sell at harbour/market',
         };
     }
 
     /**
-     * Get description in Malayalam.
+     * Malayalam description.
      */
     public function descriptionMl(): string
     {
         return match ($this) {
-            self::FISHERMAN => 'കടലിൽ നിന്ന് നേരിട്ട് മീൻ പിടിക്കുന്നു',
-            self::HARBOUR_VENDOR => 'തുറമുഖത്ത്/മാർക്കറ്റിൽ മീൻ വിൽക്കുന്നു',
-            self::FISH_SHOP => 'പട്ടണത്തിൽ മീൻ കട ഉണ്ട്',
-            self::WHOLESALER => 'ചില്ലറ വ്യാപാരികൾക്ക് മൊത്തമായി വിൽക്കുന്നു',
+            self::FISHERMAN => 'കടലിൽ നിന്ന് മീൻ പിടിക്കുന്നു',
+            self::FISH_SHOP => 'മീൻ കട ഉണ്ട്',
+            self::VENDOR => 'തുറമുഖത്ത്/മാർക്കറ്റിൽ വിൽക്കുന്നു',
         };
     }
 
     /**
-     * Check if seller type typically has fixed location.
+     * Verification photo prompt.
+     *
+     * @srs-ref PM-002 Photo verification type by seller
+     */
+    public function verificationPhotoPrompt(): string
+    {
+        return match ($this) {
+            self::FISHERMAN => "📸 Boat or fishing license photo ayakkuka:\n_ബോട്ട് അല്ലെങ്കിൽ ലൈസൻസ് ഫോട്ടോ_",
+            self::FISH_SHOP => "📸 Shop front photo ayakkuka:\n_കട മുൻഭാഗം ഫോട്ടോ_",
+            self::VENDOR => "📸 Stall or ID photo ayakkuka:\n_സ്റ്റാൾ അല്ലെങ്കിൽ ID ഫോട്ടോ_",
+        };
+    }
+
+    /**
+     * Location prompt based on type.
+     */
+    public function locationPrompt(): string
+    {
+        return match ($this) {
+            self::FISHERMAN => "📍 Ninte harbour location share cheyyuka:",
+            self::FISH_SHOP => "📍 Ninte shop location share cheyyuka:",
+            self::VENDOR => "📍 Ninte market/stall location share cheyyuka:",
+        };
+    }
+
+    /**
+     * Location name prompt based on type.
+     */
+    public function locationNamePrompt(): string
+    {
+        return match ($this) {
+            self::FISHERMAN => "Harbour name type cheyyuka:\n_ഉദാ: Vizhinjam Harbour_",
+            self::FISH_SHOP => "Shop name type cheyyuka:\n_ഉദാ: Varma Fish Mart_",
+            self::VENDOR => "Market/Stall name type cheyyuka:\n_ഉദാ: Karamana Market_",
+        };
+    }
+
+    /**
+     * Has fixed location?
      */
     public function hasFixedLocation(): bool
     {
-        return in_array($this, [self::FISH_SHOP, self::HARBOUR_VENDOR]);
+        return $this === self::FISH_SHOP;
     }
 
     /**
-     * Check if seller type can update location per catch.
+     * Default notification radius (km).
      */
-    public function canUpdateCatchLocation(): bool
-    {
-        return in_array($this, [self::FISHERMAN, self::WHOLESALER]);
-    }
-
-    /**
-     * Get default notification radius for subscribers (km).
-     */
-    public function defaultNotificationRadius(): int
+    public function defaultAlertRadius(): int
     {
         return match ($this) {
             self::FISHERMAN => 10,
-            self::HARBOUR_VENDOR => 5,
-            self::FISH_SHOP => 3,
-            self::WHOLESALER => 20,
+            self::FISH_SHOP => 5,
+            self::VENDOR => 5,
         };
     }
 
     /**
-     * Convert to WhatsApp list item.
+     * Convert to WhatsApp button.
      */
-    public function toListItem(): array
+    public function toButton(): array
     {
         return [
-            'id' => 'seller_type_' . $this->value,
-            'title' => substr($this->buttonTitle(), 0, 24),
-            'description' => substr($this->description(), 0, 72),
+            'id' => 'seller_' . $this->value,
+            'title' => mb_substr($this->displayBilingual(), 0, 20),
         ];
     }
 
     /**
-     * Get all as WhatsApp list items.
+     * Get all as WhatsApp buttons (max 3 = perfect!).
      */
-    public static function toListItems(): array
+    public static function toButtons(): array
     {
-        return array_map(fn(self $type) => $type->toListItem(), self::cases());
+        return array_map(fn(self $type) => $type->toButton(), self::cases());
     }
 
     /**
-     * Get all values as array.
+     * Get all values.
      */
     public static function values(): array
     {
@@ -145,11 +190,11 @@ enum FishSellerType: string
     }
 
     /**
-     * Create from list item ID.
+     * Create from button ID.
      */
-    public static function fromListId(string $listId): ?self
+    public static function fromButtonId(string $buttonId): ?self
     {
-        $value = str_replace('seller_type_', '', $listId);
+        $value = str_replace('seller_', '', $buttonId);
         return self::tryFrom($value);
     }
 }

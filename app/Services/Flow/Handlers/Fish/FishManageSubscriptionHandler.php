@@ -6,6 +6,7 @@ namespace App\Services\Flow\Handlers\Fish;
 
 use App\DTOs\IncomingMessage;
 use App\Enums\FishAlertFrequency;
+use App\Enums\FishSubscriptionStep;
 use App\Enums\FlowType;
 use App\Models\ConversationSession;
 use App\Models\FishSubscription;
@@ -14,25 +15,15 @@ use App\Services\Fish\FishSubscriptionService;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\FishMessages;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Handler for managing fish alert subscriptions.
+ * Manage Fish Subscription Handler.
  *
- * @srs-ref Pacha Meen Module - Subscription Management
- * @srs-ref PM-015: Allow customers to modify or pause their subscriptions
- * @srs-ref NFR-U-04: Main menu accessible from any flow state
+ * @srs-ref PM-015: Modify subscriptions: add/remove fish, change location, PAUSE alerts
  */
 class FishManageSubscriptionHandler extends AbstractFlowHandler
 {
-    protected const STEP_VIEW = 'view';
-    protected const STEP_CHANGE_LOCATION = 'change_location';
-    protected const STEP_CHANGE_RADIUS = 'change_radius';
-    protected const STEP_CHANGE_FISH = 'change_fish';
-    protected const STEP_CHANGE_FREQUENCY = 'change_frequency';
-    protected const STEP_CONFIRM_DELETE = 'confirm_delete';
-
     public function __construct(
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
@@ -49,38 +40,34 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
     protected function getSteps(): array
     {
         return [
-            self::STEP_VIEW,
-            self::STEP_CHANGE_LOCATION,
-            self::STEP_CHANGE_RADIUS,
-            self::STEP_CHANGE_FISH,
-            self::STEP_CHANGE_FREQUENCY,
-            self::STEP_CONFIRM_DELETE,
+            FishSubscriptionStep::MANAGE->value,
+            FishSubscriptionStep::CHANGE_FISH->value,
+            FishSubscriptionStep::CHANGE_LOCATION->value,
+            FishSubscriptionStep::CHANGE_RADIUS->value,
+            FishSubscriptionStep::CHANGE_TIME->value,
         ];
     }
 
     public function start(ConversationSession $session): void
     {
         $user = $this->getUser($session);
-        
-        // FIXED: Use activeFishSubscriptions() relationship (plural HasMany) and get first
-        // OLD: $subscription = $user?->activeFishSubscription;
-        $subscription = $user?->activeFishSubscriptions()->first();
+        $subscription = $this->subscriptionService->getUserSubscription($user);
 
         if (!$subscription) {
-            $this->sendButtonsWithMenu(
+            $this->sendButtons(
                 $session->phone,
-                "🔔 *Fish Alerts*\n\nYou don't have an active subscription.\n\nSubscribe to get notified when fresh fish is available nearby!",
+                "🐟 No active subscription.\n\nSubscribe to get fish alerts!",
                 [
-                    ['id' => 'menu_fish_subscribe', 'title' => '🔔 Subscribe Now'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
+                    ['id' => 'fish_subscribe', 'title' => '🔔 Subscribe'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ]
             );
             return;
         }
 
-        $this->nextStep($session, self::STEP_VIEW);
-        $this->setTemp($session, 'subscription_id', $subscription->id);
-        $this->showSubscriptionDetails($session, $subscription);
+        $this->setTempData($session, 'subscription_id', $subscription->id);
+        $this->nextStep($session, FishSubscriptionStep::MANAGE->value);
+        $this->showSettings($session, $subscription);
     }
 
     public function handle(IncomingMessage $message, ConversationSession $session): void
@@ -89,37 +76,293 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
             return;
         }
 
-        $step = $session->current_step;
+        $step = FishSubscriptionStep::tryFrom($session->current_step);
 
         match ($step) {
-            self::STEP_VIEW => $this->handleView($message, $session),
-            self::STEP_CHANGE_LOCATION => $this->handleChangeLocation($message, $session),
-            self::STEP_CHANGE_RADIUS => $this->handleChangeRadius($message, $session),
-            self::STEP_CHANGE_FISH => $this->handleChangeFish($message, $session),
-            self::STEP_CHANGE_FREQUENCY => $this->handleChangeFrequency($message, $session),
-            self::STEP_CONFIRM_DELETE => $this->handleConfirmDelete($message, $session),
+            FishSubscriptionStep::MANAGE => $this->handleManage($message, $session),
+            FishSubscriptionStep::CHANGE_FISH => $this->handleChangeFish($message, $session),
+            FishSubscriptionStep::CHANGE_LOCATION => $this->handleChangeLocation($message, $session),
+            FishSubscriptionStep::CHANGE_RADIUS => $this->handleChangeRadius($message, $session),
+            FishSubscriptionStep::CHANGE_TIME => $this->handleChangeTime($message, $session),
             default => $this->start($session),
         };
     }
 
-    protected function handleView(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
+    /*
+    |--------------------------------------------------------------------------
+    | Show Settings (PM-015)
+    |--------------------------------------------------------------------------
+    */
 
-        match ($selectionId) {
-            'change_location' => $this->startChangeLocation($session),
-            'change_radius' => $this->startChangeRadius($session),
+    protected function showSettings(ConversationSession $session, FishSubscription $subscription): void
+    {
+        $stats = $this->subscriptionService->getStats($subscription);
+
+        // Build status text
+        $statusText = $subscription->is_paused ? '⏸️ Paused' : '🔔 Active';
+        $pauseLabel = $subscription->is_paused ? '▶️ Resume' : '⏸️ Pause';
+
+        $body = "🐟 *Ninte Fish Alert Settings:*\n\n" .
+            "Fish: {$subscription->fish_types_list}\n" .
+            "Radius: {$subscription->radius_km} km\n" .
+            "Time: {$subscription->frequency_display}\n" .
+            "Status: {$statusText}\n\n" .
+            "📊 Alerts: {$stats['alerts_received']} | Clicked: {$stats['click_rate']}%";
+
+        $this->sendList(
+            $session->phone,
+            $body,
+            'Settings',
+            [
+                [
+                    'title' => '⚙️ Change Settings',
+                    'rows' => [
+                        ['id' => 'change_fish', 'title' => '🐟 Change Fish Types', 'description' => 'Add or remove fish'],
+                        ['id' => 'change_radius', 'title' => '📏 Change Radius', 'description' => "Current: {$subscription->radius_km} km"],
+                        ['id' => 'change_time', 'title' => '⏰ Change Time', 'description' => $subscription->frequency_display],
+                        ['id' => 'change_location', 'title' => '📍 Change Location', 'description' => 'Update alert location'],
+                    ],
+                ],
+                [
+                    'title' => '🔔 Status',
+                    'rows' => [
+                        ['id' => 'toggle_pause', 'title' => $pauseLabel, 'description' => $subscription->is_paused ? 'Resume alerts' : 'Pause temporarily'],
+                        ['id' => 'delete_sub', 'title' => '🗑️ Delete', 'description' => 'Stop all alerts'],
+                        ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main menu'],
+                    ],
+                ],
+            ]
+        );
+    }
+
+    protected function handleManage(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+        $subscription = $this->getSubscription($session);
+
+        if (!$subscription) {
+            $this->start($session);
+            return;
+        }
+
+        match ($selection) {
             'change_fish' => $this->startChangeFish($session),
-            'change_frequency' => $this->startChangeFrequency($session),
-            'toggle_pause' => $this->togglePause($session),
-            'delete_subscription' => $this->startDelete($session),
-            'main_menu' => $this->goToMainMenu($session),
+            'change_radius' => $this->startChangeRadius($session),
+            'change_time' => $this->startChangeTime($session),
+            'change_location' => $this->startChangeLocation($session),
+            'toggle_pause' => $this->togglePause($session, $subscription),
+            'delete_sub' => $this->confirmDelete($session),
+            'confirm_delete' => $this->deleteSubscription($session, $subscription),
+            'cancel_delete' => $this->start($session),
             default => $this->start($session),
         };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Change Fish Types (PM-015)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function startChangeFish(ConversationSession $session): void
+    {
+        $this->nextStep($session, FishSubscriptionStep::CHANGE_FISH->value);
+        $this->showFishOptions($session);
+    }
+
+    protected function showFishOptions(ConversationSession $session): void
+    {
+        $subscription = $this->getSubscription($session);
+        $selectedIds = $subscription->fish_type_ids ?? [];
+
+        $popular = FishType::active()
+            ->where('is_popular', true)
+            ->orderBy('sort_order')
+            ->limit(6)
+            ->get();
+
+        $rows = [
+            ['id' => 'fish_all', 'title' => '🐟 All Fish', 'description' => 'Get all alerts'],
+        ];
+
+        foreach ($popular as $fish) {
+            $isSelected = in_array($fish->id, $selectedIds);
+            $prefix = $isSelected ? '✅ ' : '';
+            $rows[] = [
+                'id' => 'fish_' . $fish->id,
+                'title' => substr($prefix . $fish->name_en, 0, 24),
+                'description' => $fish->name_ml,
+            ];
+        }
+
+        $rows[] = ['id' => 'done_fish', 'title' => '✅ Done', 'description' => 'Save changes'];
+        $rows[] = ['id' => 'back_manage', 'title' => '⬅️ Back', 'description' => 'Cancel'];
+
+        $count = count($selectedIds);
+        $body = $subscription->all_fish_types 
+            ? "🐟 Currently: All fish\n\nTap to change:"
+            : "🐟 Currently: {$count} types\n\nTap to toggle:";
+
+        $this->sendList($session->phone, $body, 'Select', [['title' => 'Fish Types', 'rows' => $rows]]);
+    }
+
+    protected function handleChangeFish(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+        $subscription = $this->getSubscription($session);
+
+        if ($selection === 'fish_all') {
+            $subscription->update(['all_fish_types' => true, 'fish_type_ids' => null]);
+            $this->sendText($session->phone, "✅ All fish selected");
+            $this->start($session);
+            return;
+        }
+
+        if ($selection === 'done_fish' || $selection === 'back_manage') {
+            $this->start($session);
+            return;
+        }
+
+        if ($selection && str_starts_with($selection, 'fish_')) {
+            $fishId = (int) str_replace('fish_', '', $selection);
+            if ($fishId > 0) {
+                $ids = $subscription->fish_type_ids ?? [];
+                
+                if (in_array($fishId, $ids)) {
+                    $subscription->removeFishType($fishId);
+                    $this->sendText($session->phone, "❌ Removed");
+                } else {
+                    $subscription->addFishType($fishId);
+                    $this->sendText($session->phone, "✅ Added");
+                }
+                
+                $this->showFishOptions($session);
+                return;
+            }
+        }
+
+        $this->showFishOptions($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Change Radius (PM-013/PM-015)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function startChangeRadius(ConversationSession $session): void
+    {
+        $this->nextStep($session, FishSubscriptionStep::CHANGE_RADIUS->value);
+        
+        $subscription = $this->getSubscription($session);
+
+        $this->sendButtons(
+            $session->phone,
+            "📏 *Change Radius*\n\nCurrent: {$subscription->radius_km} km\n\nSelect new radius:",
+            [
+                ['id' => 'radius_2', 'title' => '2 km - Very Near'],
+                ['id' => 'radius_5', 'title' => '5 km - Normal'],
+                ['id' => 'radius_10', 'title' => '10 km - Far'],
+            ]
+        );
+    }
+
+    protected function handleChangeRadius(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+        $text = $this->getTextContent($message);
+
+        $radius = null;
+
+        if ($selection && preg_match('/radius_(\d+)/', $selection, $m)) {
+            $radius = (int) $m[1];
+        } elseif ($text && is_numeric(trim($text))) {
+            $radius = (int) trim($text);
+        }
+
+        if ($radius && $radius >= 1 && $radius <= 50) {
+            $subscription = $this->getSubscription($session);
+            $this->subscriptionService->setRadius($subscription, $radius);
+            $this->sendText($session->phone, "✅ Radius: {$radius} km");
+            $this->start($session);
+            return;
+        }
+
+        $this->startChangeRadius($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Change Time (PM-014/PM-015)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function startChangeTime(ConversationSession $session): void
+    {
+        $this->nextStep($session, FishSubscriptionStep::CHANGE_TIME->value);
+        
+        $subscription = $this->getSubscription($session);
+
+        $this->sendButtons(
+            $session->phone,
+            "⏰ *Change Alert Time*\n\nCurrent: {$subscription->frequency_display}\n\nSelect new time:",
+            [
+                ['id' => 'freq_immediate', 'title' => '🔔 Anytime'],
+                ['id' => 'freq_morning_only', 'title' => '🌅 Morning (6-8AM)'],
+                ['id' => 'freq_twice_daily', 'title' => '☀️ Twice Daily'],
+            ]
+        );
+    }
+
+    protected function handleChangeTime(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+
+        $frequency = match ($selection) {
+            'freq_immediate' => FishAlertFrequency::IMMEDIATE,
+            'freq_morning_only' => FishAlertFrequency::MORNING_ONLY,
+            'freq_twice_daily' => FishAlertFrequency::TWICE_DAILY,
+            'freq_weekly_digest' => FishAlertFrequency::WEEKLY_DIGEST,
+            default => null,
+        };
+
+        if ($frequency) {
+            $subscription = $this->getSubscription($session);
+            $this->subscriptionService->setFrequency($subscription, $frequency);
+            $this->sendText($session->phone, "✅ Time: {$frequency->label()}");
+            $this->start($session);
+            return;
+        }
+
+        $this->startChangeTime($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Change Location (PM-012/PM-015)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function startChangeLocation(ConversationSession $session): void
+    {
+        $this->nextStep($session, FishSubscriptionStep::CHANGE_LOCATION->value);
+
+        $this->sendButtons(
+            $session->phone,
+            "📍 *Change Location*\n\nShare new location:\n📎 → Location",
+            [['id' => 'back_manage', 'title' => '⬅️ Cancel']]
+        );
     }
 
     protected function handleChangeLocation(IncomingMessage $message, ConversationSession $session): void
     {
+        $selection = $this->getSelectionId($message);
+
+        if ($selection === 'back_manage') {
+            $this->start($session);
+            return;
+        }
+
         $location = $this->getLocation($message);
 
         if ($location) {
@@ -129,220 +372,44 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
                 $location['latitude'],
                 $location['longitude']
             );
-
-            $this->sendTextWithMenu($session->phone, "✅ Location updated successfully!");
+            $this->sendText($session->phone, "✅ Location updated");
             $this->start($session);
             return;
         }
 
-        $this->sendButtons(
-            $session->phone,
-            "📍 Share your new location for fish alerts.\n\nTap 📎 → *Location*",
-            [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
-            ]
-        );
+        $this->startChangeLocation($session);
     }
 
-    protected function handleChangeRadius(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Pause/Resume (PM-015)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function togglePause(ConversationSession $session, FishSubscription $subscription): void
     {
-        $selectionId = $this->getSelectionId($message);
-        $text = $this->getTextContent($message);
-
-        $radius = null;
-
-        if ($selectionId && preg_match('/^radius_(\d+)$/', $selectionId, $matches)) {
-            $radius = (int) $matches[1];
-        } elseif ($text && is_numeric(trim($text))) {
-            $radius = (int) trim($text);
+        if ($subscription->is_paused) {
+            $this->subscriptionService->resume($subscription);
+            $this->sendText($session->phone, "▶️ Alerts resumed!");
+        } else {
+            $this->subscriptionService->pause($subscription);
+            $this->sendText($session->phone, "⏸️ Alerts paused");
         }
 
-        if ($radius && $radius >= 1 && $radius <= 50) {
-            $subscription = $this->getSubscription($session);
-            $subscription->update(['radius_km' => $radius]);
-
-            $this->sendTextWithMenu($session->phone, "✅ Alert radius updated to {$radius} km!");
-            $this->start($session);
-            return;
-        }
-
-        $this->showRadiusOptions($session);
-    }
-
-    protected function handleChangeFish(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        if ($selectionId === 'all_fish') {
-            $subscription = $this->getSubscription($session);
-            // FIX: Use the correct update method for JSON array
-            $subscription->update([
-                'fish_type_ids' => null,
-                'all_fish_types' => true,
-            ]);
-
-            $this->sendTextWithMenu($session->phone, "✅ You'll now receive alerts for all fish types!");
-            $this->start($session);
-            return;
-        }
-
-        if ($selectionId === 'done_selecting') {
-            $this->start($session);
-            return;
-        }
-
-        if ($selectionId === 'main_menu') {
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Handle category selection - show fish from that category
-        if ($selectionId && str_starts_with($selectionId, 'cat_')) {
-            $category = match ($selectionId) {
-                'cat_sea_fish' => FishType::CATEGORY_SEA_FISH,
-                'cat_freshwater' => FishType::CATEGORY_FRESHWATER,
-                'cat_shellfish' => FishType::CATEGORY_SHELLFISH,
-                'cat_crustacean' => FishType::CATEGORY_CRUSTACEAN,
-                default => null,
-            };
-            
-            if ($category) {
-                $this->setTemp($session, 'fish_category', $category);
-                $this->showFishFromCategory($session, $category);
-                return;
-            }
-        }
-
-        // Handle back to categories
-        if ($selectionId === 'back_to_categories') {
-            $this->setTemp($session, 'fish_category', null);
-            $this->showFishCategorySelection($session);
-            return;
-        }
-
-        // Handle fish type toggle
-        if ($selectionId && str_starts_with($selectionId, 'fish_')) {
-            $fishType = FishType::findByListId($selectionId);
-            if ($fishType) {
-                $subscription = $this->getSubscription($session);
-                
-                // FIX: Use JSON array methods instead of relationship
-                $currentIds = $subscription->fish_type_ids ?? [];
-                
-                if (in_array($fishType->id, $currentIds)) {
-                    // Remove - use model method
-                    $subscription->removeFishType($fishType->id);
-                    $this->sendText($session->phone, "❌ {$fishType->display_name} removed");
-                } else {
-                    // Add - use model method
-                    $subscription->addFishType($fishType->id);
-                    $this->sendText($session->phone, "✅ {$fishType->display_name} added");
-                }
-                
-                // Show fish from same category again
-                $category = $this->getTemp($session, 'fish_category');
-                if ($category) {
-                    $this->showFishFromCategory($session, $category);
-                } else {
-                    $this->showFishCategorySelection($session);
-                }
-                return;
-            }
-        }
-
-        // Default: show category selection
-        $this->showFishCategorySelection($session);
-    }
-
-    protected function handleChangeFrequency(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        if ($selectionId === 'main_menu') {
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // FIX: Use FishAlertFrequency::fromListId() to get enum from list ID
-        // List IDs are formatted as: fish_freq_{enum_value}
-        $frequency = FishAlertFrequency::fromListId($selectionId);
-
-        if ($frequency) {
-            $subscription = $this->getSubscription($session);
-            $subscription->update(['alert_frequency' => $frequency]);
-
-            $label = $frequency->label();
-            $this->sendTextWithMenu($session->phone, "✅ Alert frequency updated to {$label}!");
-            $this->start($session);
-            return;
-        }
-
-        $this->showFrequencyOptions($session);
-    }
-
-    protected function handleConfirmDelete(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        if ($selectionId === 'confirm_delete') {
-            $subscription = $this->getSubscription($session);
-            $this->subscriptionService->deleteSubscription($subscription);
-
-            $this->clearTemp($session);
-            
-            // @srs-ref NFR-U-04: Main menu accessible
-            $this->sendButtons(
-                $session->phone,
-                "✅ Subscription deleted. You will no longer receive fish alerts.\n\nYou can subscribe again anytime!",
-                [
-                    ['id' => 'menu_fish_subscribe', 'title' => '🔔 Subscribe Again'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
-                ]
-            );
-            return;
-        }
-
-        // Cancelled - go back to subscription view
         $this->start($session);
     }
 
-    protected function startChangeLocation(ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Delete Subscription
+    |--------------------------------------------------------------------------
+    */
+
+    protected function confirmDelete(ConversationSession $session): void
     {
-        $this->nextStep($session, self::STEP_CHANGE_LOCATION);
         $this->sendButtons(
             $session->phone,
-            "📍 Share your new location for fish alerts.\n\nTap 📎 → *Location*",
-            [
-                ['id' => 'main_menu', 'title' => '🏠 Main Menu'],
-            ]
-        );
-    }
-
-    protected function startChangeRadius(ConversationSession $session): void
-    {
-        $this->nextStep($session, self::STEP_CHANGE_RADIUS);
-        $this->showRadiusOptions($session);
-    }
-
-    protected function startChangeFish(ConversationSession $session): void
-    {
-        $this->nextStep($session, self::STEP_CHANGE_FISH);
-        $this->showFishOptions($session);
-    }
-
-    protected function startChangeFrequency(ConversationSession $session): void
-    {
-        $this->nextStep($session, self::STEP_CHANGE_FREQUENCY);
-        $this->showFrequencyOptions($session);
-    }
-
-    protected function startDelete(ConversationSession $session): void
-    {
-        $this->nextStep($session, self::STEP_CONFIRM_DELETE);
-
-        $this->sendButtons(
-            $session->phone,
-            "⚠️ *Delete Subscription?*\n\nYou will stop receiving fish alerts.\n\nThis action cannot be undone.",
+            "⚠️ *Delete subscription?*\n\nYou'll stop getting fish alerts.",
             [
                 ['id' => 'confirm_delete', 'title' => '🗑️ Yes, Delete'],
                 ['id' => 'cancel_delete', 'title' => '❌ Cancel'],
@@ -350,224 +417,30 @@ class FishManageSubscriptionHandler extends AbstractFlowHandler
         );
     }
 
-    protected function togglePause(ConversationSession $session): void
+    protected function deleteSubscription(ConversationSession $session, FishSubscription $subscription): void
     {
-        $subscription = $this->getSubscription($session);
-        $newState = !$subscription->is_paused;
-        $subscription->update(['is_paused' => $newState]);
+        $this->subscriptionService->delete($subscription);
+        $this->clearTempData($session);
 
-        $status = $newState ? 'paused ⏸️' : 'resumed ▶️';
-        $this->sendTextWithMenu($session->phone, "✅ Alerts {$status}");
-        $this->start($session);
-    }
-
-    protected function showSubscriptionDetails(ConversationSession $session, FishSubscription $subscription): void
-    {
-        // FIX: display_name is an accessor, not a column - must load models first
-        $fishTypes = $subscription->all_fish_types
-            ? 'All fish types'
-            : ($subscription->fish_type_ids 
-                ? FishType::whereIn('id', $subscription->fish_type_ids)->get()->pluck('display_name')->join(', ')
-                : 'None selected');
-
-        $status = $subscription->is_paused ? '⏸️ Paused' : '✅ Active';
-        $frequency = $subscription->alert_frequency?->label() ?? 'Immediate';
-
-        $stats = $this->subscriptionService->getSubscriptionStats($subscription);
-
-        $text = "🔔 *Your Fish Alert Subscription*\n\n" .
-            "Status: {$status}\n" .
-            "Radius: {$subscription->radius_km} km\n" .
-            "Fish Types: {$fishTypes}\n" .
-            "Frequency: {$frequency}\n\n" .
-            "📊 *Stats*\n" .
-            "Alerts Received: {$stats['alerts_received']}\n" .
-            "Click Rate: {$stats['click_rate']}%";
-
-        $pauseLabel = $subscription->is_paused ? '▶️ Resume' : '⏸️ Pause';
-
-        // @srs-ref NFR-U-04: Main menu accessible from any flow state
-        $this->sendList(
+        $this->sendButtons(
             $session->phone,
-            $text,
-            'Manage',
+            "✅ Subscription deleted.\n\nYou can subscribe again anytime!",
             [
-                [
-                    'title' => '⚙️ Settings',
-                    'rows' => [
-                        ['id' => 'toggle_pause', 'title' => $pauseLabel, 'description' => $subscription->is_paused ? 'Start receiving alerts' : 'Temporarily stop alerts'],
-                        ['id' => 'change_radius', 'title' => '📏 Change Radius', 'description' => "Current: {$subscription->radius_km} km"],
-                        ['id' => 'change_fish', 'title' => '🐟 Change Fish Types', 'description' => 'Select which fish to get alerts for'],
-                        ['id' => 'change_frequency', 'title' => '⏰ Change Frequency', 'description' => "Current: {$frequency}"],
-                        ['id' => 'change_location', 'title' => '📍 Change Location', 'description' => 'Update alert location'],
-                    ],
-                ],
-                [
-                    'title' => '🔴 Danger Zone',
-                    'rows' => [
-                        ['id' => 'delete_subscription', 'title' => '🗑️ Delete Subscription', 'description' => 'Stop all fish alerts'],
-                    ],
-                ],
-                [
-                    'title' => '📍 Navigation',
-                    'rows' => [
-                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
-                    ],
-                ],
-            ],
-            '🐟 Fish Alerts'
-        );
-    }
-
-    protected function showRadiusOptions(ConversationSession $session): void
-    {
-        $subscription = $this->getSubscription($session);
-
-        $this->sendList(
-            $session->phone,
-            "📏 *Change Alert Radius*\n\nCurrent: {$subscription->radius_km} km\n\nSelect new radius:",
-            'Select Radius',
-            [
-                [
-                    'title' => 'Distance Options',
-                    'rows' => [
-                        ['id' => 'radius_3', 'title' => '3 km', 'description' => 'Nearby only'],
-                        ['id' => 'radius_5', 'title' => '5 km', 'description' => 'Recommended'],
-                        ['id' => 'radius_10', 'title' => '10 km', 'description' => 'Wider area'],
-                        ['id' => 'radius_15', 'title' => '15 km', 'description' => 'Extended area'],
-                        ['id' => 'radius_20', 'title' => '20 km', 'description' => 'Maximum range'],
-                    ],
-                ],
-                [
-                    'title' => '📍 Navigation',
-                    'rows' => [
-                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
-                    ],
-                ],
+                ['id' => 'fish_subscribe', 'title' => '🔔 Subscribe'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
             ]
         );
     }
 
-    protected function showFishOptions(ConversationSession $session): void
-    {
-        // Start with category selection
-        $this->showFishCategorySelection($session);
-    }
-
-    /**
-     * Show fish category selection (fits within 10-row limit).
-     */
-    protected function showFishCategorySelection(ConversationSession $session): void
-    {
-        $subscription = $this->getSubscription($session);
-        // FIX: Use fish_type_ids array instead of fishTypes relationship
-        $selectedCount = $subscription->fish_type_ids ? count($subscription->fish_type_ids) : 0;
-        $selectedText = $selectedCount > 0 ? "\n\n✅ Selected: {$selectedCount} fish types" : "";
-
-        $this->sendList(
-            $session->phone,
-            "🐟 *Select Fish Types*\n\nChoose a category to select fish.{$selectedText}",
-            'Select',
-            [
-                [
-                    'title' => 'Fish Categories',
-                    'rows' => [
-                        ['id' => 'all_fish', 'title' => '🐟 All Fish', 'description' => 'Get alerts for all types'],
-                        ['id' => 'cat_sea_fish', 'title' => '🌊 Sea Fish', 'description' => 'Tuna, Mackerel, Sardine...'],
-                        ['id' => 'cat_freshwater', 'title' => '🏞️ Freshwater', 'description' => 'Tilapia, Catfish...'],
-                        ['id' => 'cat_shellfish', 'title' => '🐚 Shellfish', 'description' => 'Mussels, Clams, Oysters...'],
-                        ['id' => 'cat_crustacean', 'title' => '🦐 Crustaceans', 'description' => 'Prawns, Crabs, Lobster...'],
-                        ['id' => 'done_selecting', 'title' => '✅ Done', 'description' => 'Save and go back'],
-                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
-                    ],
-                ],
-            ]
-        );
-    }
-
-    /**
-     * Show fish from a specific category (paginated to fit 10-row limit).
-     */
-    protected function showFishFromCategory(ConversationSession $session, string $category): void
-    {
-        $subscription = $this->getSubscription($session);
-        // FIX: Use fish_type_ids array instead of fishTypes relationship
-        $selectedIds = $subscription->fish_type_ids ?? [];
-
-        // Get fish from this category
-        $fishTypes = FishType::where('category', $category)
-            ->where('is_active', true)
-            ->orderBy('name_ml')
-            ->take(7) // Max 7 fish + Back + Done + Main Menu = 10 rows
-            ->get();
-
-        $categoryName = match ($category) {
-            FishType::CATEGORY_SEA_FISH => '🌊 Sea Fish',
-            FishType::CATEGORY_FRESHWATER => '🏞️ Freshwater',
-            FishType::CATEGORY_SHELLFISH => '🐚 Shellfish',
-            FishType::CATEGORY_CRUSTACEAN => '🦐 Crustaceans',
-            default => '🐟 Fish',
-        };
-
-        $rows = [];
-        foreach ($fishTypes as $fish) {
-            $isSelected = in_array($fish->id, $selectedIds);
-            $prefix = $isSelected ? '✅ ' : '';
-            $rows[] = [
-                'id' => $fish->list_id,
-                'title' => $prefix . $fish->name_ml,
-                'description' => $fish->name_en,
-            ];
-        }
-
-        // Add navigation options
-        $rows[] = ['id' => 'back_to_categories', 'title' => '⬅️ Back', 'description' => 'Choose another category'];
-        $rows[] = ['id' => 'done_selecting', 'title' => '✅ Done', 'description' => 'Save selection'];
-        $rows[] = ['id' => 'main_menu', 'title' => '🏠 Menu', 'description' => 'Main menu'];
-
-        $this->sendList(
-            $session->phone,
-            "{$categoryName}\n\nTap to toggle. ✅ = selected",
-            'Select',
-            [
-                [
-                    'title' => $categoryName,
-                    'rows' => $rows,
-                ],
-            ]
-        );
-    }
-
-    protected function showFrequencyOptions(ConversationSession $session): void
-    {
-        $subscription = $this->getSubscription($session);
-        $currentLabel = $subscription->alert_frequency?->label() ?? 'Immediate';
-
-        // FIX: Use enum's toListItems() to get properly formatted options
-        $frequencyRows = FishAlertFrequency::toListItems();
-
-        $this->sendList(
-            $session->phone,
-            "⏰ *Change Alert Frequency*\n\nCurrent: {$currentLabel}\n\nSelect new frequency:",
-            'Select',
-            [
-                [
-                    'title' => 'Frequency Options',
-                    'rows' => $frequencyRows,
-                ],
-                [
-                    'title' => '📍 Navigation',
-                    'rows' => [
-                        ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
-                    ],
-                ],
-            ]
-        );
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Helper
+    |--------------------------------------------------------------------------
+    */
 
     protected function getSubscription(ConversationSession $session): ?FishSubscription
     {
-        $subscriptionId = $this->getTemp($session, 'subscription_id');
-        return FishSubscription::find($subscriptionId);
+        $id = $this->getTempData($session, 'subscription_id');
+        return $id ? FishSubscription::find($id) : null;
     }
 }

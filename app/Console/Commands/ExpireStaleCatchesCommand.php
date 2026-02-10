@@ -5,87 +5,97 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use App\Jobs\Fish\ExpireStaleCatchesJob;
-use App\Services\Fish\FishCatchService;
+use App\Models\FishCatch;
 use Illuminate\Console\Command;
 
 /**
- * Command to expire stale fish catches.
+ * Expire stale fish catches.
+ *
+ * @srs-ref PM-024: Auto-expire catch postings after 6 hours if not manually updated
+ * @srs-ref PM-010: Auto-timestamp, calculate freshness
  *
  * Usage:
- * - php artisan fish:expire-catches
- * - php artisan fish:expire-catches --sync
- * - php artisan fish:expire-catches --dry-run
- *
- * @srs-ref Pacha Meen Module - Catch Lifecycle
+ *   php artisan fish:expire-catches             # Dispatch job (default)
+ *   php artisan fish:expire-catches --sync      # Run synchronously
+ *   php artisan fish:expire-catches --dry-run   # Preview only
+ *   php artisan fish:expire-catches --hours=6   # Custom expiry (default: 6)
+ *   php artisan fish:expire-catches --notify    # Notify sellers
  */
 class ExpireStaleCatchesCommand extends Command
 {
-    /**
-     * The name and signature of the console command.
-     */
     protected $signature = 'fish:expire-catches 
-                            {--sync : Run synchronously (no queue)}
-                            {--dry-run : Show what would be expired without making changes}';
+                            {--sync : Run synchronously instead of queueing}
+                            {--dry-run : Show what would be expired without changes}
+                            {--hours=6 : Hours before auto-expire (PM-024: 6 hours)}
+                            {--notify : Send WhatsApp notification to sellers}';
+
+    protected $description = 'Expire stale fish catches (PM-024: auto-expire after 6 hours)';
 
     /**
-     * The console command description.
+     * SRS PM-024: 6 hours default.
      */
-    protected $description = 'Expire stale fish catches that have passed their expiry time';
+    public const DEFAULT_EXPIRY_HOURS = 6;
 
-    /**
-     * Execute the console command.
-     */
-    public function handle(FishCatchService $catchService): int
+    public function handle(): int
     {
-        $this->info('Checking for stale catches...');
-
         $dryRun = $this->option('dry-run');
         $sync = $this->option('sync');
+        $hours = (int) $this->option('hours') ?: self::DEFAULT_EXPIRY_HOURS;
+        $notify = $this->option('notify');
+
+        $this->info("🐟 Checking catches older than {$hours} hours (PM-024)...");
 
         if ($dryRun) {
-            return $this->handleDryRun($catchService);
+            return $this->dryRun($hours);
         }
 
         if ($sync) {
-            ExpireStaleCatchesJob::dispatchSync();
-            $this->info('Stale catches expired (sync)');
+            ExpireStaleCatchesJob::dispatchSync($hours, $notify);
+            $this->info('✅ Stale catches expired (sync)');
         } else {
-            ExpireStaleCatchesJob::dispatch();
-            $this->info('Expire catches job dispatched');
+            ExpireStaleCatchesJob::dispatch($hours, $notify);
+            $this->info('✅ Expire job dispatched to queue');
         }
 
         return Command::SUCCESS;
     }
 
     /**
-     * Handle dry run - show what would be expired.
+     * Preview what would be expired.
      */
-    protected function handleDryRun(FishCatchService $catchService): int
+    protected function dryRun(int $hours): int
     {
-        $staleCatches = \App\Models\FishCatch::query()
-            ->where('status', 'available')
-            ->where('expires_at', '<', now())
+        $cutoff = now()->subHours($hours);
+
+        $stale = FishCatch::query()
+            ->whereIn('status', ['available', 'low_stock'])
+            ->where('updated_at', '<', $cutoff)
             ->with(['fishType', 'seller'])
             ->get();
 
-        if ($staleCatches->isEmpty()) {
-            $this->info('No stale catches found.');
+        if ($stale->isEmpty()) {
+            $this->info('✅ No stale catches found.');
             return Command::SUCCESS;
         }
 
-        $this->warn("Found {$staleCatches->count()} stale catches that would be expired:");
+        $this->warn("Found {$stale->count()} stale catches (would be expired):");
         $this->newLine();
 
-        $headers = ['ID', 'Fish Type', 'Seller', 'Posted', 'Expired At'];
-        $rows = $staleCatches->map(fn($catch) => [
-            $catch->id,
-            $catch->fishType->display_name ?? 'Unknown',
-            $catch->seller->business_name ?? 'Unknown',
-            $catch->created_at->diffForHumans(),
-            $catch->expires_at->format('Y-m-d H:i'),
-        ])->toArray();
+        $this->table(
+            ['ID', 'Fish', 'Seller', 'Status', 'Posted', 'Last Update', 'Age'],
+            $stale->map(fn($c) => [
+                $c->id,
+                $c->fishType?->display_name ?? '🐟',
+                substr($c->seller?->business_name ?? '-', 0, 18),
+                $c->status,
+                $c->created_at->format('H:i'),
+                $c->updated_at->format('H:i'),
+                $c->updated_at->diffForHumans(['short' => true]),
+            ])->toArray()
+        );
 
-        $this->table($headers, $rows);
+        $this->newLine();
+        $this->comment("Run without --dry-run to expire these catches.");
 
         return Command::SUCCESS;
     }

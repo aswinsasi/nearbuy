@@ -1,29 +1,32 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
- * Alert frequency preferences for fish subscriptions.
+ * Alert frequency/time preferences for fish subscriptions.
  *
- * @srs-ref Section 2.3.4 - Alert Delivery
+ * @srs-ref PM-014: Alert time preference: Early Morning (5-7 AM), Morning (7-9 AM), Anytime
+ * @srs-ref PM-020: Respect alert time preferences
  */
 enum FishAlertFrequency: string
 {
-    case IMMEDIATE = 'immediate';
-    case MORNING_ONLY = 'morning_only';
-    case TWICE_DAILY = 'twice_daily';
-    case WEEKLY_DIGEST = 'weekly_digest';
+    case ANYTIME = 'anytime';           // Immediate alerts
+    case EARLY_MORNING = 'early_morning'; // 5-7 AM only
+    case MORNING = 'morning';           // 7-9 AM only
+    case TWICE_DAILY = 'twice_daily';   // 6 AM & 4 PM batch
 
     /**
-     * Get the display label.
+     * Get display label.
      */
     public function label(): string
     {
         return match ($this) {
-            self::IMMEDIATE => 'Immediate',
-            self::MORNING_ONLY => 'Morning Only (6-8 AM)',
-            self::TWICE_DAILY => 'Twice Daily (6 AM & 4 PM)',
-            self::WEEKLY_DIGEST => 'Weekly Summary',
+            self::ANYTIME => 'Anytime',
+            self::EARLY_MORNING => 'Early Morning (5-7 AM)',
+            self::MORNING => 'Morning (7-9 AM)',
+            self::TWICE_DAILY => 'Twice Daily',
         };
     }
 
@@ -33,49 +36,124 @@ enum FishAlertFrequency: string
     public function labelMl(): string
     {
         return match ($this) {
-            self::IMMEDIATE => 'ഉടൻ',
-            self::MORNING_ONLY => 'രാവിലെ മാത്രം',
+            self::ANYTIME => 'എപ്പോൾ വേണമെങ്കിലും',
+            self::EARLY_MORNING => 'അതിരാവിലെ (5-7)',
+            self::MORNING => 'രാവിലെ (7-9)',
             self::TWICE_DAILY => 'ദിവസം രണ്ട് തവണ',
-            self::WEEKLY_DIGEST => 'ആഴ്ചതോറും',
         };
     }
 
     /**
-     * Get emoji for display.
+     * Get emoji.
      */
     public function emoji(): string
     {
         return match ($this) {
-            self::IMMEDIATE => '🔔',
-            self::MORNING_ONLY => '🌅',
-            self::TWICE_DAILY => '☀️',
-            self::WEEKLY_DIGEST => '📅',
+            self::ANYTIME => '🔔',
+            self::EARLY_MORNING => '🌅',
+            self::MORNING => '☀️',
+            self::TWICE_DAILY => '📅',
         };
     }
 
     /**
-     * Get description.
+     * Get short description.
      */
     public function description(): string
     {
         return match ($this) {
-            self::IMMEDIATE => 'Get notified instantly when fresh fish arrives',
-            self::MORNING_ONLY => 'Get all alerts in the morning (best for early buyers)',
-            self::TWICE_DAILY => 'Morning and afternoon digest',
-            self::WEEKLY_DIGEST => 'Weekly summary of fish availability',
+            self::ANYTIME => 'Instant alerts when fish arrives',
+            self::EARLY_MORNING => 'Best for early market buyers',
+            self::MORNING => 'Morning batch alerts',
+            self::TWICE_DAILY => '6 AM & 4 PM digest',
         };
     }
 
     /**
-     * Get description in Malayalam.
+     * Check if should send immediately.
      */
-    public function descriptionMl(): string
+    public function isImmediate(): bool
+    {
+        return $this === self::ANYTIME;
+    }
+
+    /**
+     * Check if should batch alerts.
+     */
+    public function shouldBatch(): bool
+    {
+        return $this !== self::ANYTIME;
+    }
+
+    /**
+     * Get time window start hour (24h).
+     */
+    public function windowStartHour(): ?int
     {
         return match ($this) {
-            self::IMMEDIATE => 'പച്ച മീൻ വരുമ്പോൾ ഉടൻ അറിയിപ്പ്',
-            self::MORNING_ONLY => 'രാവിലെ എല്ലാ അറിയിപ്പുകളും',
-            self::TWICE_DAILY => 'രാവിലെയും ഉച്ചയ്ക്കും',
-            self::WEEKLY_DIGEST => 'ആഴ്ചയിലെ മീൻ ലഭ്യത സംക്ഷിപ്തം',
+            self::ANYTIME => null,
+            self::EARLY_MORNING => 5,
+            self::MORNING => 7,
+            self::TWICE_DAILY => 6,
+        };
+    }
+
+    /**
+     * Get time window end hour (24h).
+     */
+    public function windowEndHour(): ?int
+    {
+        return match ($this) {
+            self::ANYTIME => null,
+            self::EARLY_MORNING => 7,
+            self::MORNING => 9,
+            self::TWICE_DAILY => 16,
+        };
+    }
+
+    /**
+     * Check if current time is within alert window.
+     */
+    public function isWithinWindow(): bool
+    {
+        if ($this === self::ANYTIME) {
+            return true;
+        }
+
+        $hour = (int) now()->format('G');
+
+        return match ($this) {
+            self::EARLY_MORNING => $hour >= 5 && $hour < 7,
+            self::MORNING => $hour >= 7 && $hour < 9,
+            self::TWICE_DAILY => ($hour >= 6 && $hour < 7) || ($hour >= 16 && $hour < 17),
+            default => true,
+        };
+    }
+
+    /**
+     * Get next scheduled time for this frequency.
+     */
+    public function nextScheduledTime(): \Carbon\Carbon
+    {
+        $now = now();
+        $hour = $now->hour;
+
+        return match ($this) {
+            self::ANYTIME => $now,
+            
+            self::EARLY_MORNING => $hour < 5 
+                ? $now->copy()->setTime(5, 0)
+                : $now->copy()->addDay()->setTime(5, 0),
+            
+            self::MORNING => $hour < 7
+                ? $now->copy()->setTime(7, 0)
+                : $now->copy()->addDay()->setTime(7, 0),
+            
+            self::TWICE_DAILY => match (true) {
+                $hour < 6 => $now->copy()->setTime(6, 0),
+                $hour < 16 => $now->copy()->setTime(16, 0),
+                default => $now->copy()->addDay()->setTime(6, 0),
+            },
         };
     }
 
@@ -85,45 +163,10 @@ enum FishAlertFrequency: string
     public function toListItem(): array
     {
         return [
-            'id' => 'fish_freq_' . $this->value,
+            'id' => 'freq_' . $this->value,
             'title' => $this->emoji() . ' ' . substr($this->label(), 0, 20),
             'description' => substr($this->description(), 0, 72),
         ];
-    }
-
-    /**
-     * Get schedule times for this frequency.
-     * Returns array of hours in 24h format.
-     */
-    public function scheduleTimes(): array
-    {
-        return match ($this) {
-            self::IMMEDIATE => [], // Send immediately, no schedule
-            self::MORNING_ONLY => [6],
-            self::TWICE_DAILY => [6, 16],
-            self::WEEKLY_DIGEST => [8], // Sunday 8 AM
-        };
-    }
-
-    /**
-     * Check if this frequency should batch alerts.
-     */
-    public function shouldBatch(): bool
-    {
-        return $this !== self::IMMEDIATE;
-    }
-
-    /**
-     * Get batch window in hours.
-     */
-    public function batchWindowHours(): int
-    {
-        return match ($this) {
-            self::IMMEDIATE => 0,
-            self::MORNING_ONLY => 24,
-            self::TWICE_DAILY => 12,
-            self::WEEKLY_DIGEST => 168, // 7 days
-        };
     }
 
     /**
@@ -131,11 +174,11 @@ enum FishAlertFrequency: string
      */
     public static function toListItems(): array
     {
-        return array_map(fn(self $freq) => $freq->toListItem(), self::cases());
+        return array_map(fn(self $f) => $f->toListItem(), self::cases());
     }
 
     /**
-     * Get all values as array.
+     * Get all values.
      */
     public static function values(): array
     {
@@ -147,7 +190,13 @@ enum FishAlertFrequency: string
      */
     public static function fromListId(string $listId): ?self
     {
-        $value = str_replace('fish_freq_', '', $listId);
+        $value = str_replace(['freq_', 'fish_freq_'], '', $listId);
         return self::tryFrom($value);
     }
+
+    /**
+     * Alias for backward compatibility.
+     */
+    public const IMMEDIATE = self::ANYTIME;
+    public const MORNING_ONLY = self::MORNING;
 }

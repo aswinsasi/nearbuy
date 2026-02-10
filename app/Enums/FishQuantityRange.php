@@ -1,126 +1,133 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
  * Quantity ranges for fish catch postings.
  *
- * @srs-ref Section 2.5.1 Step 4 - Quantity button options
+ * @srs-ref PM-006 Quantity ranges: 5-10kg, 10-25kg, 25-50kg, 50+kg
  */
 enum FishQuantityRange: string
 {
-    case KG_5_10 = '5_10';
-    case KG_10_25 = '10_25';
-    case KG_25_50 = '25_50';
-    case KG_50_PLUS = '50_plus';
+    case RANGE_5_10 = '5_10';
+    case RANGE_10_25 = '10_25';
+    case RANGE_25_50 = '25_50';
+    case RANGE_50_PLUS = '50_plus';
 
     /**
-     * Get the display label.
+     * Short label for buttons (max 20 chars).
      */
     public function label(): string
     {
         return match ($this) {
-            self::KG_5_10 => '5-10 kg',
-            self::KG_10_25 => '10-25 kg',
-            self::KG_25_50 => '25-50 kg',
-            self::KG_50_PLUS => '50+ kg',
+            self::RANGE_5_10 => '5-10 kg',
+            self::RANGE_10_25 => '10-25 kg',
+            self::RANGE_25_50 => '25-50 kg',
+            self::RANGE_50_PLUS => '50+ kg',
         };
     }
 
     /**
-     * Get Malayalam label.
+     * Malayalam label.
      */
     public function labelMl(): string
     {
         return match ($this) {
-            self::KG_5_10 => '5-10 കിലോ',
-            self::KG_10_25 => '10-25 കിലോ',
-            self::KG_25_50 => '25-50 കിലോ',
-            self::KG_50_PLUS => '50+ കിലോ',
+            self::RANGE_5_10 => '5-10 കിലോ',
+            self::RANGE_10_25 => '10-25 കിലോ',
+            self::RANGE_25_50 => '25-50 കിലോ',
+            self::RANGE_50_PLUS => '50+ കിലോ',
         };
     }
 
     /**
-     * Get emoji for display.
-     */
-    public function emoji(): string
-    {
-        return match ($this) {
-            self::KG_5_10 => '📦',
-            self::KG_10_25 => '📦📦',
-            self::KG_25_50 => '📦📦📦',
-            self::KG_50_PLUS => '🚛',
-        };
-    }
-
-    /**
-     * Get button title for WhatsApp.
+     * Button title for WhatsApp (SHORT!).
      */
     public function buttonTitle(): string
     {
-        return $this->emoji() . ' ' . $this->label();
+        return $this->label(); // Keep it short!
     }
 
     /**
-     * Get minimum kg value.
+     * Minimum kg.
      */
     public function minKg(): int
     {
         return match ($this) {
-            self::KG_5_10 => 5,
-            self::KG_10_25 => 10,
-            self::KG_25_50 => 25,
-            self::KG_50_PLUS => 50,
+            self::RANGE_5_10 => 5,
+            self::RANGE_10_25 => 10,
+            self::RANGE_25_50 => 25,
+            self::RANGE_50_PLUS => 50,
         };
     }
 
     /**
-     * Get maximum kg value (null for unlimited).
+     * Maximum kg (null for unlimited).
      */
     public function maxKg(): ?int
     {
         return match ($this) {
-            self::KG_5_10 => 10,
-            self::KG_10_25 => 25,
-            self::KG_25_50 => 50,
-            self::KG_50_PLUS => null,
+            self::RANGE_5_10 => 10,
+            self::RANGE_10_25 => 25,
+            self::RANGE_25_50 => 50,
+            self::RANGE_50_PLUS => null,
         };
     }
 
     /**
-     * Get approximate display value for alerts.
+     * Approximate display for alerts.
      */
     public function approximateDisplay(): string
     {
         return match ($this) {
-            self::KG_5_10 => '~8 kg',
-            self::KG_10_25 => '~15 kg',
-            self::KG_25_50 => '~35 kg',
-            self::KG_50_PLUS => '50+ kg',
+            self::RANGE_5_10 => '~8 kg',
+            self::RANGE_10_25 => '~15 kg',
+            self::RANGE_25_50 => '~35 kg',
+            self::RANGE_50_PLUS => '50+ kg',
         };
     }
 
     /**
-     * Convert to WhatsApp button array.
+     * Convert to WhatsApp button.
      */
     public function toButton(): array
     {
         return [
             'id' => 'qty_' . $this->value,
-            'title' => substr($this->buttonTitle(), 0, 20),
+            'title' => $this->buttonTitle(),
         ];
     }
 
     /**
-     * Get all as WhatsApp buttons.
+     * Get first 3 as buttons (WhatsApp limit).
+     * Returns most common ranges.
      */
     public static function toButtons(): array
     {
-        return array_map(fn(self $range) => $range->toButton(), self::cases());
+        // Only 3 buttons allowed - show most common
+        return [
+            self::RANGE_5_10->toButton(),
+            self::RANGE_10_25->toButton(),
+            self::RANGE_25_50->toButton(),
+        ];
     }
 
     /**
-     * Get all values as array.
+     * Get all as list items (for list message).
+     */
+    public static function toListItems(): array
+    {
+        return array_map(fn(self $range) => [
+            'id' => 'qty_' . $range->value,
+            'title' => $range->label(),
+            'description' => $range->approximateDisplay(),
+        ], self::cases());
+    }
+
+    /**
+     * Get all values.
      */
     public static function values(): array
     {
@@ -134,5 +141,16 @@ enum FishQuantityRange: string
     {
         $value = str_replace('qty_', '', $buttonId);
         return self::tryFrom($value);
+    }
+
+    /**
+     * Guess range from kg input.
+     */
+    public static function fromKg(int $kg): self
+    {
+        if ($kg <= 10) return self::RANGE_5_10;
+        if ($kg <= 25) return self::RANGE_10_25;
+        if ($kg <= 50) return self::RANGE_25_50;
+        return self::RANGE_50_PLUS;
     }
 }

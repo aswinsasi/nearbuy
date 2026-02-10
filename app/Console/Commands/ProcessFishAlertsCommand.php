@@ -7,123 +7,180 @@ namespace App\Console\Commands;
 use App\Enums\FishAlertFrequency;
 use App\Jobs\Fish\ProcessFishAlertBatchJob;
 use App\Jobs\Fish\SendFishAlertJob;
-use App\Services\Fish\FishAlertService;
+use App\Models\FishAlert;
 use Illuminate\Console\Command;
 
 /**
- * Command to process pending fish alerts.
+ * Process pending fish alerts.
+ *
+ * Fish alerts are TIME-SENSITIVE - must deliver within 2 minutes.
  *
  * Usage:
- * - php artisan fish:process-alerts --immediate
- * - php artisan fish:process-alerts --morning
- * - php artisan fish:process-alerts --twice-daily
- * - php artisan fish:process-alerts --weekly
- * - php artisan fish:process-alerts --all
+ *   php artisan fish:process-alerts                      # Process all ready
+ *   php artisan fish:process-alerts --immediate          # ANYTIME subscribers only
+ *   php artisan fish:process-alerts --frequency=morning  # Specific frequency
+ *   php artisan fish:process-alerts --sync               # Run synchronously
  *
- * @srs-ref Pacha Meen Module - Alert Processing
+ * @srs-ref PM-016 to PM-020: Alert Delivery
+ * @srs-ref PM-014: Alert time preferences (Early Morning 5-7, Morning 7-9, Anytime)
  */
 class ProcessFishAlertsCommand extends Command
 {
-    /**
-     * The name and signature of the console command.
-     */
     protected $signature = 'fish:process-alerts 
-                            {--immediate : Process immediate alerts}
-                            {--morning : Process morning-only batches}
-                            {--twice-daily : Process twice-daily batches}
-                            {--weekly : Process weekly digest batches}
-                            {--all : Process all pending alerts}
-                            {--sync : Process synchronously (no queue)}';
+                            {--immediate : Only ANYTIME (instant) alerts}
+                            {--early-morning : Process early morning batch (5-7 AM)}
+                            {--morning : Process morning batch (7-9 AM)}
+                            {--twice-daily : Process twice daily batch (6 AM & 4 PM)}
+                            {--frequency= : Specific frequency (anytime, early_morning, morning, twice_daily)}
+                            {--all : Process all frequencies}
+                            {--limit=100 : Max alerts per run}
+                            {--sync : Process synchronously}';
 
-    /**
-     * The console command description.
-     */
-    protected $description = 'Process pending fish alert notifications';
+    protected $description = 'Process pending fish alert notifications (time-sensitive - 2min target)';
 
-    /**
-     * Execute the console command.
-     */
-    public function handle(FishAlertService $alertService): int
+    public function handle(): int
     {
-        $this->info('Processing fish alerts...');
-
-        $processImmediate = $this->option('immediate') || $this->option('all');
-        $processMorning = $this->option('morning') || $this->option('all');
-        $processTwiceDaily = $this->option('twice-daily') || $this->option('all');
-        $processWeekly = $this->option('weekly') || $this->option('all');
         $sync = $this->option('sync');
+        $limit = (int) $this->option('limit');
+        $all = $this->option('all');
 
-        // Default to processing immediate if no options specified
-        if (!$processImmediate && !$processMorning && !$processTwiceDaily && !$processWeekly) {
-            $processImmediate = true;
+        $this->info('🐟 Processing fish alerts...');
+
+        $total = 0;
+
+        // Specific frequency option
+        if ($freq = $this->option('frequency')) {
+            $frequency = FishAlertFrequency::tryFrom($freq);
+            if (!$frequency) {
+                $this->error("Invalid frequency: {$freq}");
+                $this->line('Valid: anytime, early_morning, morning, twice_daily');
+                return Command::FAILURE;
+            }
+            $total = $this->processFrequency($frequency, $limit, $sync);
+        }
+        // Process all
+        elseif ($all) {
+            $total += $this->processImmediate($limit, $sync);
+            $total += $this->dispatchBatchJobs($sync);
+        }
+        // Individual frequency flags
+        elseif ($this->option('immediate')) {
+            $total = $this->processImmediate($limit, $sync);
+        }
+        elseif ($this->option('early-morning')) {
+            $total = $this->processFrequency(FishAlertFrequency::EARLY_MORNING, $limit, $sync);
+        }
+        elseif ($this->option('morning')) {
+            $total = $this->processFrequency(FishAlertFrequency::MORNING, $limit, $sync);
+        }
+        elseif ($this->option('twice-daily')) {
+            $total = $this->processFrequency(FishAlertFrequency::TWICE_DAILY, $limit, $sync);
+        }
+        // Default: process immediate alerts (most common case)
+        else {
+            $total = $this->processImmediate($limit, $sync);
         }
 
-        $totalProcessed = 0;
-
-        // Process immediate alerts
-        if ($processImmediate) {
-            $count = $this->processImmediateAlerts($alertService, $sync);
-            $this->info("Dispatched {$count} immediate alerts");
-            $totalProcessed += $count;
-        }
-
-        // Process morning-only batches
-        if ($processMorning) {
-            $this->processFrequencyBatch(FishAlertFrequency::MORNING_ONLY, $sync);
-            $this->info('Dispatched morning-only batch processing');
-        }
-
-        // Process twice-daily batches
-        if ($processTwiceDaily) {
-            $this->processFrequencyBatch(FishAlertFrequency::TWICE_DAILY, $sync);
-            $this->info('Dispatched twice-daily batch processing');
-        }
-
-        // Process weekly batches
-        if ($processWeekly) {
-            $this->processFrequencyBatch(FishAlertFrequency::WEEKLY_DIGEST, $sync);
-            $this->info('Dispatched weekly batch processing');
-        }
-
-        $this->info("Alert processing completed. Total dispatched: {$totalProcessed}");
+        $this->info("✅ Processed/dispatched {$total} alerts");
 
         return Command::SUCCESS;
     }
 
     /**
-     * Process immediate (instant) alerts.
+     * Process immediate (ANYTIME) alerts - highest priority.
+     * These go out instantly when fish arrives.
      */
-    protected function processImmediateAlerts(FishAlertService $alertService, bool $sync): int
+    protected function processImmediate(int $limit, bool $sync): int
     {
-        $alerts = $alertService->getReadyAlerts(100);
+        $alerts = FishAlert::query()
+            ->where('status', FishAlert::STATUS_PENDING)
+            ->where(function ($q) {
+                $q->whereNull('scheduled_for')
+                    ->orWhere('scheduled_for', '<=', now());
+            })
+            ->whereHas('subscription', fn($q) => 
+                $q->where('alert_frequency', FishAlertFrequency::ANYTIME)
+                    ->where('is_active', true)
+                    ->where('is_paused', false)
+            )
+            ->orderBy('distance_km') // Nearest first for viral effect
+            ->orderBy('created_at')
+            ->limit($limit)
+            ->get();
+
+        $this->line("Found {$alerts->count()} immediate alerts");
+
+        return $this->dispatchAlerts($alerts, $sync);
+    }
+
+    /**
+     * Process alerts for a specific frequency.
+     */
+    protected function processFrequency(FishAlertFrequency $frequency, int $limit, bool $sync): int
+    {
+        // ANYTIME = immediate processing
+        if ($frequency === FishAlertFrequency::ANYTIME) {
+            return $this->processImmediate($limit, $sync);
+        }
+
+        // Check time window for scheduled frequencies
+        if (!$frequency->isWithinWindow()) {
+            $this->warn("⏰ Not within {$frequency->label()} window. Use --sync to force.");
+            if (!$sync) {
+                return 0;
+            }
+        }
+
+        $this->line("Processing {$frequency->label()} batch...");
+
+        if ($sync) {
+            ProcessFishAlertBatchJob::dispatchSync($frequency);
+        } else {
+            ProcessFishAlertBatchJob::dispatch($frequency)->onQueue('fish-alerts');
+        }
+
+        return 1; // Job dispatched
+    }
+
+    /**
+     * Dispatch batch jobs for all scheduled frequencies.
+     */
+    protected function dispatchBatchJobs(bool $sync): int
+    {
         $count = 0;
 
-        foreach ($alerts as $alert) {
-            // Only process immediate alerts here
-            if ($alert->subscription?->frequency !== FishAlertFrequency::IMMEDIATE->value) {
-                continue;
+        foreach ([FishAlertFrequency::EARLY_MORNING, FishAlertFrequency::MORNING, FishAlertFrequency::TWICE_DAILY] as $freq) {
+            if ($freq->isWithinWindow()) {
+                $this->line("Dispatching {$freq->value} batch...");
+                
+                if ($sync) {
+                    ProcessFishAlertBatchJob::dispatchSync($freq);
+                } else {
+                    ProcessFishAlertBatchJob::dispatch($freq)->onQueue('fish-alerts');
+                }
+                $count++;
             }
-
-            if ($sync) {
-                SendFishAlertJob::dispatchSync($alert);
-            } else {
-                SendFishAlertJob::dispatch($alert);
-            }
-            $count++;
         }
 
         return $count;
     }
 
     /**
-     * Process batch alerts for a frequency.
+     * Dispatch individual alert jobs.
      */
-    protected function processFrequencyBatch(FishAlertFrequency $frequency, bool $sync): void
+    protected function dispatchAlerts($alerts, bool $sync): int
     {
-        if ($sync) {
-            ProcessFishAlertBatchJob::dispatchSync($frequency);
-        } else {
-            ProcessFishAlertBatchJob::dispatch($frequency);
+        $count = 0;
+
+        foreach ($alerts as $alert) {
+            if ($sync) {
+                SendFishAlertJob::dispatchSync($alert);
+            } else {
+                SendFishAlertJob::dispatch($alert)->onQueue('fish-alerts');
+            }
+            $count++;
         }
+
+        return $count;
     }
 }

@@ -1,128 +1,118 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
  * Steps in the fish catch posting flow.
  *
- * @srs-ref Section 2.5.1 - Seller Catch Posting Flow (11 steps)
+ * Optimized for SPEED - fishermen do this at 5AM.
+ * Each step should take <20 seconds.
+ *
+ * @srs-ref Section 2.5.1 - Seller Catch Posting Flow
  */
 enum FishCatchStep: string
 {
-    case SELECT_FISH = 'select_fish';
-    case ENTER_QUANTITY = 'enter_quantity';
-    case ENTER_PRICE = 'enter_price';
-    case UPLOAD_PHOTO = 'upload_photo';
+    case ASK_FISH_TYPE = 'ask_fish_type';
+    case ASK_QUANTITY = 'ask_quantity';
+    case ASK_PRICE = 'ask_price';
+    case ASK_PHOTO = 'ask_photo';
     case CONFIRM = 'confirm';
-    case ADD_ANOTHER = 'add_another';
-    case COMPLETE = 'complete';
+    case ADD_MORE = 'add_more';
 
     /**
-     * Get the display label.
+     * Display label.
      */
     public function label(): string
     {
         return match ($this) {
-            self::SELECT_FISH => 'Select Fish Type',
-            self::ENTER_QUANTITY => 'Enter Quantity',
-            self::ENTER_PRICE => 'Enter Price',
-            self::UPLOAD_PHOTO => 'Upload Photo',
-            self::CONFIRM => 'Confirm Posting',
-            self::ADD_ANOTHER => 'Add Another Fish',
-            self::COMPLETE => 'Complete',
+            self::ASK_FISH_TYPE => 'Select Fish',
+            self::ASK_QUANTITY => 'Quantity',
+            self::ASK_PRICE => 'Price',
+            self::ASK_PHOTO => 'Photo',
+            self::CONFIRM => 'Confirm',
+            self::ADD_MORE => 'Add More',
         };
     }
 
     /**
-     * Get the step number (1-based).
+     * Step number (1-based).
      */
     public function stepNumber(): int
     {
         return match ($this) {
-            self::SELECT_FISH => 1,
-            self::ENTER_QUANTITY => 2,
-            self::ENTER_PRICE => 3,
-            self::UPLOAD_PHOTO => 4,
+            self::ASK_FISH_TYPE => 1,
+            self::ASK_QUANTITY => 2,
+            self::ASK_PRICE => 3,
+            self::ASK_PHOTO => 4,
             self::CONFIRM => 5,
-            self::ADD_ANOTHER => 6,
-            self::COMPLETE => 7,
+            self::ADD_MORE => 6,
         };
     }
 
     /**
-     * Get progress percentage.
+     * Progress percentage.
      */
     public function progress(): int
     {
         return match ($this) {
-            self::SELECT_FISH => 15,
-            self::ENTER_QUANTITY => 30,
-            self::ENTER_PRICE => 50,
-            self::UPLOAD_PHOTO => 70,
-            self::CONFIRM => 85,
-            self::ADD_ANOTHER => 95,
-            self::COMPLETE => 100,
+            self::ASK_FISH_TYPE => 15,
+            self::ASK_QUANTITY => 35,
+            self::ASK_PRICE => 55,
+            self::ASK_PHOTO => 75,
+            self::CONFIRM => 90,
+            self::ADD_MORE => 100,
         };
     }
 
     /**
-     * Get the next step.
+     * Next step.
      */
     public function next(): ?self
     {
         return match ($this) {
-            self::SELECT_FISH => self::ENTER_QUANTITY,
-            self::ENTER_QUANTITY => self::ENTER_PRICE,
-            self::ENTER_PRICE => self::UPLOAD_PHOTO,
-            self::UPLOAD_PHOTO => self::CONFIRM,
-            self::CONFIRM => self::ADD_ANOTHER,
-            self::ADD_ANOTHER => self::COMPLETE,
-            self::COMPLETE => null,
+            self::ASK_FISH_TYPE => self::ASK_QUANTITY,
+            self::ASK_QUANTITY => self::ASK_PRICE,
+            self::ASK_PRICE => self::ASK_PHOTO,
+            self::ASK_PHOTO => self::CONFIRM,
+            self::CONFIRM => self::ADD_MORE,
+            self::ADD_MORE => null,
         };
     }
 
     /**
-     * Get the previous step.
+     * Previous step.
      */
     public function previous(): ?self
     {
         return match ($this) {
-            self::SELECT_FISH => null,
-            self::ENTER_QUANTITY => self::SELECT_FISH,
-            self::ENTER_PRICE => self::ENTER_QUANTITY,
-            self::UPLOAD_PHOTO => self::ENTER_PRICE,
-            self::CONFIRM => self::UPLOAD_PHOTO,
-            self::ADD_ANOTHER => self::CONFIRM,
-            self::COMPLETE => self::ADD_ANOTHER,
+            self::ASK_FISH_TYPE => null,
+            self::ASK_QUANTITY => self::ASK_FISH_TYPE,
+            self::ASK_PRICE => self::ASK_QUANTITY,
+            self::ASK_PHOTO => self::ASK_PRICE,
+            self::CONFIRM => self::ASK_PHOTO,
+            self::ADD_MORE => self::CONFIRM,
         };
     }
 
     /**
-     * Check if this step can go back.
-     */
-    public function canGoBack(): bool
-    {
-        return $this->previous() !== null;
-    }
-
-    /**
-     * Get expected input type.
+     * Expected input type.
      */
     public function expectedInput(): string
     {
         return match ($this) {
-            self::SELECT_FISH => 'list',
-            self::ENTER_QUANTITY => 'button',
-            self::ENTER_PRICE => 'text',
-            self::UPLOAD_PHOTO => 'image',
+            self::ASK_FISH_TYPE => 'list',
+            self::ASK_QUANTITY => 'button',
+            self::ASK_PRICE => 'text',
+            self::ASK_PHOTO => 'image',
             self::CONFIRM => 'button',
-            self::ADD_ANOTHER => 'button',
-            self::COMPLETE => 'none',
+            self::ADD_MORE => 'button',
         };
     }
 
     /**
-     * Get all values as array.
+     * Get all values.
      */
     public static function values(): array
     {

@@ -1,79 +1,93 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Support\Str;
 
 /**
  * Fish Type Model - Master data for fish varieties.
  *
+ * SRS Section 2.4 - Fish Types Master Data:
+ * - Sardine/Mathi, Mackerel/Ayala, Pearl Spot/Karimeen, Tuna/Choora
+ * - Red Snapper/Nenmeen, Prawns/Konju, Crab/Njandu, Sole Fish/Manthal
+ * - Seer Fish/Neymeen, Pomfret/Avoli
+ *
+ * Categories: sea_fish, fresh_water, shellfish
+ *
  * @property int $id
- * @property string $name_en
- * @property string $name_ml
+ * @property string $name_en - English name (name_english in SRS)
+ * @property string $name_ml - Malayalam name (name_malayalam in SRS)
  * @property string $slug
- * @property string $category
- * @property array|null $aliases
- * @property array|null $peak_seasons
- * @property bool $is_seasonal
+ * @property string $category - sea_fish, fresh_water, shellfish
+ * @property string|null $season_peak - Peak availability months
+ * @property string $emoji - Visual icon
+ * @property bool $is_popular - Show first in lists
+ * @property bool $is_active
+ * @property int $sort_order
  * @property float|null $typical_price_min
  * @property float|null $typical_price_max
- * @property string $emoji
- * @property string|null $image_url
- * @property int $sort_order
- * @property bool $is_popular
- * @property bool $is_active
  *
- * @srs-ref Section 2.4 - Fish Types Master Data
+ * @srs-ref Section 2.4 Fish Types Master Data
+ * @srs-ref Section 5.1.1 fish_types table
  */
 class FishType extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
         'name_en',
         'name_ml',
         'slug',
         'category',
-        'aliases',
-        'peak_seasons',
-        'is_seasonal',
-        'typical_price_min',
-        'typical_price_max',
+        'season_peak',
         'emoji',
-        'image_url',
-        'sort_order',
         'is_popular',
         'is_active',
+        'sort_order',
+        'typical_price_min',
+        'typical_price_max',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
-        'aliases' => 'array',
-        'peak_seasons' => 'array',
-        'is_seasonal' => 'boolean',
-        'typical_price_min' => 'decimal:2',
-        'typical_price_max' => 'decimal:2',
         'is_popular' => 'boolean',
         'is_active' => 'boolean',
+        'typical_price_min' => 'decimal:2',
+        'typical_price_max' => 'decimal:2',
     ];
 
     /**
-     * Fish categories.
+     * Categories (SRS Section 2.4).
      */
     public const CATEGORY_SEA_FISH = 'sea_fish';
-    public const CATEGORY_FRESHWATER = 'freshwater';
+    public const CATEGORY_FRESH_WATER = 'fresh_water';
     public const CATEGORY_SHELLFISH = 'shellfish';
-    public const CATEGORY_CRUSTACEAN = 'crustacean';
+
+    /**
+     * SRS Fish Types (Section 2.4).
+     */
+    public const SRS_FISH_TYPES = [
+        // Sea Fish
+        ['name_en' => 'Sardine', 'name_ml' => 'Mathi', 'emoji' => '🐟', 'category' => 'sea_fish', 'season_peak' => 'Jun-Sep', 'is_popular' => true],
+        ['name_en' => 'Mackerel', 'name_ml' => 'Ayala', 'emoji' => '🐟', 'category' => 'sea_fish', 'season_peak' => 'Year-round', 'is_popular' => true],
+        ['name_en' => 'Tuna', 'name_ml' => 'Choora', 'emoji' => '🐟', 'category' => 'sea_fish', 'season_peak' => 'Nov-Apr', 'is_popular' => true],
+        ['name_en' => 'Red Snapper', 'name_ml' => 'Nenmeen', 'emoji' => '🐠', 'category' => 'sea_fish', 'season_peak' => 'Year-round', 'is_popular' => false],
+        ['name_en' => 'Sole Fish', 'name_ml' => 'Manthal', 'emoji' => '🐟', 'category' => 'sea_fish', 'season_peak' => 'Year-round', 'is_popular' => false],
+        ['name_en' => 'Seer Fish', 'name_ml' => 'Neymeen', 'emoji' => '🐟', 'category' => 'sea_fish', 'season_peak' => 'Oct-Mar', 'is_popular' => true],
+        ['name_en' => 'Pomfret', 'name_ml' => 'Avoli', 'emoji' => '🐠', 'category' => 'sea_fish', 'season_peak' => 'Sep-Feb', 'is_popular' => true],
+        
+        // Fresh Water
+        ['name_en' => 'Pearl Spot', 'name_ml' => 'Karimeen', 'emoji' => '🐠', 'category' => 'fresh_water', 'season_peak' => 'Oct-Mar', 'is_popular' => true],
+        
+        // Shellfish (includes crustaceans)
+        ['name_en' => 'Prawns', 'name_ml' => 'Konju', 'emoji' => '🦐', 'category' => 'shellfish', 'season_peak' => 'Aug-Dec', 'is_popular' => true],
+        ['name_en' => 'Crab', 'name_ml' => 'Njandu', 'emoji' => '🦀', 'category' => 'shellfish', 'season_peak' => 'Year-round', 'is_popular' => true],
+    ];
 
     /*
     |--------------------------------------------------------------------------
@@ -81,17 +95,9 @@ class FishType extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get all catches of this fish type.
-     */
     public function catches(): HasMany
     {
         return $this->hasMany(FishCatch::class);
-    }
-
-    public function subscriptions(): BelongsToMany
-    {
-        return $this->belongsToMany(FishSubscription::class, 'fish_subscription_fish_type');
     }
 
     /*
@@ -101,7 +107,7 @@ class FishType extends Model
     */
 
     /**
-     * Scope to filter active fish types.
+     * Active fish types only.
      */
     public function scopeActive(Builder $query): Builder
     {
@@ -109,7 +115,7 @@ class FishType extends Model
     }
 
     /**
-     * Scope to filter popular fish types.
+     * Popular fish types (PM-011: show first in lists).
      */
     public function scopePopular(Builder $query): Builder
     {
@@ -117,48 +123,48 @@ class FishType extends Model
     }
 
     /**
-     * Scope to filter by category.
+     * Filter by category.
      */
-    public function scopeOfCategory(Builder $query, string $category): Builder
+    public function scopeByCategory(Builder $query, string $category): Builder
     {
         return $query->where('category', $category);
     }
 
     /**
-     * Scope to filter by current season.
+     * Alias for byCategory.
      */
-    public function scopeInSeason(Builder $query): Builder
+    public function scopeOfCategory(Builder $query, string $category): Builder
     {
-        $currentMonth = (int) now()->format('n');
-
-        return $query->where(function ($q) use ($currentMonth) {
-            $q->where('is_seasonal', false)
-                ->orWhereJsonContains('peak_seasons', $currentMonth);
-        });
+        return $this->scopeByCategory($query, $category);
     }
 
     /**
-     * Scope for list selection (active, ordered).
+     * Order by popularity then sort_order.
      */
-    public function scopeForSelection(Builder $query): Builder
+    public function scopeOrdered(Builder $query): Builder
     {
-        return $query->active()
-            ->orderBy('is_popular', 'desc')
+        return $query->orderByDesc('is_popular')
             ->orderBy('sort_order')
             ->orderBy('name_en');
     }
 
     /**
-     * Scope to search by name or alias.
+     * For selection lists (active + ordered).
+     */
+    public function scopeForSelection(Builder $query): Builder
+    {
+        return $query->active()->ordered();
+    }
+
+    /**
+     * Search by name.
      */
     public function scopeSearch(Builder $query, string $term): Builder
     {
         $term = strtolower($term);
-
         return $query->where(function ($q) use ($term) {
             $q->whereRaw('LOWER(name_en) LIKE ?', ["%{$term}%"])
-                ->orWhereRaw('LOWER(name_ml) LIKE ?', ["%{$term}%"])
-                ->orWhereRaw('JSON_SEARCH(LOWER(aliases), "one", ?) IS NOT NULL', ["%{$term}%"]);
+                ->orWhereRaw('LOWER(name_ml) LIKE ?', ["%{$term}%"]);
         });
     }
 
@@ -169,7 +175,7 @@ class FishType extends Model
     */
 
     /**
-     * Get display name (English with emoji).
+     * Display name with emoji.
      */
     public function getDisplayNameAttribute(): string
     {
@@ -177,7 +183,7 @@ class FishType extends Model
     }
 
     /**
-     * Get display name in Malayalam.
+     * Display name in Malayalam.
      */
     public function getDisplayNameMlAttribute(): string
     {
@@ -185,7 +191,7 @@ class FishType extends Model
     }
 
     /**
-     * Get bilingual display name.
+     * Bilingual name: "🐟 Sardine (Mathi)".
      */
     public function getBilingualNameAttribute(): string
     {
@@ -193,51 +199,40 @@ class FishType extends Model
     }
 
     /**
-     * Get typical price range display.
+     * Category display.
+     */
+    public function getCategoryDisplayAttribute(): string
+    {
+        return match ($this->category) {
+            self::CATEGORY_SEA_FISH => '🌊 Sea Fish',
+            self::CATEGORY_FRESH_WATER => '🏞️ Fresh Water',
+            self::CATEGORY_SHELLFISH => '🦐 Shellfish',
+            default => '🐟 Fish',
+        };
+    }
+
+    /**
+     * Price range display.
      */
     public function getPriceRangeAttribute(): ?string
     {
         if (!$this->typical_price_min && !$this->typical_price_max) {
             return null;
         }
-
         if ($this->typical_price_min && $this->typical_price_max) {
-            return '₹' . number_format($this->typical_price_min) .
-                ' - ₹' . number_format($this->typical_price_max) . '/kg';
+            return '₹' . (int) $this->typical_price_min . '-' . (int) $this->typical_price_max . '/kg';
         }
-
-        if ($this->typical_price_min) {
-            return 'From ₹' . number_format($this->typical_price_min) . '/kg';
-        }
-
-        return 'Up to ₹' . number_format($this->typical_price_max) . '/kg';
+        return $this->typical_price_min 
+            ? '₹' . (int) $this->typical_price_min . '+/kg'
+            : '~₹' . (int) $this->typical_price_max . '/kg';
     }
 
     /**
-     * Check if fish is currently in season.
+     * List item ID.
      */
-    public function getIsInSeasonAttribute(): bool
+    public function getListIdAttribute(): string
     {
-        if (!$this->is_seasonal) {
-            return true;
-        }
-
-        $currentMonth = (int) now()->format('n');
-        return in_array($currentMonth, $this->peak_seasons ?? []);
-    }
-
-    /**
-     * Get category display name.
-     */
-    public function getCategoryDisplayAttribute(): string
-    {
-        return match ($this->category) {
-            self::CATEGORY_SEA_FISH => '🌊 Sea Fish',
-            self::CATEGORY_FRESHWATER => '🏞️ Freshwater',
-            self::CATEGORY_SHELLFISH => '🐚 Shellfish',
-            self::CATEGORY_CRUSTACEAN => '🦐 Crustacean',
-            default => '🐟 Fish',
-        };
+        return 'fish_' . $this->id;
     }
 
     /*
@@ -251,67 +246,68 @@ class FishType extends Model
      */
     public function toListItem(): array
     {
-        $description = $this->name_ml;
-        if ($this->is_in_season && $this->is_seasonal) {
-            $description .= ' • In Season';
-        }
-
         return [
-            'id' => 'fish_' . $this->id,
+            'id' => $this->list_id,
             'title' => substr($this->display_name, 0, 24),
-            'description' => substr($description, 0, 72),
+            'description' => substr($this->name_ml . ($this->season_peak ? ' • ' . $this->season_peak : ''), 0, 72),
         ];
     }
 
     /**
-     * Get popular fish types as list items.
+     * Find by list ID.
      */
-    public static function getPopularListItems(int $limit = 10): array
+    public static function findByListId(string $listId): ?self
+    {
+        $id = (int) str_replace('fish_', '', $listId);
+        return $id > 0 ? self::find($id) : null;
+    }
+
+    /**
+     * Get popular fish as list items.
+     */
+    public static function getPopularListItems(int $limit = 8): array
     {
         return self::active()
             ->popular()
-            ->orderBy('sort_order')
+            ->ordered()
             ->limit($limit)
             ->get()
-            ->map(fn($fish) => $fish->toListItem())
+            ->map(fn($f) => $f->toListItem())
             ->toArray();
     }
 
     /**
-     * Get all active fish types grouped by category.
+     * Get fish grouped by category.
      */
     public static function getGroupedByCategory(): array
     {
-        $types = self::active()
-            ->orderBy('sort_order')
-            ->orderBy('name_en')
-            ->get();
-
-        return $types->groupBy('category')
-            ->map(fn($group) => $group->map(fn($fish) => $fish->toListItem())->toArray())
+        return self::active()
+            ->ordered()
+            ->get()
+            ->groupBy('category')
+            ->map(fn($group) => $group->map(fn($f) => $f->toListItem())->toArray())
             ->toArray();
     }
 
     /**
-     * Get list sections for WhatsApp.
+     * Get WhatsApp list sections by category.
      */
     public static function getListSections(): array
     {
         $grouped = self::getGroupedByCategory();
         $sections = [];
 
-        $categoryLabels = [
+        $labels = [
             self::CATEGORY_SEA_FISH => '🌊 Sea Fish',
-            self::CATEGORY_FRESHWATER => '🏞️ Freshwater',
-            self::CATEGORY_SHELLFISH => '🐚 Shellfish',
-            self::CATEGORY_CRUSTACEAN => '🦐 Crustacean',
+            self::CATEGORY_FRESH_WATER => '🏞️ Fresh Water',
+            self::CATEGORY_SHELLFISH => '🦐 Shellfish',
         ];
 
-        foreach ($categoryLabels as $category => $label) {
-            if (isset($grouped[$category]) && count($grouped[$category]) > 0) {
+        foreach ($labels as $cat => $label) {
+            if (!empty($grouped[$cat])) {
                 $sections[] = [
                     'title' => $label,
-                    'rows' => array_slice($grouped[$category], 0, 10),
+                    'rows' => array_slice($grouped[$cat], 0, 10),
                 ];
             }
         }
@@ -320,12 +316,20 @@ class FishType extends Model
     }
 
     /**
-     * Find by list item ID.
+     * Seed SRS fish types.
      */
-    public static function findByListId(string $listId): ?self
+    public static function seedSrsTypes(): void
     {
-        $id = str_replace('fish_', '', $listId);
-        return self::find($id);
+        foreach (self::SRS_FISH_TYPES as $i => $data) {
+            self::updateOrCreate(
+                ['name_en' => $data['name_en']],
+                array_merge($data, [
+                    'slug' => Str::slug($data['name_en']),
+                    'sort_order' => $i + 1,
+                    'is_active' => true,
+                ])
+            );
+        }
     }
 
     /*
@@ -341,6 +345,9 @@ class FishType extends Model
         static::creating(function ($model) {
             if (empty($model->slug)) {
                 $model->slug = Str::slug($model->name_en);
+            }
+            if (empty($model->emoji)) {
+                $model->emoji = '🐟';
             }
         });
     }

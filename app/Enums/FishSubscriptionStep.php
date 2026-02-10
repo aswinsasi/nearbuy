@@ -1,108 +1,91 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
  * Steps in the fish subscription flow.
  *
- * @srs-ref Section 2.3.3 - Customer Subscription
+ * Flow: Fish Types → Location → Radius → Time → Confirm → Done
+ *
+ * @srs-ref PM-011 to PM-015 Customer Subscription
  */
 enum FishSubscriptionStep: string
 {
-    case SELECT_LOCATION = 'select_location';
-    case SELECT_FISH_TYPES = 'select_fish_types';
-    case SET_RADIUS = 'set_radius';
-    case SET_FREQUENCY = 'set_frequency';
+    // Setup flow
+    case ASK_FISH_TYPES = 'ask_fish_types';
+    case ASK_LOCATION = 'ask_location';
+    case ASK_RADIUS = 'ask_radius';
+    case ASK_TIME = 'ask_time';
     case CONFIRM = 'confirm';
-    case COMPLETE = 'complete';
+    case DONE = 'done';
+
+    // Management steps (PM-015)
     case MANAGE = 'manage';
+    case CHANGE_FISH = 'change_fish';
+    case CHANGE_LOCATION = 'change_location';
+    case CHANGE_RADIUS = 'change_radius';
+    case CHANGE_TIME = 'change_time';
 
     /**
-     * Get the display label.
-     */
-    public function label(): string
-    {
-        return match ($this) {
-            self::SELECT_LOCATION => 'Select Location',
-            self::SELECT_FISH_TYPES => 'Select Fish Types',
-            self::SET_RADIUS => 'Set Alert Radius',
-            self::SET_FREQUENCY => 'Alert Frequency',
-            self::CONFIRM => 'Confirm Subscription',
-            self::COMPLETE => 'Complete',
-            self::MANAGE => 'Manage Subscriptions',
-        };
-    }
-
-    /**
-     * Get the step number (1-based).
+     * Get step number (1-based).
      */
     public function stepNumber(): int
     {
         return match ($this) {
-            self::SELECT_LOCATION => 1,
-            self::SELECT_FISH_TYPES => 2,
-            self::SET_RADIUS => 3,
-            self::SET_FREQUENCY => 4,
+            self::ASK_FISH_TYPES => 1,
+            self::ASK_LOCATION => 2,
+            self::ASK_RADIUS => 3,
+            self::ASK_TIME => 4,
             self::CONFIRM => 5,
-            self::COMPLETE => 6,
-            self::MANAGE => 0, // Not part of setup flow
+            self::DONE => 6,
+            default => 0,
         };
     }
 
     /**
-     * Get progress percentage.
-     */
-    public function progress(): int
-    {
-        return match ($this) {
-            self::SELECT_LOCATION => 20,
-            self::SELECT_FISH_TYPES => 40,
-            self::SET_RADIUS => 60,
-            self::SET_FREQUENCY => 80,
-            self::CONFIRM => 90,
-            self::COMPLETE => 100,
-            self::MANAGE => 100,
-        };
-    }
-
-    /**
-     * Get the next step.
+     * Get next step.
      */
     public function next(): ?self
     {
         return match ($this) {
-            self::SELECT_LOCATION => self::SELECT_FISH_TYPES,
-            self::SELECT_FISH_TYPES => self::SET_RADIUS,
-            self::SET_RADIUS => self::SET_FREQUENCY,
-            self::SET_FREQUENCY => self::CONFIRM,
-            self::CONFIRM => self::COMPLETE,
-            self::COMPLETE => null,
-            self::MANAGE => null,
+            self::ASK_FISH_TYPES => self::ASK_LOCATION,
+            self::ASK_LOCATION => self::ASK_RADIUS,
+            self::ASK_RADIUS => self::ASK_TIME,
+            self::ASK_TIME => self::CONFIRM,
+            self::CONFIRM => self::DONE,
+            default => null,
         };
     }
 
     /**
-     * Get the previous step.
+     * Get previous step.
      */
     public function previous(): ?self
     {
         return match ($this) {
-            self::SELECT_LOCATION => null,
-            self::SELECT_FISH_TYPES => self::SELECT_LOCATION,
-            self::SET_RADIUS => self::SELECT_FISH_TYPES,
-            self::SET_FREQUENCY => self::SET_RADIUS,
-            self::CONFIRM => self::SET_FREQUENCY,
-            self::COMPLETE => self::CONFIRM,
-            self::MANAGE => null,
+            self::ASK_LOCATION => self::ASK_FISH_TYPES,
+            self::ASK_RADIUS => self::ASK_LOCATION,
+            self::ASK_TIME => self::ASK_RADIUS,
+            self::CONFIRM => self::ASK_TIME,
+            default => null,
         };
     }
 
     /**
-     * Check if this step can go back.
+     * Check if setup step.
      */
-    public function canGoBack(): bool
+    public function isSetupStep(): bool
     {
-        return $this->previous() !== null;
+        return in_array($this, [
+            self::ASK_FISH_TYPES,
+            self::ASK_LOCATION,
+            self::ASK_RADIUS,
+            self::ASK_TIME,
+            self::CONFIRM,
+            self::DONE,
+        ]);
     }
 
     /**
@@ -111,26 +94,37 @@ enum FishSubscriptionStep: string
     public function expectedInput(): string
     {
         return match ($this) {
-            self::SELECT_LOCATION => 'location',
-            self::SELECT_FISH_TYPES => 'list',
-            self::SET_RADIUS => 'button',
-            self::SET_FREQUENCY => 'list',
+            self::ASK_FISH_TYPES => 'list',
+            self::ASK_LOCATION => 'location',
+            self::ASK_RADIUS => 'button',
+            self::ASK_TIME => 'button',
             self::CONFIRM => 'button',
-            self::COMPLETE => 'none',
-            self::MANAGE => 'list',
+            default => 'any',
         };
     }
 
     /**
-     * Check if step is part of setup flow.
+     * Get display label.
      */
-    public function isSetupStep(): bool
+    public function label(): string
     {
-        return !in_array($this, [self::MANAGE]);
+        return match ($this) {
+            self::ASK_FISH_TYPES => 'Select Fish',
+            self::ASK_LOCATION => 'Share Location',
+            self::ASK_RADIUS => 'Set Radius',
+            self::ASK_TIME => 'Alert Time',
+            self::CONFIRM => 'Confirm',
+            self::DONE => 'Done',
+            self::MANAGE => 'Manage',
+            self::CHANGE_FISH => 'Change Fish',
+            self::CHANGE_LOCATION => 'Change Location',
+            self::CHANGE_RADIUS => 'Change Radius',
+            self::CHANGE_TIME => 'Change Time',
+        };
     }
 
     /**
-     * Get all values as array.
+     * Get all values.
      */
     public static function values(): array
     {

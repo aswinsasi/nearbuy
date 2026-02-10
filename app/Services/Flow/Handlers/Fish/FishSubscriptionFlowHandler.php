@@ -5,33 +5,29 @@ declare(strict_types=1);
 namespace App\Services\Flow\Handlers\Fish;
 
 use App\DTOs\IncomingMessage;
+use App\Enums\FishAlertFrequency;
+use App\Enums\FishSubscriptionStep;
 use App\Enums\FlowType;
 use App\Models\ConversationSession;
+use App\Models\FishSubscription;
 use App\Models\FishType;
 use App\Services\Fish\FishSubscriptionService;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\FishMessages;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Handler for fish alert subscription flow.
+ * Fish Subscription Flow Handler.
  *
- * Supports multi-select fish types with category browsing.
+ * Flow: Fish Types → Location → Radius → Time → Confirm
  *
- * @srs-ref Pacha Meen Module - Customer Subscription Flow
+ * SHORT bilingual messages (Malayalam + English).
+ *
+ * @srs-ref PM-011 to PM-014 Customer Subscription
  */
 class FishSubscriptionFlowHandler extends AbstractFlowHandler
 {
-    protected const STEP_LOCATION = 'select_location';
-    protected const STEP_RADIUS = 'set_radius';
-    protected const STEP_FISH_TYPES = 'select_fish_types';
-    protected const STEP_SELECT_CATEGORY = 'select_category';
-    protected const STEP_SELECT_FISH_IN_CATEGORY = 'select_fish_in_category';
-    protected const STEP_FREQUENCY = 'set_frequency';
-    protected const STEP_CONFIRM = 'confirm';
-
     public function __construct(
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
@@ -47,33 +43,28 @@ class FishSubscriptionFlowHandler extends AbstractFlowHandler
 
     protected function getSteps(): array
     {
-        return [
-            self::STEP_LOCATION,
-            self::STEP_RADIUS,
-            self::STEP_FISH_TYPES,
-            self::STEP_SELECT_CATEGORY,
-            self::STEP_SELECT_FISH_IN_CATEGORY,
-            self::STEP_FREQUENCY,
-            self::STEP_CONFIRM,
-        ];
+        return FishSubscriptionStep::values();
     }
 
     public function start(ConversationSession $session): void
     {
+        // Check if already subscribed
         $user = $this->getUser($session);
-
-        // Check if user already has location
-        if ($user && $user->latitude && $user->longitude) {
-            $this->setTemp($session, 'latitude', $user->latitude);
-            $this->setTemp($session, 'longitude', $user->longitude);
-            $this->nextStep($session, self::STEP_RADIUS);
-            $this->showRadiusOptions($session);
+        if ($user && $this->subscriptionService->hasActiveSubscription($user)) {
+            $this->sendButtons(
+                $session->phone,
+                "🐟 *Already subscribed!*\n\nManage your alerts?",
+                [
+                    ['id' => 'fish_manage', 'title' => '⚙️ Manage Alerts'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
+            );
             return;
         }
 
-        $this->nextStep($session, self::STEP_LOCATION);
-        $response = FishMessages::subscriptionWelcome();
-        $this->sendFishMessage($session->phone, $response);
+        // Start: Ask fish types (PM-011)
+        $this->nextStep($session, FishSubscriptionStep::ASK_FISH_TYPES->value);
+        $this->askFishTypes($session);
     }
 
     public function handle(IncomingMessage $message, ConversationSession $session): void
@@ -82,23 +73,203 @@ class FishSubscriptionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $step = $session->current_step;
-
-        Log::debug('FishSubscriptionFlowHandler', [
-            'step' => $step,
-            'message_type' => $message->type,
-        ]);
+        $step = FishSubscriptionStep::tryFrom($session->current_step);
 
         match ($step) {
-            self::STEP_LOCATION => $this->handleLocation($message, $session),
-            self::STEP_RADIUS => $this->handleRadius($message, $session),
-            self::STEP_FISH_TYPES => $this->handleFishTypes($message, $session),
-            self::STEP_SELECT_CATEGORY => $this->handleCategorySelection($message, $session),
-            self::STEP_SELECT_FISH_IN_CATEGORY => $this->handleFishInCategorySelection($message, $session),
-            self::STEP_FREQUENCY => $this->handleFrequency($message, $session),
-            self::STEP_CONFIRM => $this->handleConfirm($message, $session),
+            FishSubscriptionStep::ASK_FISH_TYPES => $this->handleFishTypes($message, $session),
+            FishSubscriptionStep::ASK_LOCATION => $this->handleLocation($message, $session),
+            FishSubscriptionStep::ASK_RADIUS => $this->handleRadius($message, $session),
+            FishSubscriptionStep::ASK_TIME => $this->handleTime($message, $session),
+            FishSubscriptionStep::CONFIRM => $this->handleConfirm($message, $session),
             default => $this->start($session),
         };
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 1: Fish Types (PM-011)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askFishTypes(ConversationSession $session): void
+    {
+        $popular = $this->subscriptionService->getPopularFishTypes(6);
+
+        $rows = [
+            ['id' => 'fish_all', 'title' => '🐟 All Fish', 'description' => 'Get alerts for all types'],
+        ];
+
+        foreach ($popular as $fish) {
+            $rows[] = [
+                'id' => 'fish_' . $fish->id,
+                'title' => substr($fish->emoji . ' ' . $fish->name_en, 0, 24),
+                'description' => $fish->name_ml,
+            ];
+        }
+
+        $rows[] = ['id' => 'fish_more', 'title' => '📋 More Types...', 'description' => 'See all categories'];
+
+        $this->sendList(
+            $session->phone,
+            "🐟 *Pacha Meen Alerts!*\n\nEthodhu meen vendathu?\nWhich fish do you want?",
+            'Select Fish',
+            [['title' => '🐟 Fish Types', 'rows' => array_slice($rows, 0, 10)]]
+        );
+    }
+
+    protected function handleFishTypes(IncomingMessage $message, ConversationSession $session): void
+    {
+        $selection = $this->getSelectionId($message);
+
+        // All fish
+        if ($selection === 'fish_all') {
+            $this->setTempData($session, 'all_fish_types', true);
+            $this->setTempData($session, 'fish_type_ids', []);
+            $this->nextStep($session, FishSubscriptionStep::ASK_LOCATION->value);
+            $this->askLocation($session);
+            return;
+        }
+
+        // More types - show categories
+        if ($selection === 'fish_more') {
+            $this->showFishCategories($session);
+            return;
+        }
+
+        // Category selection
+        if ($selection && str_starts_with($selection, 'cat_')) {
+            $category = str_replace('cat_', '', $selection);
+            $this->showFishInCategory($session, $category);
+            return;
+        }
+
+        // Done selecting
+        if ($selection === 'done_fish') {
+            $ids = $this->getTempData($session, 'fish_type_ids', []);
+            if (empty($ids)) {
+                $this->setTempData($session, 'all_fish_types', true);
+            }
+            $this->nextStep($session, FishSubscriptionStep::ASK_LOCATION->value);
+            $this->askLocation($session);
+            return;
+        }
+
+        // Individual fish toggle
+        if ($selection && str_starts_with($selection, 'fish_')) {
+            $fishId = (int) str_replace('fish_', '', $selection);
+            if ($fishId > 0) {
+                $this->toggleFish($session, $fishId);
+                
+                // Quick feedback and continue
+                $ids = $this->getTempData($session, 'fish_type_ids', []);
+                $count = count($ids);
+                
+                $this->sendButtons(
+                    $session->phone,
+                    "✅ {$count} fish selected.\n\nAdd more or continue?",
+                    [
+                        ['id' => 'fish_more', 'title' => '➕ Add More'],
+                        ['id' => 'done_fish', 'title' => '✅ Continue'],
+                    ]
+                );
+                return;
+            }
+        }
+
+        // Default
+        $this->askFishTypes($session);
+    }
+
+    protected function showFishCategories(ConversationSession $session): void
+    {
+        $selected = $this->getTempData($session, 'fish_type_ids', []);
+        $count = count($selected);
+
+        $rows = [
+            ['id' => 'cat_sea_fish', 'title' => '🌊 Sea Fish', 'description' => 'Mathi, Ayala, Choora...'],
+            ['id' => 'cat_freshwater', 'title' => '🏞️ Freshwater', 'description' => 'Karimeen, Tilapia...'],
+            ['id' => 'cat_shellfish', 'title' => '🐚 Shellfish', 'description' => 'Mussels, Clams...'],
+            ['id' => 'cat_crustacean', 'title' => '🦐 Prawns & Crabs', 'description' => 'Konju, Njandu...'],
+            ['id' => 'done_fish', 'title' => '✅ Done', 'description' => $count > 0 ? "{$count} selected" : 'Continue'],
+        ];
+
+        $body = "📂 *Select category:*";
+        if ($count > 0) {
+            $body .= "\n\n✅ {$count} fish selected";
+        }
+
+        $this->sendList($session->phone, $body, 'Categories', [['title' => 'Categories', 'rows' => $rows]]);
+    }
+
+    protected function showFishInCategory(ConversationSession $session, string $category): void
+    {
+        $fishTypes = FishType::active()
+            ->where('category', $category)
+            ->orderBy('sort_order')
+            ->limit(8)
+            ->get();
+
+        $selected = $this->getTempData($session, 'fish_type_ids', []);
+
+        $rows = [];
+        foreach ($fishTypes as $fish) {
+            $isSelected = in_array($fish->id, $selected);
+            $prefix = $isSelected ? '✅ ' : '';
+            $rows[] = [
+                'id' => 'fish_' . $fish->id,
+                'title' => substr($prefix . $fish->name_en, 0, 24),
+                'description' => $fish->name_ml,
+            ];
+        }
+
+        $rows[] = ['id' => 'fish_more', 'title' => '⬅️ Back', 'description' => 'Other categories'];
+        $rows[] = ['id' => 'done_fish', 'title' => '✅ Done', 'description' => 'Continue'];
+
+        $this->sendList(
+            $session->phone,
+            "Tap to select/deselect:",
+            'Select',
+            [['title' => $category, 'rows' => array_slice($rows, 0, 10)]]
+        );
+    }
+
+    protected function toggleFish(ConversationSession $session, int $fishId): void
+    {
+        $ids = $this->getTempData($session, 'fish_type_ids', []);
+        
+        if (in_array($fishId, $ids)) {
+            $ids = array_values(array_diff($ids, [$fishId]));
+        } else {
+            $ids[] = $fishId;
+        }
+        
+        $this->setTempData($session, 'fish_type_ids', array_unique($ids));
+        $this->setTempData($session, 'all_fish_types', false);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 2: Location (PM-012)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askLocation(ConversationSession $session): void
+    {
+        // Check if user already has location
+        $user = $this->getUser($session);
+        if ($user?->latitude && $user?->longitude) {
+            $this->setTempData($session, 'latitude', $user->latitude);
+            $this->setTempData($session, 'longitude', $user->longitude);
+            $this->nextStep($session, FishSubscriptionStep::ASK_RADIUS->value);
+            $this->askRadius($session);
+            return;
+        }
+
+        $this->sendButtons(
+            $session->phone,
+            "📍 *Location share cheyyuka*\n\nNearby sellers-nu alert kittaan.\n\n📎 → Location tap cheyyuka",
+            [['id' => 'main_menu', 'title' => '🏠 Menu']]
+        );
     }
 
     protected function handleLocation(IncomingMessage $message, ConversationSession $session): void
@@ -106,238 +277,177 @@ class FishSubscriptionFlowHandler extends AbstractFlowHandler
         $location = $this->getLocation($message);
 
         if ($location) {
-            $this->setTemp($session, 'latitude', $location['latitude']);
-            $this->setTemp($session, 'longitude', $location['longitude']);
+            $this->setTempData($session, 'latitude', $location['latitude']);
+            $this->setTempData($session, 'longitude', $location['longitude']);
 
-            // Update user location
+            // Save to user
             $user = $this->getUser($session);
-            if ($user) {
-                $user->update([
-                    'latitude' => $location['latitude'],
-                    'longitude' => $location['longitude'],
-                ]);
-            }
+            $user?->update([
+                'latitude' => $location['latitude'],
+                'longitude' => $location['longitude'],
+            ]);
 
-            $this->nextStep($session, self::STEP_RADIUS);
-            $this->showRadiusOptions($session);
+            $this->nextStep($session, FishSubscriptionStep::ASK_RADIUS->value);
+            $this->askRadius($session);
             return;
         }
 
-        $response = FishMessages::askSubscriptionLocation();
-        $this->sendFishMessage($session->phone, $response);
+        $this->askLocation($session);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Step 3: Radius (PM-013)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askRadius(ConversationSession $session): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            "📏 *Evide vare alerts vendam?*\nHow far to search?",
+            [
+                ['id' => 'radius_2', 'title' => '2 km - Very Near'],
+                ['id' => 'radius_5', 'title' => '5 km - Normal ✓'],
+                ['id' => 'radius_10', 'title' => '10 km - Far'],
+            ]
+        );
     }
 
     protected function handleRadius(IncomingMessage $message, ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
+        $selection = $this->getSelectionId($message);
         $text = $this->getTextContent($message);
 
         $radius = null;
 
-        if ($selectionId && preg_match('/^radius_(\d+)$/', $selectionId, $matches)) {
-            $radius = (int) $matches[1];
+        if ($selection && preg_match('/radius_(\d+)/', $selection, $m)) {
+            $radius = (int) $m[1];
         } elseif ($text && is_numeric(trim($text))) {
             $radius = (int) trim($text);
         }
 
         if ($radius && $radius >= 1 && $radius <= 50) {
-            $this->setTemp($session, 'radius_km', $radius);
-            $this->nextStep($session, self::STEP_FISH_TYPES);
-            $this->showFishTypeOptions($session);
+            $this->setTempData($session, 'radius_km', $radius);
+            $this->nextStep($session, FishSubscriptionStep::ASK_TIME->value);
+            $this->askTime($session);
             return;
         }
 
-        $this->showRadiusOptions($session);
+        $this->askRadius($session);
     }
 
-    protected function handleFishTypes(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 4: Time Preference (PM-014)
+    |--------------------------------------------------------------------------
+    */
+
+    protected function askTime(ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
-
-        // Handle "All Fish Types" button
-        if ($selectionId === 'fish_pref_all') {
-            $this->setTemp($session, 'fish_type_ids', []);
-            $this->setTemp($session, 'all_fish_types', true);
-            $this->nextStep($session, self::STEP_FREQUENCY);
-            $this->showFrequencyOptions($session);
-            return;
-        }
-
-        // Handle "Select Specific Types" button - show categories
-        if ($selectionId === 'fish_pref_select') {
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $this->showCategorySelection($session);
-            return;
-        }
-
-        // Default: show the preference options
-        $this->showFishTypeOptions($session);
+        $this->sendButtons(
+            $session->phone,
+            "⏰ *Eppozhaa alert vendam?*\nWhen do you want alerts?",
+            [
+                ['id' => 'freq_immediate', 'title' => '🔔 Anytime'],
+                ['id' => 'freq_morning_only', 'title' => '🌅 Morning (6-8AM)'],
+                ['id' => 'freq_twice_daily', 'title' => '☀️ Twice Daily'],
+            ]
+        );
     }
 
-    /**
-     * Handle category selection.
-     */
-    protected function handleCategorySelection(IncomingMessage $message, ConversationSession $session): void
+    protected function handleTime(IncomingMessage $message, ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
-        $text = strtolower(trim($this->getTextContent($message) ?? ''));
+        $selection = $this->getSelectionId($message);
 
-        // Handle "Done" - proceed to frequency
-        if ($selectionId === 'done_selecting' || $text === 'done') {
-            $fishTypeIds = $this->getTemp($session, 'fish_type_ids', []);
-            if (empty($fishTypeIds)) {
-                $this->setTemp($session, 'all_fish_types', true);
-            }
-            $this->nextStep($session, self::STEP_FREQUENCY);
-            $this->showFrequencyOptions($session);
+        $frequency = match ($selection) {
+            'freq_immediate' => FishAlertFrequency::IMMEDIATE,
+            'freq_morning_only' => FishAlertFrequency::MORNING_ONLY,
+            'freq_twice_daily' => FishAlertFrequency::TWICE_DAILY,
+            'freq_weekly_digest' => FishAlertFrequency::WEEKLY_DIGEST,
+            default => null,
+        };
+
+        if ($frequency) {
+            $this->setTempData($session, 'frequency', $frequency->value);
+            $this->nextStep($session, FishSubscriptionStep::CONFIRM->value);
+            $this->showConfirmation($session);
             return;
         }
 
-        // Handle "Select All Fish"
-        if ($selectionId === 'select_all_fish') {
-            $this->setTemp($session, 'fish_type_ids', []);
-            $this->setTemp($session, 'all_fish_types', true);
-            $this->nextStep($session, self::STEP_FREQUENCY);
-            $this->showFrequencyOptions($session);
-            return;
-        }
-
-        // Handle "Popular Fish" selection
-        if ($selectionId === 'cat_popular') {
-            $this->setTemp($session, 'current_category', '_popular');
-            $this->nextStep($session, self::STEP_SELECT_FISH_IN_CATEGORY);
-            $this->showFishInCategory($session, '_popular');
-            return;
-        }
-
-        // Handle category selection (cat_xxx format)
-        if ($selectionId && str_starts_with($selectionId, 'cat_')) {
-            $categoryKey = str_replace('cat_', '', $selectionId);
-            $category = $this->getCategoryByKey($categoryKey);
-            
-            if ($category) {
-                $this->setTemp($session, 'current_category', $category);
-                $this->nextStep($session, self::STEP_SELECT_FISH_IN_CATEGORY);
-                $this->showFishInCategory($session, $category);
-                return;
-            }
-        }
-
-        // Default: show categories
-        $this->showCategorySelection($session);
+        $this->askTime($session);
     }
 
-    /**
-     * Handle fish selection within a category (checkbox-style multi-select).
-     */
-    protected function handleFishInCategorySelection(IncomingMessage $message, ConversationSession $session): void
+    /*
+    |--------------------------------------------------------------------------
+    | Step 5: Confirm
+    |--------------------------------------------------------------------------
+    */
+
+    protected function showConfirmation(ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
-        $text = trim($this->getTextContent($message) ?? '');
-        $category = $this->getTemp($session, 'current_category');
+        $allFish = $this->getTempData($session, 'all_fish_types', false);
+        $fishIds = $this->getTempData($session, 'fish_type_ids', []);
+        $radius = $this->getTempData($session, 'radius_km', 5);
+        $freq = $this->getTempData($session, 'frequency', 'immediate');
 
-        // Handle "Back to Categories"
-        if ($selectionId === 'back_to_categories') {
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $this->showCategorySelection($session);
-            return;
+        // Fish display
+        if ($allFish || empty($fishIds)) {
+            $fishText = '🐟 All fish';
+        } else {
+            $count = count($fishIds);
+            $fishText = "🐟 {$count} types";
         }
 
-        // Handle "Done with this category"
-        if ($selectionId === 'done_category') {
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $this->showCategorySelection($session);
-            return;
-        }
+        // Frequency display
+        $freqEnum = FishAlertFrequency::tryFrom($freq);
+        $freqText = $freqEnum ? $freqEnum->emoji() . ' ' . $freqEnum->label() : '🔔 Anytime';
 
-        // Handle "Finish Selection" - proceed to frequency
-        if ($selectionId === 'finish_selection') {
-            $fishTypeIds = $this->getTemp($session, 'fish_type_ids', []);
-            if (empty($fishTypeIds)) {
-                $this->setTemp($session, 'all_fish_types', true);
-            }
-            $this->nextStep($session, self::STEP_FREQUENCY);
-            $this->showFrequencyOptions($session);
-            return;
-        }
-
-        // Handle "Select All in Category"
-        if ($selectionId === 'select_all_category') {
-            $this->selectAllInCategory($session, $category);
-            $this->showFishInCategory($session, $category);
-            return;
-        }
-
-        // Handle "Clear Category"
-        if ($selectionId === 'clear_category') {
-            $this->clearCategorySelection($session, $category);
-            $this->showFishInCategory($session, $category);
-            return;
-        }
-
-        // Handle number-based toggle selection (e.g., "1", "1,3,5", "1 3 5")
-        if ($text && preg_match('/^[\d,\s]+$/', $text)) {
-            $this->handleNumberToggle($session, $text, $category);
-            $this->showFishInCategory($session, $category);
-            return;
-        }
-
-        // Handle individual fish toggle from list (fish_123 format)
-        if ($selectionId && str_starts_with($selectionId, 'fish_')) {
-            $fishId = (int) str_replace('fish_', '', $selectionId);
-            $this->toggleFishSelection($session, $fishId);
-            $this->showFishInCategory($session, $category);
-            return;
-        }
-
-        // Default: show fish in category
-        $this->showFishInCategory($session, $category);
-    }
-
-    protected function handleFrequency(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        if ($selectionId) {
-            // Use the enum's built-in parser
-            $frequency = \App\Enums\FishAlertFrequency::fromListId($selectionId);
-            
-            if ($frequency) {
-                $this->setTemp($session, 'frequency', $frequency->value);
-                $this->nextStep($session, self::STEP_CONFIRM);
-                $this->showConfirmation($session);
-                return;
-            }
-        }
-
-        $this->showFrequencyOptions($session);
+        $this->sendButtons(
+            $session->phone,
+            "📋 *Confirm Subscription:*\n\n" .
+                "{$fishText}\n" .
+                "📏 {$radius} km radius\n" .
+                "{$freqText}\n\n" .
+                "Subscribe cheyyano?",
+            [
+                ['id' => 'confirm_yes', 'title' => '✅ Subscribe'],
+                ['id' => 'confirm_edit', 'title' => '✏️ Edit'],
+                ['id' => 'confirm_cancel', 'title' => '❌ Cancel'],
+            ]
+        );
     }
 
     protected function handleConfirm(IncomingMessage $message, ConversationSession $session): void
     {
-        $selectionId = $this->getSelectionId($message);
+        $selection = $this->getSelectionId($message);
 
-        if ($selectionId === 'confirm_subscription') {
+        if ($selection === 'confirm_yes') {
             $this->createSubscription($session);
             return;
         }
 
-        if ($selectionId === 'edit_subscription') {
-            // Go back to fish type selection
-            $this->nextStep($session, self::STEP_SELECT_CATEGORY);
-            $this->showCategorySelection($session);
+        if ($selection === 'confirm_edit') {
+            $this->nextStep($session, FishSubscriptionStep::ASK_FISH_TYPES->value);
+            $this->askFishTypes($session);
             return;
         }
 
-        if ($selectionId === 'cancel_subscription') {
-            $this->clearTemp($session);
-            $this->sendTextWithMenu($session->phone, "❌ Subscription cancelled.");
-            $this->goToMainMenu($session);
+        if ($selection === 'confirm_cancel') {
+            $this->clearTempData($session);
+            $this->sendText($session->phone, "❌ Cancelled");
+            $this->goToMenu($session);
             return;
         }
 
         $this->showConfirmation($session);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Create Subscription
+    |--------------------------------------------------------------------------
+    */
 
     protected function createSubscription(ConversationSession $session): void
     {
@@ -345,400 +455,37 @@ class FishSubscriptionFlowHandler extends AbstractFlowHandler
 
         try {
             $subscription = $this->subscriptionService->createSubscription($user, [
-                'latitude' => (float) $this->getTemp($session, 'latitude'),
-                'longitude' => (float) $this->getTemp($session, 'longitude'),
-                'radius_km' => $this->getTemp($session, 'radius_km'),
-                'fish_type_ids' => $this->getTemp($session, 'fish_type_ids', []),
-                'all_fish_types' => $this->getTemp($session, 'all_fish_types', false),
-                'alert_frequency' => $this->getTemp($session, 'frequency'),
+                'latitude' => (float) $this->getTempData($session, 'latitude'),
+                'longitude' => (float) $this->getTempData($session, 'longitude'),
+                'radius_km' => $this->getTempData($session, 'radius_km', 5),
+                'fish_type_ids' => $this->getTempData($session, 'fish_type_ids', []),
+                'all_fish_types' => $this->getTempData($session, 'all_fish_types', false),
+                'alert_frequency' => $this->getTempData($session, 'frequency', 'immediate'),
             ]);
 
-            $this->clearTemp($session);
-            $response = FishMessages::subscriptionCreated($subscription);
-            $this->sendFishMessage($session->phone, $response);
-            $this->goToMainMenu($session);
+            $this->clearTempData($session);
+
+            // Success message
+            $this->sendButtons(
+                $session->phone,
+                "✅ *Subscribed!* 🐟🔔\n\n" .
+                    "{$subscription->fish_types_display}\n" .
+                    "📏 {$subscription->radius_km} km\n" .
+                    "{$subscription->alert_frequency->emoji()} {$subscription->frequency_display}\n\n" .
+                    "Meen varumbol ariyikkaam!",
+                [
+                    ['id' => 'fish_browse', 'title' => '🔍 Browse Now'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ]
+            );
 
         } catch (\Exception $e) {
-            Log::error('Failed to create subscription', ['error' => $e->getMessage()]);
-            $this->sendErrorWithOptions($session->phone, "❌ Failed to create subscription. Please try again.");
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Display Methods
-    |--------------------------------------------------------------------------
-    */
-
-    protected function showRadiusOptions(ConversationSession $session): void
-    {
-        $response = FishMessages::askAlertRadius();
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    protected function showFishTypeOptions(ConversationSession $session): void
-    {
-        $response = FishMessages::askFishPreferences();
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    /**
-     * Show category selection list.
-     */
-    protected function showCategorySelection(ConversationSession $session): void
-    {
-        $categories = FishType::active()
-            ->whereNotNull('category')
-            ->where('category', '!=', '')
-            ->select('category')
-            ->distinct()
-            ->orderBy('category')
-            ->pluck('category')
-            ->toArray();
-
-        $selectedIds = $this->getTemp($session, 'fish_type_ids', []);
-        $totalSelected = count($selectedIds);
-
-        // Build category rows
-        $rows = [];
-
-        // Add "Popular Fish" option first
-        $popularCount = FishType::active()->where('is_popular', true)->count();
-        $selectedPopular = FishType::active()
-            ->where('is_popular', true)
-            ->whereIn('id', $selectedIds)
-            ->count();
-        
-        $rows[] = [
-            'id' => 'cat_popular',
-            'title' => '⭐ Popular Fish',
-            'description' => $selectedPopular > 0 
-                ? "✅ {$selectedPopular}/{$popularCount} selected" 
-                : "{$popularCount} varieties",
-        ];
-
-        // Add categories
-        foreach (array_slice($categories, 0, 7) as $category) { // Limit to 7 categories + popular + done = 9
-            $fishCount = FishType::active()->where('category', $category)->count();
-            $selectedInCat = FishType::active()
-                ->where('category', $category)
-                ->whereIn('id', $selectedIds)
-                ->count();
-            
-            $catKey = $this->getCategoryKey($category);
-            
-            $rows[] = [
-                'id' => 'cat_' . $catKey,
-                'title' => substr($category, 0, 24),
-                'description' => $selectedInCat > 0 
-                    ? "✅ {$selectedInCat}/{$fishCount} selected" 
-                    : "{$fishCount} varieties",
-            ];
-        }
-
-        // Add "Done" option
-        $rows[] = [
-            'id' => 'done_selecting',
-            'title' => '✅ Done Selecting',
-            'description' => $totalSelected > 0 
-                ? "Continue with {$totalSelected} fish" 
-                : 'Continue without specific fish',
-        ];
-
-        $bodyText = "📂 *Select a category* to choose fish types.\n\n";
-        if ($totalSelected > 0) {
-            $bodyText .= "✅ *{$totalSelected} fish selected so far*\n\n";
-        }
-        $bodyText .= "_Tap a category to see fish, or 'Done' to continue_";
-
-        $response = [
-            'type' => 'list',
-            'header' => '🐟 Fish Categories',
-            'body' => $bodyText,
-            'button' => 'Select Category',
-            'sections' => [
-                [
-                    'title' => 'Categories',
-                    'rows' => $rows,
-                ],
-            ],
-        ];
-
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    /**
-     * Show fish types in a category with checkbox-style display.
-     */
-    protected function showFishInCategory(ConversationSession $session, string $category): void
-    {
-        // Get fish in category
-        if ($category === '_popular') {
-            $fishTypes = FishType::active()
-                ->where('is_popular', true)
-                ->orderBy('sort_order')
-                ->limit(15)
-                ->get();
-            $categoryTitle = '⭐ Popular Fish';
-        } else {
-            $fishTypes = FishType::active()
-                ->where('category', $category)
-                ->orderBy('sort_order')
-                ->limit(15)
-                ->get();
-            $categoryTitle = $category;
-        }
-
-        $selectedIds = $this->getTemp($session, 'fish_type_ids', []);
-        
-        // Store fish map for number-based selection
-        $fishMap = $fishTypes->pluck('id')->toArray();
-        $this->setTemp($session, 'fish_map', $fishMap);
-
-        // Build checkbox-style text list
-        $lines = [];
-        $lines[] = "🐟 *{$categoryTitle}*\n";
-        $lines[] = "Type numbers to toggle selection:";
-        $lines[] = "_Example: 1, 3, 5 or just 1_\n";
-
-        $selectedInCategory = 0;
-        foreach ($fishTypes as $index => $fish) {
-            $num = $index + 1;
-            $isSelected = in_array($fish->id, $selectedIds);
-            $checkbox = $isSelected ? '✅' : '⬜';
-            
-            if ($isSelected) {
-                $selectedInCategory++;
-            }
-            
-            $price = $fish->price_range ? " • {$fish->price_range}" : '';
-            $lines[] = "{$num}. {$checkbox} {$fish->display_name}{$price}";
-        }
-
-        $totalSelected = count($selectedIds);
-        $lines[] = "\n━━━━━━━━━━━━━━━";
-        $lines[] = "📊 *This category:* {$selectedInCategory}/{$fishTypes->count()} selected";
-        $lines[] = "📊 *Total selected:* {$totalSelected} fish";
-
-        // Send text message with fish list
-        $this->sendText($session->phone, implode("\n", $lines));
-
-        // Send action buttons
-        $buttons = [
-            ['id' => 'done_category', 'title' => '📂 More Categories'],
-            ['id' => 'finish_selection', 'title' => '✅ Finish'],
-        ];
-
-        // Add select all / clear based on current state
-        if ($selectedInCategory < $fishTypes->count()) {
-            array_unshift($buttons, ['id' => 'select_all_category', 'title' => '☑️ Select All']);
-        } else {
-            array_unshift($buttons, ['id' => 'clear_category', 'title' => '🔲 Clear All']);
-        }
-
-        $this->whatsApp->sendButtons(
-            $session->phone,
-            "Type numbers (1, 3, 5) to toggle fish,\nor use buttons below:",
-            array_slice($buttons, 0, 3), // WhatsApp max 3 buttons
-            null,
-            null
-        );
-    }
-
-    protected function showFrequencyOptions(ConversationSession $session): void
-    {
-        $response = FishMessages::askAlertFrequency();
-        $this->sendFishMessage($session->phone, $response);
-    }
-
-    protected function showConfirmation(ConversationSession $session): void
-    {
-        $radius = $this->getTemp($session, 'radius_km');
-        $frequencyValue = $this->getTemp($session, 'frequency');
-        $allFish = $this->getTemp($session, 'all_fish_types', false);
-        $fishTypeIds = $this->getTemp($session, 'fish_type_ids', []);
-
-        // Build fish display
-        if ($allFish || empty($fishTypeIds)) {
-            $fishDisplay = "🐟 All fish types";
-        } else {
-            // NEW - Get models first, then access accessor
-            $fishTypes = FishType::whereIn('id', $fishTypeIds)->get();
-            $fishNames = $fishTypes->map(fn($fish) => $fish->display_name)->toArray();
-            
-            $count = count($fishNames);
-            if ($count <= 5) {
-                $fishDisplay = "🐟 " . implode(", ", $fishNames);
-            } else {
-                $shown = array_slice($fishNames, 0, 5);
-                $fishDisplay = "🐟 " . implode(", ", $shown) . "\n   _+" . ($count - 5) . " more types_";
-            }
-        }
-
-        // Get frequency label from enum
-        $frequency = \App\Enums\FishAlertFrequency::tryFrom($frequencyValue);
-        $frequencyLabel = $frequency 
-            ? $frequency->emoji() . ' ' . $frequency->label()
-            : '🔔 ' . ucfirst(str_replace('_', ' ', $frequencyValue ?? 'immediate'));
-
-        $body = "Please confirm your subscription:\n\n" .
-            "📍 *Radius:* {$radius} km\n\n" .
-            "{$fishDisplay}\n\n" .
-            "{$frequencyLabel}\n\n" .
-            "Ready to subscribe?";
-
-        $this->whatsApp->sendButtons(
-            $session->phone,
-            $body,
-            [
-                ['id' => 'confirm_subscription', 'title' => '✅ Subscribe'],
-                ['id' => 'edit_subscription', 'title' => '✏️ Edit Fish'],
-                ['id' => 'cancel_subscription', 'title' => '❌ Cancel'],
-            ],
-            '📋 Confirm Subscription'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Helper Methods
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Toggle fish selection (add if not selected, remove if selected).
-     */
-    protected function toggleFishSelection(ConversationSession $session, int $fishId): void
-    {
-        $selectedIds = $this->getTemp($session, 'fish_type_ids', []);
-        
-        if (in_array($fishId, $selectedIds)) {
-            // Remove
-            $selectedIds = array_values(array_diff($selectedIds, [$fishId]));
-        } else {
-            // Add
-            $selectedIds[] = $fishId;
-        }
-        
-        $this->setTemp($session, 'fish_type_ids', array_unique($selectedIds));
-        $this->setTemp($session, 'all_fish_types', false);
-    }
-
-    /**
-     * Handle number-based toggle from text input.
-     */
-    protected function handleNumberToggle(ConversationSession $session, string $text, string $category): void
-    {
-        $fishMap = $this->getTemp($session, 'fish_map', []);
-        
-        if (empty($fishMap)) {
-            return;
-        }
-
-        // Parse numbers from input (supports "1", "1,3,5", "1 3 5", "1, 3, 5")
-        $numbers = array_filter(array_map('intval', preg_split('/[,\s]+/', $text)));
-        
-        foreach ($numbers as $num) {
-            $index = $num - 1; // Convert to 0-based index
-            if (isset($fishMap[$index])) {
-                $this->toggleFishSelection($session, $fishMap[$index]);
-            }
-        }
-    }
-
-    /**
-     * Select all fish in current category.
-     */
-    protected function selectAllInCategory(ConversationSession $session, string $category): void
-    {
-        if ($category === '_popular') {
-            $fishIds = FishType::active()
-                ->where('is_popular', true)
-                ->pluck('id')
-                ->toArray();
-        } else {
-            $fishIds = FishType::active()
-                ->where('category', $category)
-                ->pluck('id')
-                ->toArray();
-        }
-
-        $selectedIds = $this->getTemp($session, 'fish_type_ids', []);
-        $selectedIds = array_unique(array_merge($selectedIds, $fishIds));
-        
-        $this->setTemp($session, 'fish_type_ids', $selectedIds);
-        $this->setTemp($session, 'all_fish_types', false);
-    }
-
-    /**
-     * Clear all selections in current category.
-     */
-    protected function clearCategorySelection(ConversationSession $session, string $category): void
-    {
-        if ($category === '_popular') {
-            $fishIds = FishType::active()
-                ->where('is_popular', true)
-                ->pluck('id')
-                ->toArray();
-        } else {
-            $fishIds = FishType::active()
-                ->where('category', $category)
-                ->pluck('id')
-                ->toArray();
-        }
-
-        $selectedIds = $this->getTemp($session, 'fish_type_ids', []);
-        $selectedIds = array_values(array_diff($selectedIds, $fishIds));
-        
-        $this->setTemp($session, 'fish_type_ids', $selectedIds);
-    }
-
-    /**
-     * Generate a short key for category name.
-     */
-    protected function getCategoryKey(string $category): string
-    {
-        return substr(md5($category), 0, 8);
-    }
-
-    /**
-     * Get category name from key.
-     */
-    protected function getCategoryByKey(string $key): ?string
-    {
-        $categories = FishType::active()
-            ->whereNotNull('category')
-            ->where('category', '!=', '')
-            ->select('category')
-            ->distinct()
-            ->pluck('category')
-            ->toArray();
-
-        foreach ($categories as $category) {
-            if ($this->getCategoryKey($category) === $key) {
-                return $category;
-            }
-        }
-
-        return null;
-    }
-
-    protected function sendFishMessage(string $phone, array $response): void
-    {
-        $type = $response['type'] ?? 'text';
-
-        switch ($type) {
-            case 'text':
-                $this->sendText($phone, $response['text']);
-                break;
-            case 'buttons':
-                $this->sendButtons($phone, $response['body'] ?? '', $response['buttons'] ?? [], $response['header'] ?? null, $response['footer'] ?? null);
-                break;
-            case 'list':
-                $this->sendList($phone, $response['body'] ?? '', $response['button'] ?? 'Select', $response['sections'] ?? [], $response['header'] ?? null, $response['footer'] ?? null);
-                break;
-            default:
-                $this->sendText($phone, $response['text'] ?? '');
+            Log::error('Subscription failed', ['error' => $e->getMessage()]);
+            $this->sendButtons(
+                $session->phone,
+                "❌ Error. Try again.",
+                [['id' => 'fish_subscribe', 'title' => '🔄 Retry']]
+            );
         }
     }
 }

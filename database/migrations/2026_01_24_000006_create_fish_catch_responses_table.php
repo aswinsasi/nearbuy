@@ -59,6 +59,8 @@ return new class extends Migration
             $table->string('status', 30)->default('active')
                 ->comment('active, cancelled, completed');
             $table->timestamp('cancelled_at')->nullable();
+            $table->boolean('notified_sold_out')->default(false)
+                ->comment('Whether customer was notified about sold out status');
             
             $table->timestamps();
             
