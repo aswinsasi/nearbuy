@@ -5,10 +5,6 @@ declare(strict_types=1);
 namespace App\Services\Jobs;
 
 use App\Enums\JobStatus;
-use App\Enums\VehicleType;
-use App\Enums\WorkerAvailability;
-use App\Enums\WorkerVerificationStatus;
-use App\Models\JobCategory;
 use App\Models\JobPost;
 use App\Models\JobWorker;
 use Illuminate\Support\Collection;
@@ -18,14 +14,13 @@ use Illuminate\Support\Facades\Log;
 /**
  * Service for intelligent worker-job matching.
  *
- * Handles:
- * - Location-based matching using Haversine formula
- * - Multi-factor worker scoring
- * - Skill and availability matching
- * - Vehicle requirement matching
- * - Historical performance analysis
+ * NP-014 Requirements:
+ * - Match by: distance (within 5km) + job_type preference + availability
+ * - If < 3 workers within 5km → expand to 10km
+ * - Sort: distance first, then rating
+ * - Exclude: workers currently on a job (is_available=false)
  *
- * @srs-ref Section 3.3 - Job Matching Algorithm
+ * @srs-ref NP-014 - Notify matching workers within 5km radius
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobMatchingService
@@ -36,94 +31,113 @@ class JobMatchingService
     protected const EARTH_RADIUS_KM = 6371;
 
     /**
-     * Default search radius in kilometers.
+     * Primary search radius (NP-014).
      */
-    public const DEFAULT_RADIUS_KM = 5;
+    public const PRIMARY_RADIUS_KM = 5;
 
     /**
-     * Maximum search radius in kilometers.
+     * Extended radius if < 3 workers found.
+     */
+    public const EXTENDED_RADIUS_KM = 10;
+
+    /**
+     * Minimum workers before extending radius.
+     */
+    public const MIN_WORKERS_THRESHOLD = 3;
+
+    /**
+     * Maximum search radius.
      */
     public const MAX_RADIUS_KM = 25;
 
-    /**
-     * Scoring weights for worker matching.
-     */
-    protected const SCORING_WEIGHTS = [
-        'distance' => 0.25,        // Closer is better
-        'rating' => 0.25,          // Higher rating is better
-        'experience' => 0.15,      // More jobs completed is better
-        'availability' => 0.15,    // Matching availability is better
-        'response_rate' => 0.10,   // Higher acceptance rate is better
-        'reliability' => 0.10,     // Lower cancellation rate is better
-    ];
-
-    /**
-     * Minimum score threshold for recommendations.
-     */
-    protected const MIN_RECOMMENDATION_SCORE = 0.3;
-
     /*
     |--------------------------------------------------------------------------
-    | Primary Matching Methods
+    | Primary Matching (NP-014)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Find all workers matching a job's requirements.
+     * Find matching workers for a job.
+     *
+     * NP-014: Match within 5km, expand to 10km if <3 workers.
+     * Sort by distance first, then rating.
+     * Exclude workers with is_available=false.
      *
      * @param JobPost $job The job to match
-     * @param int $radiusKm Search radius in kilometers
-     * @return Collection Collection of matching JobWorker models
+     * @param int|null $radiusKm Optional override radius
+     * @return Collection Collection of matching JobWorker models with distance
      */
-    public function findMatchingWorkers(JobPost $job, int $radiusKm = self::DEFAULT_RADIUS_KM): Collection
+    public function findMatchingWorkers(JobPost $job, ?int $radiusKm = null): Collection
     {
-        $radiusKm = min($radiusKm, self::MAX_RADIUS_KM);
+        // Start with primary radius (5km)
+        $radius = $radiusKm ?? self::PRIMARY_RADIUS_KM;
+        
+        $workers = $this->queryMatchingWorkers($job, $radius);
 
-        $jobLat = $job->latitude;
-        $jobLng = $job->longitude;
-        $categoryId = $job->category_id;
-        $vehicleRequired = $job->vehicle_required;
-        $scheduledDate = $job->scheduled_date;
-        $timeSlot = $job->time_slot;
+        // NP-014: If < 3 workers, expand to 10km
+        if ($workers->count() < self::MIN_WORKERS_THRESHOLD && $radius < self::EXTENDED_RADIUS_KM) {
+            Log::info('Expanding search radius', [
+                'job_id' => $job->id,
+                'found' => $workers->count(),
+                'from_radius' => $radius,
+                'to_radius' => self::EXTENDED_RADIUS_KM,
+            ]);
+            
+            $workers = $this->queryMatchingWorkers($job, self::EXTENDED_RADIUS_KM);
+        }
 
-        // Build base query with location filter
+        // Sort by distance first, then rating (NP-014)
+        return $workers->sortBy([
+            ['distance_km', 'asc'],
+            ['rating', 'desc'],
+        ])->values();
+    }
+
+    /**
+     * Query matching workers within radius.
+     *
+     * @param JobPost $job
+     * @param int $radiusKm
+     * @return Collection
+     */
+    protected function queryMatchingWorkers(JobPost $job, int $radiusKm): Collection
+    {
+        $jobLat = (float) $job->latitude;
+        $jobLng = (float) $job->longitude;
+        $categoryId = $job->job_category_id;
+
+        // Haversine formula for distance calculation
+        $haversine = "(6371 * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude))))";
+
         $query = JobWorker::query()
-            ->active()
-            ->verified()
-            // Within radius using Haversine formula
-            ->whereRaw(
-                "(? * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) <= ?",
-                [self::EARTH_RADIUS_KM, $jobLat, $jobLng, $jobLat, $radiusKm]
-            );
+            // Select with distance calculation
+            ->selectRaw("*, {$haversine} as distance_km", [$jobLat, $jobLng, $jobLat])
+            // Must be available (NP-014: exclude is_available=false)
+            ->where('is_available', true)
+            // Must be verified
+            ->where(function ($q) {
+                $q->where('verification_status', 'verified')
+                    ->orWhereNull('verification_status');
+            })
+            // Within radius
+            ->whereRaw("{$haversine} <= ?", [$jobLat, $jobLng, $jobLat, $radiusKm])
+            // Has valid coordinates
+            ->whereNotNull('latitude')
+            ->whereNotNull('longitude');
 
-        // Filter by category if specified
+        // Filter by job type preference if specified
         if ($categoryId) {
             $query->where(function ($q) use ($categoryId) {
-                $q->whereJsonContains('category_ids', $categoryId)
-                    ->orWhereNull('category_ids');
+                // Worker accepts this job type OR accepts all types (null/empty)
+                $q->whereJsonContains('job_types', $categoryId)
+                    ->orWhereNull('job_types')
+                    ->orWhereRaw("JSON_LENGTH(job_types) = 0");
             });
         }
 
-        // Filter by vehicle if required
-        if ($vehicleRequired && $job->vehicle_type) {
-            $query->where(function ($q) use ($job) {
-                $q->where('has_vehicle', true)
-                    ->where('vehicle_type', $job->vehicle_type);
-            });
-        }
-
-        // Filter by availability if time slot specified
-        if ($timeSlot) {
-            $query->where(function ($q) use ($timeSlot) {
-                $q->whereJsonContains('availability', WorkerAvailability::FLEXIBLE->value)
-                    ->orWhereJsonContains('availability', $timeSlot->value);
-            });
-        }
-
-        // Exclude workers already assigned to jobs on same date
-        $query->whereDoesntHave('assignedJobs', function ($q) use ($scheduledDate) {
-            $q->whereDate('scheduled_date', $scheduledDate)
-                ->whereIn('status', [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS]);
+        // Exclude workers currently on a job
+        $query->whereDoesntHave('assignedJobs', function ($q) {
+            $q->whereIn('status', [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS]);
         });
 
         // Exclude workers who already applied to this job
@@ -131,232 +145,87 @@ class JobMatchingService
             $q->where('job_post_id', $job->id);
         });
 
-        return $query->with(['user', 'badges'])->get();
+        // Load relationships
+        $query->with(['user']);
+
+        return $query->get();
     }
 
     /**
-     * Get recommended workers for a job, sorted by score.
+     * Get workers count for a job at different radii.
      *
-     * @param JobPost $job The job to match
-     * @param int $limit Maximum number of workers to return
-     * @return Collection Collection of workers with scores
+     * Useful for UI to show "X workers within 5km, Y within 10km"
+     *
+     * @param JobPost $job
+     * @return array ['5km' => count, '10km' => count]
      */
-    public function getRecommendedWorkers(JobPost $job, int $limit = 10): Collection
+    public function getWorkersCountByRadius(JobPost $job): array
     {
-        // Start with larger radius and filter down
-        $workers = $this->findMatchingWorkers($job, self::MAX_RADIUS_KM);
+        $workers5km = $this->queryMatchingWorkers($job, self::PRIMARY_RADIUS_KM)->count();
+        $workers10km = $this->queryMatchingWorkers($job, self::EXTENDED_RADIUS_KM)->count();
 
-        if ($workers->isEmpty()) {
-            return collect();
-        }
-
-        // Score each worker
-        $scoredWorkers = $workers->map(function ($worker) use ($job) {
-            $score = $this->scoreWorker($worker, $job);
-            $worker->match_score = $score;
-            $worker->match_distance = $this->calculateDistance(
-                $worker->latitude,
-                $worker->longitude,
-                $job->latitude,
-                $job->longitude
-            );
-            return $worker;
-        });
-
-        // Filter by minimum score and sort
-        return $scoredWorkers
-            ->filter(fn($w) => $w->match_score >= self::MIN_RECOMMENDATION_SCORE)
-            ->sortByDesc('match_score')
-            ->take($limit)
-            ->values();
+        return [
+            '5km' => $workers5km,
+            '10km' => $workers10km,
+        ];
     }
 
-    /**
-     * Calculate a worker's match score for a job.
-     *
-     * @param JobWorker $worker The worker to score
-     * @param JobPost $job The job to match against
-     * @return float Score between 0 and 1
-     */
-    public function scoreWorker(JobWorker $worker, JobPost $job): float
-    {
-        $scores = [];
-
-        // Distance score (0-1, closer is better)
-        $distance = $this->calculateDistance(
-            $worker->latitude,
-            $worker->longitude,
-            $job->latitude,
-            $job->longitude
-        );
-        $scores['distance'] = $this->normalizeDistanceScore($distance, self::MAX_RADIUS_KM);
-
-        // Rating score (0-1)
-        $scores['rating'] = $this->normalizeRatingScore($worker->rating ?? 0, $worker->rating_count ?? 0);
-
-        // Experience score (0-1)
-        $scores['experience'] = $this->normalizeExperienceScore($worker->jobs_completed ?? 0);
-
-        // Availability match score (0-1)
-        $scores['availability'] = $this->calculateAvailabilityScore($worker, $job);
-
-        // Response rate score (0-1)
-        $scores['response_rate'] = $this->normalizeResponseRate($worker);
-
-        // Reliability score (0-1)
-        $scores['reliability'] = $this->calculateReliabilityScore($worker);
-
-        // Calculate weighted total
-        $totalScore = 0;
-        foreach (self::SCORING_WEIGHTS as $factor => $weight) {
-            $totalScore += ($scores[$factor] ?? 0) * $weight;
-        }
-
-        return round($totalScore, 3);
-    }
-
-    /**
-     * Check if a worker can do a specific job.
-     *
-     * @param JobWorker $worker The worker to check
-     * @param JobPost $job The job to check against
-     * @return bool True if worker can do the job
-     */
-    public function canWorkerDoJob(JobWorker $worker, JobPost $job): bool
-    {
-        // Must be active and verified
-        if (!$worker->is_active || $worker->verification_status !== WorkerVerificationStatus::VERIFIED) {
-            return false;
-        }
-
-        // Check distance
-        $distance = $this->calculateDistance(
-            $worker->latitude,
-            $worker->longitude,
-            $job->latitude,
-            $job->longitude
-        );
-
-        if ($distance > self::MAX_RADIUS_KM) {
-            return false;
-        }
-
-        // Check category match
-        if ($job->category_id && $worker->category_ids) {
-            if (!in_array($job->category_id, $worker->category_ids)) {
-                return false;
-            }
-        }
-
-        // Check vehicle requirement
-        if ($job->vehicle_required && $job->vehicle_type) {
-            if (!$worker->has_vehicle || $worker->vehicle_type !== $job->vehicle_type) {
-                return false;
-            }
-        }
-
-        // Check availability
-        if ($job->time_slot) {
-            $workerAvailability = $worker->availability ?? [];
-            $hasFlexible = in_array(WorkerAvailability::FLEXIBLE->value, $workerAvailability);
-            $hasMatchingSlot = in_array($job->time_slot->value, $workerAvailability);
-            
-            if (!$hasFlexible && !$hasMatchingSlot) {
-                return false;
-            }
-        }
-
-        // Check not already assigned on same date
-        $hasConflict = $worker->assignedJobs()
-            ->whereDate('scheduled_date', $job->scheduled_date)
-            ->whereIn('status', [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])
-            ->exists();
-
-        if ($hasConflict) {
-            return false;
-        }
-
-        return true;
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Available Jobs for Worker
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Get available jobs for a worker within radius.
      *
      * @param JobWorker $worker The worker to find jobs for
-     * @param int $radiusKm Search radius
-     * @return Collection Collection of matching jobs
+     * @param int $radiusKm Search radius (default 5km)
+     * @return Collection Collection of matching jobs with distance
      */
-    public function getAvailableJobsForWorker(JobWorker $worker, int $radiusKm = self::DEFAULT_RADIUS_KM): Collection
+    public function getAvailableJobsForWorker(JobWorker $worker, int $radiusKm = self::PRIMARY_RADIUS_KM): Collection
     {
-        $radiusKm = min($radiusKm, self::MAX_RADIUS_KM);
+        $workerLat = (float) $worker->latitude;
+        $workerLng = (float) $worker->longitude;
+        $jobTypes = $worker->job_types ?? [];
 
-        $workerLat = $worker->latitude;
-        $workerLng = $worker->longitude;
-        $categoryIds = $worker->category_ids ?? [];
+        // Haversine formula
+        $haversine = "(6371 * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude))))";
 
         $query = JobPost::query()
+            ->selectRaw("*, {$haversine} as distance_km", [$workerLat, $workerLng, $workerLat])
+            // Open jobs only
             ->where('status', JobStatus::OPEN)
-            ->whereDate('scheduled_date', '>=', today())
+            // Future or today
+            ->where(function ($q) {
+                $q->whereNull('job_date')
+                    ->orWhere('job_date', '>=', today());
+            })
             // Within radius
-            ->whereRaw(
-                "(? * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) <= ?",
-                [self::EARTH_RADIUS_KM, $workerLat, $workerLng, $workerLat, $radiusKm]
-            );
+            ->whereRaw("{$haversine} <= ?", [$workerLat, $workerLng, $workerLat, $radiusKm])
+            // Has coordinates
+            ->whereNotNull('latitude')
+            ->whereNotNull('longitude');
 
-        // Filter by worker's categories
-        if (!empty($categoryIds)) {
-            $query->whereIn('category_id', $categoryIds);
-        }
-
-        // Filter by availability match
-        $workerAvailability = $worker->availability ?? [];
-        $hasFlexible = in_array(WorkerAvailability::FLEXIBLE->value, $workerAvailability);
-        
-        if (!empty($workerAvailability) && !$hasFlexible) {
-            $query->where(function ($q) use ($workerAvailability) {
-                $q->whereIn('time_slot', $workerAvailability)
-                    ->orWhereNull('time_slot');
+        // Filter by worker's job type preferences
+        if (!empty($jobTypes)) {
+            $query->where(function ($q) use ($jobTypes) {
+                $q->whereIn('job_category_id', $jobTypes)
+                    ->orWhereNull('job_category_id');
             });
         }
-
-        // Filter by vehicle match if job requires
-        $query->where(function ($q) use ($worker) {
-            $q->where('vehicle_required', false)
-                ->orWhere(function ($q2) use ($worker) {
-                    if ($worker->has_vehicle && $worker->vehicle_type) {
-                        $q2->where('vehicle_required', true)
-                            ->where('vehicle_type', $worker->vehicle_type);
-                    } else {
-                        $q2->where('vehicle_required', false);
-                    }
-                });
-        });
 
         // Exclude jobs worker already applied to
         $query->whereDoesntHave('applications', function ($q) use ($worker) {
             $q->where('worker_id', $worker->id);
         });
 
-        // Exclude jobs on dates worker is already assigned
-        $assignedDates = $worker->assignedJobs()
-            ->whereIn('status', [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])
-            ->pluck('scheduled_date')
-            ->map(fn($d) => $d->toDateString())
-            ->toArray();
+        // Load relationships
+        $query->with(['category', 'poster']);
 
-        if (!empty($assignedDates)) {
-            $query->whereNotIn(DB::raw('DATE(scheduled_date)'), $assignedDates);
-        }
-
-        // Add distance calculation
-        $query->selectRaw("*, (? * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) as distance_km", [
-            self::EARTH_RADIUS_KM, $workerLat, $workerLng, $workerLat
-        ]);
-
-        return $query
-            ->with(['category', 'user'])
-            ->orderBy('distance_km')
-            ->orderBy('scheduled_date')
+        // Sort by distance, then pay amount
+        return $query->orderBy('distance_km')
+            ->orderByDesc('pay_amount')
             ->get();
     }
 
@@ -386,14 +255,14 @@ class JobMatchingService
 
         $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
 
-        return self::EARTH_RADIUS_KM * $c;
+        return round(self::EARTH_RADIUS_KM * $c, 2);
     }
 
     /**
      * Format distance for display.
      *
      * @param float $distanceKm Distance in kilometers
-     * @return string Formatted distance string
+     * @return string Formatted distance (e.g., "500m" or "2.5km")
      */
     public function formatDistance(float $distanceKm): string
     {
@@ -401,18 +270,18 @@ class JobMatchingService
             return round($distanceKm * 1000) . 'm';
         }
 
-        return round($distanceKm, 1) . ' km';
+        return round($distanceKm, 1) . 'km';
     }
 
     /**
      * Check if location is within radius.
      *
-     * @param float $centerLat Center latitude
-     * @param float $centerLng Center longitude
-     * @param float $pointLat Point latitude
-     * @param float $pointLng Point longitude
-     * @param float $radiusKm Radius in kilometers
-     * @return bool True if within radius
+     * @param float $centerLat
+     * @param float $centerLng
+     * @param float $pointLat
+     * @param float $pointLng
+     * @param float $radiusKm
+     * @return bool
      */
     public function isWithinRadius(
         float $centerLat,
@@ -426,371 +295,172 @@ class JobMatchingService
 
     /*
     |--------------------------------------------------------------------------
-    | Score Normalization Methods
+    | Matching Statistics
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Normalize distance to a 0-1 score (closer = higher).
-     */
-    protected function normalizeDistanceScore(float $distance, float $maxDistance): float
-    {
-        if ($distance >= $maxDistance) {
-            return 0;
-        }
-
-        // Exponential decay for distance preference
-        return exp(-$distance / ($maxDistance / 3));
-    }
-
-    /**
-     * Normalize rating to a 0-1 score.
-     */
-    protected function normalizeRatingScore(float $rating, int $ratingCount): float
-    {
-        if ($ratingCount === 0) {
-            return 0.5; // Neutral score for new workers
-        }
-
-        // Weight rating by confidence (more ratings = more confident)
-        $confidence = min($ratingCount / 10, 1); // Full confidence at 10+ ratings
-        $normalizedRating = $rating / 5;
-
-        // Blend with neutral rating based on confidence
-        return ($normalizedRating * $confidence) + (0.5 * (1 - $confidence));
-    }
-
-    /**
-     * Normalize experience (jobs completed) to a 0-1 score.
-     */
-    protected function normalizeExperienceScore(int $jobsCompleted): float
-    {
-        // Logarithmic scale - diminishing returns after ~50 jobs
-        if ($jobsCompleted === 0) {
-            return 0;
-        }
-
-        return min(log10($jobsCompleted + 1) / log10(51), 1);
-    }
-
-    /**
-     * Calculate availability match score.
-     */
-    protected function calculateAvailabilityScore(JobWorker $worker, JobPost $job): float
-    {
-        // If no time slot specified, full score
-        if (!$job->time_slot) {
-            return 1.0;
-        }
-
-        $workerAvailability = $worker->availability ?? [];
-        
-        // Empty availability means flexible (full score)
-        if (empty($workerAvailability)) {
-            return 1.0;
-        }
-
-        // Flexible workers get full score
-        if (in_array(WorkerAvailability::FLEXIBLE->value, $workerAvailability)) {
-            return 1.0;
-        }
-
-        // Exact match
-        if (in_array($job->time_slot->value, $workerAvailability)) {
-            return 1.0;
-        }
-
-        // Adjacent time slots get partial score
-        $slots = [
-            WorkerAvailability::MORNING->value => 0,
-            WorkerAvailability::AFTERNOON->value => 1,
-            WorkerAvailability::EVENING->value => 2,
-        ];
-
-        $jobSlot = $slots[$job->time_slot->value] ?? null;
-        
-        if ($jobSlot === null) {
-            return 0.5;
-        }
-
-        // Check if any worker availability is adjacent
-        $bestScore = 0;
-        foreach ($workerAvailability as $avail) {
-            $workerSlot = $slots[$avail] ?? null;
-            if ($workerSlot !== null) {
-                $diff = abs($workerSlot - $jobSlot);
-                $score = max(0, 1 - ($diff * 0.5));
-                $bestScore = max($bestScore, $score);
-            }
-        }
-
-        return $bestScore > 0 ? $bestScore : 0.5;
-    }
-
-    /**
-     * Normalize response rate to a 0-1 score.
-     */
-    protected function normalizeResponseRate(JobWorker $worker): float
-    {
-        $totalApplications = $worker->applications()->count();
-
-        if ($totalApplications < 5) {
-            return 0.5; // Neutral for workers with few applications
-        }
-
-        $acceptedApplications = $worker->applications()
-            ->where('status', 'accepted')
-            ->count();
-
-        return $acceptedApplications / $totalApplications;
-    }
-
-    /**
-     * Calculate reliability score based on cancellation history.
-     */
-    protected function calculateReliabilityScore(JobWorker $worker): float
-    {
-        $totalAssigned = $worker->assignedJobs()->count();
-
-        if ($totalAssigned < 3) {
-            return 0.5; // Neutral for workers with few jobs
-        }
-
-        $cancelled = $worker->assignedJobs()
-            ->where('status', JobStatus::CANCELLED)
-            ->where('cancelled_by', 'worker')
-            ->count();
-
-        $cancellationRate = $cancelled / $totalAssigned;
-
-        // Lower cancellation rate = higher score
-        return max(0, 1 - ($cancellationRate * 2));
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Analytics & Insights
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Get worker density heatmap for an area.
+     * Get matching statistics for a job.
      *
-     * @param float $minLat Minimum latitude
-     * @param float $maxLat Maximum latitude
-     * @param float $minLng Minimum longitude
-     * @param float $maxLng Maximum longitude
-     * @param float $gridSize Grid size in degrees (~0.01 = 1km)
-     * @return array Heatmap data
+     * @param JobPost $job
+     * @return array
      */
-    public function getWorkerHeatmap(
-        float $minLat,
-        float $maxLat,
-        float $minLng,
-        float $maxLng,
-        float $gridSize = 0.01
-    ): array {
-        $heatmap = [];
+    public function getMatchingStats(JobPost $job): array
+    {
+        $within5km = $this->queryMatchingWorkers($job, 5);
+        $within10km = $this->queryMatchingWorkers($job, 10);
 
-        $workers = JobWorker::active()
-            ->verified()
-            ->whereBetween('latitude', [$minLat, $maxLat])
-            ->whereBetween('longitude', [$minLng, $maxLng])
-            ->get();
-
-        foreach ($workers as $worker) {
-            $gridLat = round($worker->latitude / $gridSize) * $gridSize;
-            $gridLng = round($worker->longitude / $gridSize) * $gridSize;
-            $key = "{$gridLat},{$gridLng}";
-
-            if (!isset($heatmap[$key])) {
-                $heatmap[$key] = [
-                    'lat' => $gridLat,
-                    'lng' => $gridLng,
-                    'count' => 0,
-                    'avg_rating' => 0,
-                    'total_jobs' => 0,
-                ];
-            }
-
-            $heatmap[$key]['count']++;
-            $heatmap[$key]['avg_rating'] = (
-                ($heatmap[$key]['avg_rating'] * ($heatmap[$key]['count'] - 1)) +
-                ($worker->rating ?? 0)
-            ) / $heatmap[$key]['count'];
-            $heatmap[$key]['total_jobs'] += $worker->jobs_completed ?? 0;
-        }
-
-        return array_values($heatmap);
+        return [
+            'within_5km' => $within5km->count(),
+            'within_10km' => $within10km->count(),
+            'avg_rating_5km' => round($within5km->avg('rating') ?? 0, 1),
+            'avg_rating_10km' => round($within10km->avg('rating') ?? 0, 1),
+            'with_vehicle_5km' => $within5km->where('vehicle_type', '!=', 'none')->count(),
+            'closest_worker_km' => $within10km->min('distance_km'),
+        ];
     }
 
     /**
      * Count available workers in an area.
      *
-     * @param float $latitude Center latitude
-     * @param float $longitude Center longitude
-     * @param float $radiusKm Search radius
+     * @param float $latitude
+     * @param float $longitude
+     * @param float $radiusKm
      * @param int|null $categoryId Optional category filter
-     * @return int Worker count
+     * @return int
      */
     public function countAvailableWorkers(
         float $latitude,
         float $longitude,
-        float $radiusKm = self::DEFAULT_RADIUS_KM,
+        float $radiusKm = self::PRIMARY_RADIUS_KM,
         ?int $categoryId = null
     ): int {
-        $query = JobWorker::active()
-            ->verified()
-            ->whereRaw(
-                "(? * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) <= ?",
-                [self::EARTH_RADIUS_KM, $latitude, $longitude, $latitude, $radiusKm]
-            );
+        $haversine = "(6371 * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude))))";
+
+        $query = JobWorker::where('is_available', true)
+            ->whereNotNull('latitude')
+            ->whereNotNull('longitude')
+            ->whereRaw("{$haversine} <= ?", [$latitude, $longitude, $latitude, $radiusKm]);
 
         if ($categoryId) {
             $query->where(function ($q) use ($categoryId) {
-                $q->whereJsonContains('category_ids', $categoryId)
-                    ->orWhereNull('category_ids');
+                $q->whereJsonContains('job_types', $categoryId)
+                    ->orWhereNull('job_types')
+                    ->orWhereRaw("JSON_LENGTH(job_types) = 0");
             });
         }
 
         return $query->count();
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Worker Scoring
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Get popular categories in an area.
+     * Score a worker for a job (for ranking).
      *
-     * @param float $latitude Center latitude
-     * @param float $longitude Center longitude
-     * @param float $radiusKm Search radius
-     * @param int $limit Number of categories to return
-     * @return Collection Top categories with worker counts
+     * Factors:
+     * - Distance (closer = higher score)
+     * - Rating (higher = higher score)
+     * - Jobs completed (more = higher score)
+     *
+     * @param JobWorker $worker
+     * @param JobPost $job
+     * @return float Score between 0 and 100
      */
-    public function getPopularCategoriesInArea(
-        float $latitude,
-        float $longitude,
-        float $radiusKm = self::DEFAULT_RADIUS_KM,
-        int $limit = 10
-    ): Collection {
-        $workers = JobWorker::active()
-            ->verified()
-            ->whereRaw(
-                "(? * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) <= ?",
-                [self::EARTH_RADIUS_KM, $latitude, $longitude, $latitude, $radiusKm]
-            )
-            ->whereNotNull('category_ids')
-            ->get();
+    public function scoreWorker(JobWorker $worker, JobPost $job): float
+    {
+        $distance = $this->calculateDistance(
+            (float) $worker->latitude,
+            (float) $worker->longitude,
+            (float) $job->latitude,
+            (float) $job->longitude
+        );
 
-        $categoryCounts = [];
+        // Distance score (0-40 points, closer = higher)
+        $distanceScore = max(0, 40 - ($distance * 4));
 
-        foreach ($workers as $worker) {
-            foreach ($worker->category_ids ?? [] as $categoryId) {
-                $categoryCounts[$categoryId] = ($categoryCounts[$categoryId] ?? 0) + 1;
+        // Rating score (0-30 points)
+        $ratingScore = (($worker->rating ?? 0) / 5) * 30;
+
+        // Experience score (0-20 points, max at 50 jobs)
+        $jobsCompleted = $worker->jobs_completed ?? 0;
+        $experienceScore = min(20, ($jobsCompleted / 50) * 20);
+
+        // Availability bonus (10 points if immediately available)
+        $availabilityScore = $worker->is_available ? 10 : 0;
+
+        return round($distanceScore + $ratingScore + $experienceScore + $availabilityScore, 1);
+    }
+
+    /**
+     * Get recommended workers for a job, sorted by score.
+     *
+     * @param JobPost $job
+     * @param int $limit
+     * @return Collection
+     */
+    public function getRecommendedWorkers(JobPost $job, int $limit = 10): Collection
+    {
+        $workers = $this->findMatchingWorkers($job);
+
+        return $workers->map(function ($worker) use ($job) {
+            $worker->match_score = $this->scoreWorker($worker, $job);
+            return $worker;
+        })
+        ->sortByDesc('match_score')
+        ->take($limit)
+        ->values();
+    }
+
+    /**
+     * Check if a worker can do a specific job.
+     *
+     * @param JobWorker $worker
+     * @param JobPost $job
+     * @return bool
+     */
+    public function canWorkerDoJob(JobWorker $worker, JobPost $job): bool
+    {
+        // Must be available
+        if (!$worker->is_available) {
+            return false;
+        }
+
+        // Check distance
+        $distance = $this->calculateDistance(
+            (float) $worker->latitude,
+            (float) $worker->longitude,
+            (float) $job->latitude,
+            (float) $job->longitude
+        );
+
+        if ($distance > self::MAX_RADIUS_KM) {
+            return false;
+        }
+
+        // Check job type preference
+        $workerJobTypes = $worker->job_types ?? [];
+        $jobCategoryId = $job->job_category_id;
+
+        if (!empty($workerJobTypes) && $jobCategoryId) {
+            if (!in_array($jobCategoryId, $workerJobTypes)) {
+                return false;
             }
         }
 
-        arsort($categoryCounts);
-        $topIds = array_slice(array_keys($categoryCounts), 0, $limit);
+        // Check not already assigned to a job
+        $hasActiveJob = JobPost::where('assigned_worker_id', $worker->id)
+            ->whereIn('status', [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])
+            ->exists();
 
-        return JobCategory::whereIn('id', $topIds)
-            ->active()
-            ->get()
-            ->map(function ($category) use ($categoryCounts) {
-                $category->worker_count = $categoryCounts[$category->id] ?? 0;
-                return $category;
-            })
-            ->sortByDesc('worker_count')
-            ->values();
-    }
-
-    /**
-     * Suggest optimal location for posting a job.
-     *
-     * @param float $currentLat Current latitude
-     * @param float $currentLng Current longitude
-     * @param int|null $categoryId Optional category
-     * @param float $searchRadius Search radius
-     * @return array Location suggestion with worker density
-     */
-    public function suggestJobLocation(
-        float $currentLat,
-        float $currentLng,
-        ?int $categoryId = null,
-        float $searchRadius = 5
-    ): array {
-        $heatmap = $this->getWorkerHeatmap(
-            $currentLat - ($searchRadius / 111),
-            $currentLat + ($searchRadius / 111),
-            $currentLng - ($searchRadius / (111 * cos(deg2rad($currentLat)))),
-            $currentLng + ($searchRadius / (111 * cos(deg2rad($currentLat)))),
-            0.005
-        );
-
-        if (empty($heatmap)) {
-            return [
-                'current_lat' => $currentLat,
-                'current_lng' => $currentLng,
-                'suggested_lat' => $currentLat,
-                'suggested_lng' => $currentLng,
-                'potential_workers' => 0,
-                'message' => 'No workers found nearby',
-            ];
+        if ($hasActiveJob) {
+            return false;
         }
 
-        usort($heatmap, fn($a, $b) => $b['count'] <=> $a['count']);
-        $best = $heatmap[0];
-
-        $distance = $this->calculateDistance($currentLat, $currentLng, $best['lat'], $best['lng']);
-
-        return [
-            'current_lat' => $currentLat,
-            'current_lng' => $currentLng,
-            'suggested_lat' => $best['lat'],
-            'suggested_lng' => $best['lng'],
-            'potential_workers' => $best['count'],
-            'avg_rating' => round($best['avg_rating'], 1),
-            'distance_km' => round($distance, 2),
-            'message' => $distance < 0.5
-                ? 'Good worker availability at your location!'
-                : "Moving {$this->formatDistance($distance)} could increase worker availability to {$best['count']} workers",
-        ];
-    }
-
-    /**
-     * Get matching statistics for a job.
-     *
-     * @param JobPost $job The job to analyze
-     * @return array Matching statistics
-     */
-    public function getMatchingStats(JobPost $job): array
-    {
-        $allWorkers = $this->findMatchingWorkers($job, self::MAX_RADIUS_KM);
-
-        $within5km = $allWorkers->filter(function ($worker) use ($job) {
-            return $this->calculateDistance(
-                $worker->latitude,
-                $worker->longitude,
-                $job->latitude,
-                $job->longitude
-            ) <= 5;
-        });
-
-        $within10km = $allWorkers->filter(function ($worker) use ($job) {
-            return $this->calculateDistance(
-                $worker->latitude,
-                $worker->longitude,
-                $job->latitude,
-                $job->longitude
-            ) <= 10;
-        });
-
-        return [
-            'total_matching' => $allWorkers->count(),
-            'within_5km' => $within5km->count(),
-            'within_10km' => $within10km->count(),
-            'avg_rating' => round($allWorkers->avg('rating') ?? 0, 1),
-            'avg_experience' => round($allWorkers->avg('jobs_completed') ?? 0),
-            'with_vehicle' => $allWorkers->where('has_vehicle', true)->count(),
-            'verified' => $allWorkers->where('verification_status', WorkerVerificationStatus::VERIFIED)->count(),
-        ];
+        return true;
     }
 }

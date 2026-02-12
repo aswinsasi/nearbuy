@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use App\Enums\JobApplicationStatus;
@@ -17,15 +19,32 @@ use Illuminate\Database\Eloquent\Builder;
  * @property string|null $message
  * @property float|null $proposed_amount
  * @property JobApplicationStatus $status
+ * @property float|null $distance_km Distance from worker to job location
  * @property \Carbon\Carbon $applied_at
  * @property \Carbon\Carbon|null $responded_at
+ * @property \Carbon\Carbon|null $created_at
+ * @property \Carbon\Carbon|null $updated_at
  *
- * @srs-ref Section 3.4 - Job Applications
+ * @property-read JobPost $jobPost
+ * @property-read JobWorker $worker
+ * @property-read string $status_display
+ * @property-read string $time_since_applied
+ * @property-read bool $is_pending
+ * @property-read bool $is_accepted
+ * @property-read string|null $proposed_amount_display
+ * @property-read string $distance_display
+ *
+ * @srs-ref NP-015 to NP-021
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobApplication extends Model
 {
     use HasFactory;
+
+    /**
+     * The table associated with the model.
+     */
+    protected $table = 'job_applications';
 
     /**
      * The attributes that are mass assignable.
@@ -36,6 +55,7 @@ class JobApplication extends Model
         'message',
         'proposed_amount',
         'status',
+        'distance_km',
         'applied_at',
         'responded_at',
     ];
@@ -46,6 +66,7 @@ class JobApplication extends Model
     protected $casts = [
         'status' => JobApplicationStatus::class,
         'proposed_amount' => 'decimal:2',
+        'distance_km' => 'decimal:2',
         'applied_at' => 'datetime',
         'responded_at' => 'datetime',
     ];
@@ -54,7 +75,7 @@ class JobApplication extends Model
      * Default attribute values.
      */
     protected $attributes = [
-        'status' => JobApplicationStatus::PENDING,
+        'status' => 'pending',
     ];
 
     /*
@@ -68,7 +89,7 @@ class JobApplication extends Model
      */
     public function jobPost(): BelongsTo
     {
-        return $this->belongsTo(JobPost::class);
+        return $this->belongsTo(JobPost::class, 'job_post_id');
     }
 
     /**
@@ -150,13 +171,21 @@ class JobApplication extends Model
     }
 
     /**
-     * Scope for pending applications with worker details.
+     * Scope to order by earliest (FIFO).
+     */
+    public function scopeEarliest(Builder $query): Builder
+    {
+        return $query->orderBy('applied_at', 'asc');
+    }
+
+    /**
+     * Scope for pending applications with worker details (for review).
      */
     public function scopeForReview(Builder $query): Builder
     {
-        return $query->with('worker')
+        return $query->with(['worker.user'])
             ->pending()
-            ->latest();
+            ->earliest();
     }
 
     /*
@@ -166,11 +195,33 @@ class JobApplication extends Model
     */
 
     /**
-     * Get status display.
+     * Get status display text.
      */
     public function getStatusDisplayAttribute(): string
     {
-        return $this->status->display();
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        return $status?->label() ?? 'Unknown';
+    }
+
+    /**
+     * Get status icon.
+     */
+    public function getStatusIconAttribute(): string
+    {
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        return match ($status) {
+            JobApplicationStatus::PENDING => '🟡',
+            JobApplicationStatus::ACCEPTED => '✅',
+            JobApplicationStatus::REJECTED => '❌',
+            JobApplicationStatus::WITHDRAWN => '⬜',
+            default => '🔵',
+        };
     }
 
     /**
@@ -178,6 +229,9 @@ class JobApplication extends Model
      */
     public function getTimeSinceAppliedAttribute(): string
     {
+        if (!$this->applied_at) {
+            return 'just now';
+        }
         return $this->applied_at->diffForHumans();
     }
 
@@ -186,7 +240,11 @@ class JobApplication extends Model
      */
     public function getIsPendingAttribute(): bool
     {
-        return $this->status === JobApplicationStatus::PENDING;
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        return $status === JobApplicationStatus::PENDING;
     }
 
     /**
@@ -194,7 +252,23 @@ class JobApplication extends Model
      */
     public function getIsAcceptedAttribute(): bool
     {
-        return $this->status === JobApplicationStatus::ACCEPTED;
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        return $status === JobApplicationStatus::ACCEPTED;
+    }
+
+    /**
+     * Check if application was rejected.
+     */
+    public function getIsRejectedAttribute(): bool
+    {
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        return $status === JobApplicationStatus::REJECTED;
     }
 
     /**
@@ -206,7 +280,48 @@ class JobApplication extends Model
             return null;
         }
 
-        return '₹' . number_format($this->proposed_amount);
+        return '₹' . number_format((float) $this->proposed_amount);
+    }
+
+    /**
+     * Get distance display.
+     */
+    public function getDistanceDisplayAttribute(): string
+    {
+        if (!$this->distance_km) {
+            return 'N/A';
+        }
+
+        if ($this->distance_km < 1) {
+            return round($this->distance_km * 1000) . 'm';
+        }
+
+        return round($this->distance_km, 1) . 'km';
+    }
+
+    /**
+     * Get effective amount (proposed or job posted amount).
+     */
+    public function getEffectiveAmountAttribute(): float
+    {
+        return $this->proposed_amount ?? $this->jobPost?->pay_amount ?? 0;
+    }
+
+    /**
+     * Get effective amount display.
+     */
+    public function getEffectiveAmountDisplayAttribute(): string
+    {
+        $amount = $this->effective_amount;
+        $display = '₹' . number_format($amount);
+
+        if ($this->proposed_amount && $this->jobPost) {
+            if ($this->proposed_amount != $this->jobPost->pay_amount) {
+                $display .= ' (proposed)';
+            }
+        }
+
+        return $display;
     }
 
     /*
@@ -220,7 +335,11 @@ class JobApplication extends Model
      */
     public function accept(): bool
     {
-        if (!$this->status->canTransitionTo(JobApplicationStatus::ACCEPTED)) {
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        if ($status !== JobApplicationStatus::PENDING) {
             return false;
         }
 
@@ -228,9 +347,6 @@ class JobApplication extends Model
             'status' => JobApplicationStatus::ACCEPTED,
             'responded_at' => now(),
         ]);
-
-        // Assign worker to job
-        $this->jobPost->assign($this->worker);
 
         return true;
     }
@@ -240,7 +356,11 @@ class JobApplication extends Model
      */
     public function reject(): bool
     {
-        if (!$this->status->canTransitionTo(JobApplicationStatus::REJECTED)) {
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        if ($status !== JobApplicationStatus::PENDING) {
             return false;
         }
 
@@ -257,7 +377,11 @@ class JobApplication extends Model
      */
     public function withdraw(): bool
     {
-        if (!$this->status->canTransitionTo(JobApplicationStatus::WITHDRAWN)) {
+        $status = $this->status instanceof JobApplicationStatus
+            ? $this->status
+            : JobApplicationStatus::tryFrom($this->status);
+
+        if ($status !== JobApplicationStatus::PENDING) {
             return false;
         }
 
@@ -266,10 +390,45 @@ class JobApplication extends Model
             'responded_at' => now(),
         ]);
 
-        // Decrement applications count
-        $this->jobPost->decrementApplicationsCount();
+        // Decrement applications count on job
+        $this->jobPost?->decrementApplicationsCount();
 
         return true;
+    }
+
+    /**
+     * Calculate distance from worker to job.
+     */
+    public function calculateDistance(): ?float
+    {
+        $job = $this->jobPost;
+        $worker = $this->worker;
+
+        if (!$job || !$worker) {
+            return null;
+        }
+
+        if (!$job->latitude || !$job->longitude || !$worker->latitude || !$worker->longitude) {
+            return null;
+        }
+
+        // Haversine formula
+        $earthRadius = 6371; // km
+
+        $latFrom = deg2rad((float) $worker->latitude);
+        $lonFrom = deg2rad((float) $worker->longitude);
+        $latTo = deg2rad((float) $job->latitude);
+        $lonTo = deg2rad((float) $job->longitude);
+
+        $latDelta = $latTo - $latFrom;
+        $lonDelta = $lonTo - $lonFrom;
+
+        $a = sin($latDelta / 2) ** 2 +
+            cos($latFrom) * cos($latTo) * sin($lonDelta / 2) ** 2;
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return round($earthRadius * $c, 2);
     }
 
     /**
@@ -278,35 +437,40 @@ class JobApplication extends Model
     public function toListItem(): array
     {
         $worker = $this->worker;
-        $description = $worker?->short_rating ?? 'New Worker';
+        $rating = $worker?->rating ? "⭐{$worker->rating}" : '🆕';
+        $jobs = $worker?->jobs_completed ?? 0;
 
-        if ($this->proposed_amount) {
-            $description .= ' • Proposed: ' . $this->proposed_amount_display;
+        $description = "{$rating} • {$jobs} jobs";
+
+        if ($this->distance_km) {
+            $description .= " • {$this->distance_display}";
         }
 
-        $description .= ' • ' . $this->time_since_applied;
-
         return [
-            'id' => 'app_' . $this->id,
-            'title' => substr($worker?->name ?? 'Unknown Worker', 0, 24),
-            'description' => substr($description, 0, 72),
+            'id' => 'view_applicant_' . $this->id,
+            'title' => mb_substr($worker?->name ?? 'Worker', 0, 24),
+            'description' => mb_substr($description, 0, 72),
         ];
     }
 
     /**
-     * Convert to detail format.
+     * Convert to summary format for notifications.
      */
-    public function toDetailFormat(): array
+    public function toSummary(): array
     {
+        $worker = $this->worker;
+
         return [
             'id' => $this->id,
-            'worker' => $this->worker?->toSummary(),
+            'worker_name' => $worker?->name ?? 'Worker',
+            'worker_rating' => $worker?->rating,
+            'worker_jobs_completed' => $worker?->jobs_completed ?? 0,
+            'worker_photo_url' => $worker?->photo_url,
             'message' => $this->message,
             'proposed_amount' => $this->proposed_amount,
-            'proposed_amount_display' => $this->proposed_amount_display,
-            'status' => $this->status->value,
-            'status_display' => $this->status_display,
-            'applied_at' => $this->applied_at->format('M j, Y h:i A'),
+            'distance_km' => $this->distance_km,
+            'distance_display' => $this->distance_display,
+            'applied_at' => $this->applied_at?->format('M j, h:i A'),
             'time_since' => $this->time_since_applied,
         ];
     }
@@ -329,11 +493,16 @@ class JobApplication extends Model
             if (empty($model->status)) {
                 $model->status = JobApplicationStatus::PENDING;
             }
+
+            // Calculate distance if not set
+            if (empty($model->distance_km)) {
+                $model->distance_km = $model->calculateDistance();
+            }
         });
 
         static::created(function ($model) {
             // Increment applications count on job
-            $model->jobPost->incrementApplicationsCount();
+            $model->jobPost?->incrementApplicationsCount();
         });
     }
 }

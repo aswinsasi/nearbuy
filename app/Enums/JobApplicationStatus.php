@@ -1,11 +1,14 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
  * Status of a job application.
  *
- * @srs-ref Section 3.4 - Job Applications
+ * @srs-ref NP-015 to NP-021 - Worker Application & Selection
+ * @values pending, accepted, rejected, withdrawn
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 enum JobApplicationStatus: string
@@ -63,6 +66,14 @@ enum JobApplicationStatus: string
     }
 
     /**
+     * Get bilingual display.
+     */
+    public function displayBilingual(): string
+    {
+        return $this->emoji() . ' ' . $this->label() . ' / ' . $this->labelMl();
+    }
+
+    /**
      * Get color for UI.
      */
     public function color(): string
@@ -89,7 +100,7 @@ enum JobApplicationStatus: string
     }
 
     /**
-     * Check if application is still active.
+     * Check if application is still active (awaiting response).
      */
     public function isActive(): bool
     {
@@ -105,7 +116,7 @@ enum JobApplicationStatus: string
     }
 
     /**
-     * Check if application can be withdrawn.
+     * Check if application can be withdrawn by worker.
      */
     public function canWithdraw(): bool
     {
@@ -114,6 +125,9 @@ enum JobApplicationStatus: string
 
     /**
      * Check if poster can respond to this application.
+     *
+     * @srs-ref NP-018 - Task giver reviews applications
+     * @srs-ref NP-019 - Task giver selects worker
      */
     public function canRespond(): bool
     {
@@ -147,6 +161,30 @@ enum JobApplicationStatus: string
     }
 
     /**
+     * Get bilingual message for worker.
+     */
+    public function workerMessageBilingual(): string
+    {
+        return $this->workerMessage() . "\n" . $this->workerMessageMl();
+    }
+
+    /**
+     * Get WhatsApp notification for this status.
+     *
+     * @srs-ref NP-020 - Notify selected worker
+     * @srs-ref NP-021 - Notify rejected workers
+     */
+    public function notificationMessage(string $jobTitle): string
+    {
+        return match ($this) {
+            self::PENDING => "⏳ *Application Submitted*\n*അപേക്ഷ സമർപ്പിച്ചു*\n\n{$jobTitle}\n\nWaiting for response...\nപ്രതികരണത്തിനായി കാത്തിരിക്കുന്നു...",
+            self::ACCEPTED => "✅ *You Got the Job!*\n*ജോലി ലഭിച്ചു!*\n\n{$jobTitle}\n\nContact details shared below.\nബന്ധപ്പെടാനുള്ള വിവരങ്ങൾ താഴെ.",
+            self::REJECTED => "ℹ️ *Position Filled*\n*സ്ഥാനം നിറഞ്ഞു*\n\n{$jobTitle}\n\nDon't worry, more opportunities await!\nവിഷമിക്കേണ്ട, കൂടുതൽ അവസരങ്ങൾ ഉണ്ട്!",
+            self::WITHDRAWN => "↩️ *Application Withdrawn*\n*അപേക്ഷ പിൻവലിച്ചു*\n\n{$jobTitle}",
+        };
+    }
+
+    /**
      * Check if status can transition to target status.
      */
     public function canTransitionTo(self $target): bool
@@ -165,5 +203,21 @@ enum JobApplicationStatus: string
     public static function values(): array
     {
         return array_column(self::cases(), 'value');
+    }
+
+    /**
+     * Get statuses that count as "active" applications for a job.
+     */
+    public static function activeStatuses(): array
+    {
+        return [self::PENDING];
+    }
+
+    /**
+     * Get statuses that represent final outcomes.
+     */
+    public static function terminalStatuses(): array
+    {
+        return [self::ACCEPTED, self::REJECTED, self::WITHDRAWN];
     }
 }

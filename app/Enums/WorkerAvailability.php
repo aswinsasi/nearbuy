@@ -1,95 +1,76 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
- * Worker availability time slots.
+ * Worker Availability Time Slots.
  *
- * @srs-ref Section 3.2 - Job Workers
+ * @srs-ref NP-004: Morning (6-12), Afternoon (12-6), Evening (6-10), Flexible
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 enum WorkerAvailability: string
 {
-    case MORNING = 'morning';
-    case AFTERNOON = 'afternoon';
-    case EVENING = 'evening';
-    case FLEXIBLE = 'flexible';
+    case MORNING = 'morning';       // 6 AM - 12 PM
+    case AFTERNOON = 'afternoon';   // 12 PM - 6 PM
+    case EVENING = 'evening';       // 6 PM - 10 PM
+    case FLEXIBLE = 'flexible';     // Anytime
 
     /**
-     * Get the display label.
+     * Display label.
      */
     public function label(): string
     {
         return match ($this) {
-            self::MORNING => 'Morning',
-            self::AFTERNOON => 'Afternoon',
-            self::EVENING => 'Evening',
+            self::MORNING => 'Morning (6-12)',
+            self::AFTERNOON => 'Afternoon (12-6)',
+            self::EVENING => 'Evening (6-10)',
             self::FLEXIBLE => 'Flexible',
         };
     }
 
     /**
-     * Get Malayalam label.
+     * Malayalam label.
      */
     public function labelMl(): string
     {
         return match ($this) {
-            self::MORNING => 'രാവിലെ',
-            self::AFTERNOON => 'ഉച്ചയ്ക്ക്',
-            self::EVENING => 'വൈകുന്നേരം',
-            self::FLEXIBLE => 'എപ്പോഴും',
+            self::MORNING => 'രാവിലെ (6-12)',
+            self::AFTERNOON => 'ഉച്ചയ്ക്ക് (12-6)',
+            self::EVENING => 'വൈകിട്ട് (6-10)',
+            self::FLEXIBLE => 'എപ്പോഴും ഫ്രീ',
         };
     }
 
     /**
-     * Get emoji icon.
+     * Emoji icon.
      */
     public function emoji(): string
     {
         return match ($this) {
             self::MORNING => '🌅',
             self::AFTERNOON => '☀️',
-            self::EVENING => '🌆',
+            self::EVENING => '🌙',
             self::FLEXIBLE => '🔄',
         };
     }
 
     /**
-     * Get display with emoji.
+     * Button title (short, for WhatsApp).
      */
-    public function display(): string
-    {
-        return $this->emoji() . ' ' . $this->label();
-    }
-
-    /**
-     * Get time range as string.
-     */
-    public function timeRange(): string
+    public function buttonTitle(): string
     {
         return match ($this) {
-            self::MORNING => '6:00 AM - 12:00 PM',
-            self::AFTERNOON => '12:00 PM - 6:00 PM',
-            self::EVENING => '6:00 PM - 10:00 PM',
-            self::FLEXIBLE => 'Any time',
+            self::MORNING => '🌅 Morning 6-12',
+            self::AFTERNOON => '☀️ Afternoon 12-6',
+            self::EVENING => '🌙 Evening 6-10',
+            self::FLEXIBLE => '🔄 Flexible',
         };
     }
 
     /**
-     * Get time range in Malayalam.
-     */
-    public function timeRangeMl(): string
-    {
-        return match ($this) {
-            self::MORNING => '6:00 - 12:00',
-            self::AFTERNOON => '12:00 - 6:00',
-            self::EVENING => '6:00 - 10:00',
-            self::FLEXIBLE => 'എപ്പോൾ വേണമെങ്കിലും',
-        };
-    }
-
-    /**
-     * Get start hour (24-hour format).
+     * Start hour (24h).
      */
     public function startHour(): int
     {
@@ -102,7 +83,7 @@ enum WorkerAvailability: string
     }
 
     /**
-     * Get end hour (24-hour format).
+     * End hour (24h).
      */
     public function endHour(): int
     {
@@ -115,7 +96,7 @@ enum WorkerAvailability: string
     }
 
     /**
-     * Check if given hour falls within this availability.
+     * Check if hour is within this slot.
      */
     public function includesHour(int $hour): bool
     {
@@ -126,35 +107,40 @@ enum WorkerAvailability: string
     }
 
     /**
-     * Get button title for WhatsApp.
+     * Time range display.
      */
-    public function buttonTitle(): string
+    public function timeRange(): string
     {
-        return $this->emoji() . ' ' . $this->label() . ' (' . $this->timeRange() . ')';
+        return match ($this) {
+            self::MORNING => '6:00 AM - 12:00 PM',
+            self::AFTERNOON => '12:00 PM - 6:00 PM',
+            self::EVENING => '6:00 PM - 10:00 PM',
+            self::FLEXIBLE => 'Any time',
+        };
     }
 
     /**
-     * Convert to WhatsApp list item.
+     * To list item for WhatsApp.
      */
     public function toListItem(): array
     {
         return [
             'id' => 'avail_' . $this->value,
-            'title' => substr($this->display(), 0, 24),
-            'description' => $this->timeRange(),
+            'title' => $this->emoji() . ' ' . $this->label(),
+            'description' => $this->labelMl(),
         ];
     }
 
     /**
-     * Get all as WhatsApp list items.
+     * Get all as list items.
      */
     public static function toListItems(): array
     {
-        return array_map(fn(self $avail) => $avail->toListItem(), self::cases());
+        return array_map(fn(self $a) => $a->toListItem(), self::cases());
     }
 
     /**
-     * Get all values as array.
+     * Get all values.
      */
     public static function values(): array
     {
@@ -162,19 +148,19 @@ enum WorkerAvailability: string
     }
 
     /**
-     * Create from list item ID.
+     * Create from button/list ID.
      */
-    public static function fromListId(string $listId): ?self
+    public static function fromId(string $id): ?self
     {
-        $value = str_replace('avail_', '', $listId);
+        $value = str_replace('avail_', '', $id);
         return self::tryFrom($value);
     }
 
     /**
-     * Get availabilities that cover a specific hour.
+     * Get availabilities covering a specific hour.
      */
     public static function forHour(int $hour): array
     {
-        return array_filter(self::cases(), fn(self $avail) => $avail->includesHour($hour));
+        return array_filter(self::cases(), fn(self $a) => $a->includesHour($hour));
     }
 }

@@ -1,49 +1,113 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
-use App\Enums\BadgeType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * Worker Badge Model - Gamification badges for workers.
+ * Worker Badge Model - Gamification for viral mechanics.
+ *
+ * SRS Section 3.5 Badges:
+ * - First Job ✅ (1 job completed)
+ * - Queue Master 🏆 (10 queue jobs)
+ * - Speed Runner 🏃 (5 deliveries)
+ * - Reliable ⭐ (10 five-star ratings)
+ * - Veteran 👑 (50 jobs)
+ * - Top Earner 💰 (₹10,000+ in one week)
  *
  * @property int $id
  * @property int $worker_id
- * @property BadgeType $badge_type
- * @property string|null $badge_name
- * @property string $badge_icon
- * @property array|null $achievement_data
+ * @property string $badge_type
  * @property \Carbon\Carbon $earned_at
  *
- * @srs-ref Section 3.6 - Worker Gamification
+ * @srs-ref Section 3.5 - Badge System
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class WorkerBadge extends Model
 {
     use HasFactory;
 
+    public $timestamps = false;
+
+    /*
+    |--------------------------------------------------------------------------
+    | Badge Type Constants (SRS Section 3.5)
+    |--------------------------------------------------------------------------
+    */
+
+    public const FIRST_JOB = 'first_job';
+    public const QUEUE_MASTER = 'queue_master';
+    public const SPEED_RUNNER = 'speed_runner';
+    public const RELIABLE = 'reliable';
+    public const VETERAN = 'veteran';
+    public const TOP_EARNER = 'top_earner';
+
     /**
-     * The attributes that are mass assignable.
+     * Badge definitions with requirements per SRS.
      */
+    public const BADGES = [
+        self::FIRST_JOB => [
+            'label' => 'First Step',
+            'label_ml' => 'ആദ്യ ചുവട്',
+            'emoji' => '✅',
+            'description' => 'Completed first job',
+            'description_ml' => 'ആദ്യ ജോലി പൂർത്തിയാക്കി',
+            'requirement' => ['type' => 'total_jobs', 'count' => 1],
+        ],
+        self::QUEUE_MASTER => [
+            'label' => 'Queue Master',
+            'label_ml' => 'ക്യൂ മാസ്റ്റർ',
+            'emoji' => '🏆',
+            'description' => '10 queue standing jobs completed',
+            'description_ml' => '10 ക്യൂ നിൽക്കൽ ജോലികൾ',
+            'requirement' => ['type' => 'category_jobs', 'category' => 'queue_standing', 'count' => 10],
+        ],
+        self::SPEED_RUNNER => [
+            'label' => 'Speed Runner',
+            'label_ml' => 'സ്പീഡ് റണ്ണർ',
+            'emoji' => '🏃',
+            'description' => '5 delivery jobs completed',
+            'description_ml' => '5 ഡെലിവറി ജോലികൾ',
+            'requirement' => ['type' => 'category_jobs', 'category' => 'delivery', 'count' => 5],
+        ],
+        self::RELIABLE => [
+            'label' => 'Reliable',
+            'label_ml' => 'വിശ്വസ്തൻ',
+            'emoji' => '⭐',
+            'description' => '10 five-star ratings received',
+            'description_ml' => '10 അഞ്ച്-സ്റ്റാർ റേറ്റിംഗ്',
+            'requirement' => ['type' => 'five_star_count', 'count' => 10],
+        ],
+        self::VETERAN => [
+            'label' => 'Veteran',
+            'label_ml' => 'വെറ്ററൻ',
+            'emoji' => '👑',
+            'description' => '50 jobs completed',
+            'description_ml' => '50 ജോലികൾ പൂർത്തിയാക്കി',
+            'requirement' => ['type' => 'total_jobs', 'count' => 50],
+        ],
+        self::TOP_EARNER => [
+            'label' => 'Top Earner',
+            'label_ml' => 'ടോപ് ഏർണർ',
+            'emoji' => '💰',
+            'description' => '₹10,000+ earned in one week',
+            'description_ml' => 'ഒരു ആഴ്ച ₹10,000+ സമ്പാദിച്ചു',
+            'requirement' => ['type' => 'weekly_earnings', 'amount' => 10000],
+        ],
+    ];
+
     protected $fillable = [
         'worker_id',
         'badge_type',
-        'badge_name',
-        'badge_icon',
-        'achievement_data',
         'earned_at',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
-        'badge_type' => BadgeType::class,
-        'achievement_data' => 'array',
         'earned_at' => 'datetime',
     ];
 
@@ -53,9 +117,6 @@ class WorkerBadge extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get the worker who earned this badge.
-     */
     public function worker(): BelongsTo
     {
         return $this->belongsTo(JobWorker::class, 'worker_id');
@@ -67,37 +128,19 @@ class WorkerBadge extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Scope to filter by badge type.
-     */
-    public function scopeOfType(Builder $query, BadgeType $type): Builder
-    {
-        return $query->where('badge_type', $type);
-    }
-
-    /**
-     * Scope to filter by worker.
-     */
     public function scopeByWorker(Builder $query, int $workerId): Builder
     {
         return $query->where('worker_id', $workerId);
     }
 
-    /**
-     * Scope to order by most recent.
-     */
-    public function scopeLatest(Builder $query): Builder
+    public function scopeOfType(Builder $query, string $type): Builder
     {
-        return $query->orderBy('earned_at', 'desc');
+        return $query->where('badge_type', $type);
     }
 
-    /**
-     * Scope to filter by category.
-     */
-    public function scopeOfCategory(Builder $query, string $category): Builder
+    public function scopeRecent(Builder $query): Builder
     {
-        $badgeTypes = BadgeType::byCategory($category);
-        return $query->whereIn('badge_type', $badgeTypes);
+        return $query->orderByDesc('earned_at');
     }
 
     /*
@@ -106,192 +149,110 @@ class WorkerBadge extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get badge display with icon.
-     */
-    public function getDisplayAttribute(): string
-    {
-        return $this->badge_type->display();
-    }
-
-    /**
-     * Get badge label.
-     */
     public function getLabelAttribute(): string
     {
-        return $this->badge_name ?? $this->badge_type->label();
+        return self::BADGES[$this->badge_type]['label'] ?? 'Unknown';
     }
 
-    /**
-     * Get badge icon.
-     */
-    public function getIconAttribute(): string
+    public function getLabelMlAttribute(): string
     {
-        return $this->badge_icon ?? $this->badge_type->emoji();
+        return self::BADGES[$this->badge_type]['label_ml'] ?? 'Unknown';
     }
 
-    /**
-     * Get badge description.
-     */
+    public function getEmojiAttribute(): string
+    {
+        return self::BADGES[$this->badge_type]['emoji'] ?? '🏅';
+    }
+
     public function getDescriptionAttribute(): string
     {
-        return $this->badge_type->description();
+        return self::BADGES[$this->badge_type]['description'] ?? '';
     }
 
-    /**
-     * Get badge tier.
-     */
-    public function getTierAttribute(): int
+    public function getDescriptionMlAttribute(): string
     {
-        return $this->badge_type->tier();
+        return self::BADGES[$this->badge_type]['description_ml'] ?? '';
     }
 
-    /**
-     * Get tier label.
-     */
-    public function getTierLabelAttribute(): string
+    public function getDisplayAttribute(): string
     {
-        return $this->badge_type->tierLabel();
+        return $this->emoji . ' ' . $this->label;
     }
 
-    /**
-     * Get time since earned.
-     */
-    public function getEarnedAgoAttribute(): string
+    public function getRequirementAttribute(): array
     {
-        return $this->earned_at->diffForHumans();
+        return self::BADGES[$this->badge_type]['requirement'] ?? [];
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Methods
+    | Static Methods
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Award badge to a worker.
+     * Award badge to worker (if not already earned).
      */
-    public static function awardBadge(JobWorker $worker, BadgeType $badgeType, ?array $achievementData = null): ?self
+    public static function award(int $workerId, string $badgeType): ?self
     {
-        // Check if worker already has this badge
-        if (self::where('worker_id', $worker->id)->where('badge_type', $badgeType)->exists()) {
+        if (!isset(self::BADGES[$badgeType])) {
+            return null;
+        }
+
+        if (self::hasBadge($workerId, $badgeType)) {
             return null;
         }
 
         return self::create([
-            'worker_id' => $worker->id,
+            'worker_id' => $workerId,
             'badge_type' => $badgeType,
-            'badge_name' => $badgeType->label(),
-            'badge_icon' => $badgeType->emoji(),
-            'achievement_data' => $achievementData,
             'earned_at' => now(),
         ]);
     }
 
     /**
-     * Check if a worker qualifies for a badge.
+     * Check if worker has badge.
      */
-    public static function checkAndAwardBadge(JobWorker $worker, BadgeType $badgeType): ?self
+    public static function hasBadge(int $workerId, string $badgeType): bool
     {
-        // Already has badge
-        if (self::where('worker_id', $worker->id)->where('badge_type', $badgeType)->exists()) {
-            return null;
-        }
-
-        $requirement = $badgeType->requirement();
-        $qualified = false;
-        $achievementData = [];
-
-        switch ($requirement['type'] ?? '') {
-            case 'total_jobs':
-                $qualified = $worker->jobs_completed >= $requirement['count'];
-                $achievementData = ['jobs_completed' => $worker->jobs_completed];
-                break;
-
-            case 'weekly_earnings':
-                // Check current week earnings
-                $weekEarnings = $worker->earnings()
-                    ->where('week_start', now()->startOfWeek()->toDateString())
-                    ->value('total_earnings') ?? 0;
-                $qualified = $weekEarnings >= $requirement['amount'];
-                $achievementData = ['weekly_earnings' => $weekEarnings];
-                break;
-
-            case 'rating_streak':
-                $qualified = $worker->rating >= $requirement['rating'] 
-                    && $worker->rating_count >= $requirement['count'];
-                $achievementData = [
-                    'rating' => $worker->rating,
-                    'rating_count' => $worker->rating_count,
-                ];
-                break;
-
-            // Add more badge type checks as needed
-        }
-
-        if ($qualified) {
-            return self::awardBadge($worker, $badgeType, $achievementData);
-        }
-
-        return null;
+        return self::where('worker_id', $workerId)
+            ->where('badge_type', $badgeType)
+            ->exists();
     }
 
     /**
-     * Check all milestone badges for a worker.
+     * Get all badge types.
      */
-    public static function checkMilestoneBadges(JobWorker $worker): array
+    public static function allTypes(): array
     {
-        $awarded = [];
-
-        foreach (BadgeType::milestones() as $badgeType) {
-            $badge = self::checkAndAwardBadge($worker, $badgeType);
-            if ($badge) {
-                $awarded[] = $badge;
-            }
-        }
-
-        return $awarded;
+        return array_keys(self::BADGES);
     }
 
     /**
-     * Convert to display format.
+     * Get badge info.
      */
-    public function toDisplayFormat(): array
+    public static function getBadgeInfo(string $type): ?array
     {
-        return [
-            'type' => $this->badge_type->value,
-            'name' => $this->label,
-            'icon' => $this->icon,
-            'description' => $this->description,
-            'tier' => $this->tier,
-            'tier_label' => $this->tier_label,
-            'earned_at' => $this->earned_at->format('M j, Y'),
-            'earned_ago' => $this->earned_ago,
-        ];
+        return self::BADGES[$type] ?? null;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Boot
-    |--------------------------------------------------------------------------
-    */
-
-    protected static function boot()
+    /**
+     * Format for notification message.
+     */
+    public function toNotificationText(): string
     {
-        parent::boot();
+        return "🏆 *Badge earned!*\n" .
+            "{$this->emoji} *{$this->label}*\n" .
+            "{$this->description} 💪";
+    }
 
-        static::creating(function ($model) {
-            if (empty($model->earned_at)) {
-                $model->earned_at = now();
-            }
-
-            if (empty($model->badge_name)) {
-                $model->badge_name = $model->badge_type->label();
-            }
-
-            if (empty($model->badge_icon)) {
-                $model->badge_icon = $model->badge_type->emoji();
-            }
-        });
+    /**
+     * Format for shareable text.
+     */
+    public function toShareText(string $workerName): string
+    {
+        return "🎉 {$workerName} just earned the {$this->display} badge on NearBuy!\n" .
+            "{$this->description}\n\n" .
+            "#NjaanumPanikkar #NearBuy #Kerala";
     }
 }

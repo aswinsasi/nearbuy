@@ -7,51 +7,46 @@ namespace App\Services\Flow\Handlers\Jobs;
 use App\DTOs\IncomingMessage;
 use App\Enums\FlowType;
 use App\Enums\JobStatus;
+use App\Enums\PaymentMethod;
 use App\Models\ConversationSession;
 use App\Models\JobApplication;
 use App\Models\JobPost;
-use App\Models\User;
 use App\Services\Flow\Handlers\AbstractFlowHandler;
-use App\Services\Flow\FlowRouter;
 use App\Services\Jobs\JobApplicationService;
-use App\Services\Jobs\JobPostingService;
+use App\Services\Jobs\JobExecutionService;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\JobMessages;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Handler for job poster menu - view and manage posted jobs.
+ * Handler for job poster menu - simplified format.
  *
- * Features:
- * - View all posted jobs with status
- * - Filter by status (Active, Completed, All)
- * - View job details and applications
- * - Accept/Reject applications
- * - Cancel/Edit jobs
+ * Menu format:
+ * "📋 My Jobs:
+ *  [➕ Post New Job]
+ *  [📋 Active Jobs ([X])]
+ *  [✅ Completed Jobs]
+ *  [👷 Favourite Workers]"
  *
  * @srs-ref Section 3.3 - Job Poster Management
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobPosterMenuFlowHandler extends AbstractFlowHandler
 {
-    /**
-     * Flow step constants.
-     */
     protected const STEP_MENU = 'poster_menu';
     protected const STEP_VIEW_JOBS = 'view_jobs';
-    protected const STEP_VIEW_JOB_DETAIL = 'view_job_detail';
+    protected const STEP_VIEW_JOB = 'view_job';
     protected const STEP_VIEW_APPLICATIONS = 'view_applications';
     protected const STEP_VIEW_APPLICANT = 'view_applicant';
     protected const STEP_CONFIRM_CANCEL = 'confirm_cancel';
+    protected const STEP_PAYMENT = 'payment';
+    protected const STEP_RATING = 'rating';
 
     public function __construct(
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
-        protected JobPostingService $postingService,
         protected JobApplicationService $applicationService,
-        protected FlowRouter $flowRouter
+        protected JobExecutionService $executionService
     ) {
         parent::__construct($sessionManager, $whatsApp);
     }
@@ -66,24 +61,18 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
         return [
             self::STEP_MENU,
             self::STEP_VIEW_JOBS,
-            self::STEP_VIEW_JOB_DETAIL,
+            self::STEP_VIEW_JOB,
             self::STEP_VIEW_APPLICATIONS,
             self::STEP_VIEW_APPLICANT,
             self::STEP_CONFIRM_CANCEL,
+            self::STEP_PAYMENT,
+            self::STEP_RATING,
         ];
     }
 
-    protected function getExpectedInputType(string $step): string
+    public function getExpectedInputType(string $step): string
     {
-        return match ($step) {
-            self::STEP_MENU => 'list',
-            self::STEP_VIEW_JOBS => 'list',
-            self::STEP_VIEW_JOB_DETAIL => 'button',
-            self::STEP_VIEW_APPLICATIONS => 'list',
-            self::STEP_VIEW_APPLICANT => 'button',
-            self::STEP_CONFIRM_CANCEL => 'button',
-            default => 'button',
-        };
+        return 'button';
     }
 
     /**
@@ -91,25 +80,19 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
      */
     public function start(ConversationSession $session): void
     {
-        // Check if we should auto-show applications for a specific job
-        $viewAppJobId = $this->getTemp($session, 'view_applications_job_id');
+        // Check if should auto-show applications
+        $viewAppJobId = $this->getTempData($session, 'view_applications_job_id');
         if ($viewAppJobId) {
-            // Clear only the trigger key, keep other temp data
-            $this->setTemp($session, 'view_applications_job_id', null);
-            // Set up context for showing applications
-            $this->setTemp($session, 'current_job_id', (int) $viewAppJobId);
-            $this->nextStep($session, self::STEP_VIEW_APPLICATIONS);
+            $this->setTempData($session, 'view_applications_job_id', null);
+            $this->setTempData($session, 'job_id', (int) $viewAppJobId);
+            $this->setStep($session, self::STEP_VIEW_APPLICATIONS);
             $this->showApplicationsList($session);
             return;
         }
-        
-        $this->logInfo('Starting job poster menu', [
-            'phone' => $this->maskPhone($session->phone),
-        ]);
 
-            $this->clearTemp($session);
-            $this->nextStep($session, self::STEP_MENU);
-            $this->showPosterMenu($session);
+        $this->clearTempData($session);
+        $this->setStep($session, self::STEP_MENU);
+        $this->showPosterMenu($session);
     }
 
     /**
@@ -117,38 +100,24 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
-        // Handle common navigation
-        if ($this->handleCommonNavigation($message, $session)) {
-            return;
-        }
-
         $selectionId = $this->getSelectionId($message);
 
-        // Handle cross-flow navigation
-        if ($this->handleCrossFlowNavigation($selectionId, $session)) {
-            return;
-        }
-
-        // Handle application button clicks from any step
-        if ($this->handleApplicationActions($selectionId, $session)) {
+        // Handle button clicks first
+        if ($this->handleButtonClick($selectionId, $session)) {
             return;
         }
 
         $step = $session->current_step;
 
-        Log::debug('JobPosterMenuFlowHandler', [
-            'step' => $step,
-            'message_type' => $message->type,
-            'selection_id' => $selectionId,
-        ]);
-
         match ($step) {
             self::STEP_MENU => $this->handleMenu($message, $session),
             self::STEP_VIEW_JOBS => $this->handleViewJobs($message, $session),
-            self::STEP_VIEW_JOB_DETAIL => $this->handleViewJobDetail($message, $session),
+            self::STEP_VIEW_JOB => $this->handleViewJob($message, $session),
             self::STEP_VIEW_APPLICATIONS => $this->handleViewApplications($message, $session),
             self::STEP_VIEW_APPLICANT => $this->handleViewApplicant($message, $session),
             self::STEP_CONFIRM_CANCEL => $this->handleConfirmCancel($message, $session),
+            self::STEP_PAYMENT => $this->handlePayment($message, $session),
+            self::STEP_RATING => $this->handleRating($message, $session),
             default => $this->start($session),
         };
     }
@@ -156,142 +125,92 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
     /**
      * Re-prompt current step.
      */
-    protected function promptCurrentStep(ConversationSession $session): void
+    public function promptCurrentStep(ConversationSession $session): void
     {
         $step = $session->current_step;
 
         match ($step) {
             self::STEP_MENU => $this->showPosterMenu($session),
             self::STEP_VIEW_JOBS => $this->showJobsList($session),
-            self::STEP_VIEW_JOB_DETAIL => $this->showJobDetail($session),
+            self::STEP_VIEW_JOB => $this->showJobDetail($session),
             self::STEP_VIEW_APPLICATIONS => $this->showApplicationsList($session),
             self::STEP_VIEW_APPLICANT => $this->showApplicantDetail($session),
-            self::STEP_CONFIRM_CANCEL => $this->showCancelConfirmation($session),
             default => $this->start($session),
         };
     }
 
     /**
-     * Handle cross-flow navigation.
+     * Handle button clicks.
      */
-    protected function handleCrossFlowNavigation(?string $selectionId, ConversationSession $session): bool
+    protected function handleButtonClick(?string $selectionId, ConversationSession $session): bool
     {
         if (!$selectionId) {
             return false;
         }
 
-        // Post new job
-        if (in_array($selectionId, ['post_job', 'post_another_job', 'post_new_job'])) {
-            $this->clearTemp($session);
-            $this->flowRouter->startFlow($session, FlowType::JOB_POST);
+        // Navigation
+        if ($selectionId === 'post_job' || $selectionId === 'post_new_job') {
+            $this->clearTempData($session);
+            $this->startFlow($session, FlowType::JOB_POST);
             return true;
         }
 
-        // Main menu
-        if ($selectionId === 'main_menu') {
-            $this->clearTemp($session);
-            $this->flowRouter->goToMainMenu($session);
+        if ($selectionId === 'main_menu' || $selectionId === 'menu') {
+            $this->goToMenu($session);
             return true;
         }
 
-        return false;
-    }
-
-    /**
-     * Handle application-related button clicks from any step.
-     */
-    /**
-     * Handle application-related button clicks from any step.
-     */
-    protected function handleApplicationActions(?string $selectionId, ConversationSession $session): bool
-    {
-        if (!$selectionId) {
-            return false;
-        }
-
-        // Accept application
-        if (preg_match('/^accept_app_(\d+)$/', $selectionId, $matches)) {
-            $applicationId = (int) $matches[1];
-            $this->acceptApplication($session, $applicationId);
+        // Accept/Reject applications
+        if (preg_match('/^accept_(\d+)$/', $selectionId, $m)) {
+            $this->acceptApplication($session, (int) $m[1]);
             return true;
         }
 
-        // Reject application
-        if (preg_match('/^reject_app_(\d+)$/', $selectionId, $matches)) {
-            $applicationId = (int) $matches[1];
-            $this->rejectApplication($session, $applicationId);
+        if (preg_match('/^reject_(\d+)$/', $selectionId, $m)) {
+            $this->rejectApplication($session, (int) $m[1]);
             return true;
         }
 
-        // View applicant from list
-        if (preg_match('/^view_applicant_(\d+)$/', $selectionId, $matches)) {
-            $applicationId = (int) $matches[1];
-            $this->setTemp($session, 'current_application_id', $applicationId);
-            $this->nextStep($session, self::STEP_VIEW_APPLICANT);
+        // View applicant
+        if (preg_match('/^applicant_(\d+)$/', $selectionId, $m)) {
+            $this->setTempData($session, 'app_id', (int) $m[1]);
+            $this->setStep($session, self::STEP_VIEW_APPLICANT);
             $this->showApplicantDetail($session);
             return true;
         }
 
-        // ========== ADD THESE NEW HANDLERS ==========
-
-        // Poster confirms work is done
-        if (preg_match('/^confirm_work_done_(\d+)$/', $selectionId, $matches)) {
-            $jobId = (int) $matches[1];
-            $this->handlePosterConfirmWorkDone($session, $jobId);
+        // View job
+        if (preg_match('/^job_(\d+)$/', $selectionId, $m)) {
+            $this->setTempData($session, 'job_id', (int) $m[1]);
+            $this->setStep($session, self::STEP_VIEW_JOB);
+            $this->showJobDetail($session);
             return true;
         }
 
-        // Payment method selection
-        if (in_array($selectionId, ['pay_cash', 'pay_upi', 'pay_other'])) {
-            $this->handlePaymentMethodSelection($session, $selectionId);
+        // Payment
+        if (preg_match('/^pay_(cash|upi)_(\d+)$/', $selectionId, $m)) {
+            $this->processPayment($session, $m[1], (int) $m[2]);
             return true;
         }
 
-        // Rating selection
-        if (preg_match('/^rate_(\d)$/', $selectionId, $matches)) {
-            $rating = (int) $matches[1];
-            $this->handleRatingSelection($session, $rating);
+        // Rating
+        if (preg_match('/^rate_(\d)_(\d+)$/', $selectionId, $m)) {
+            $this->processRating($session, (int) $m[1], (int) $m[2]);
             return true;
         }
 
-        // ========== END NEW HANDLERS ==========
+        // Confirm work done
+        if (preg_match('/^work_done_(\d+)$/', $selectionId, $m)) {
+            $this->confirmWorkDone($session, (int) $m[1]);
+            return true;
+        }
 
         return false;
     }
 
-    /**
-     * Get status value as string (handles both enum and string).
-     */
-    protected function getStatusValue($status): string
-    {
-        // Handle any BackedEnum (JobStatus, JobApplicationStatus, etc.)
-        if ($status instanceof \BackedEnum) {
-            return $status->value;
-        }
-        return (string) $status;
-    }
-
-    /**
-     * Get status icon for job.
-     */
-    protected function getStatusIcon($status): string
-    {
-        $statusValue = $this->getStatusValue($status);
-        
-        return match ($statusValue) {
-            'open' => '🟢',
-            'assigned' => '🔵',
-            'in_progress' => '🟡',
-            'completed' => '✅',
-            'cancelled' => '❌',
-            'expired' => '⏰',
-            default => '📋',
-        };
-    }
-
     /*
     |--------------------------------------------------------------------------
-    | Menu Step
+    | Poster Menu
     |--------------------------------------------------------------------------
     */
 
@@ -300,21 +219,21 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
         $selectionId = $this->getSelectionId($message);
 
         switch ($selectionId) {
-            case 'view_active_jobs':
-                $this->setTemp($session, 'filter', 'active');
-                $this->nextStep($session, self::STEP_VIEW_JOBS);
+            case 'active_jobs':
+                $this->setTempData($session, 'filter', 'active');
+                $this->setStep($session, self::STEP_VIEW_JOBS);
                 $this->showJobsList($session);
                 break;
 
-            case 'view_completed_jobs':
-                $this->setTemp($session, 'filter', 'completed');
-                $this->nextStep($session, self::STEP_VIEW_JOBS);
+            case 'completed_jobs':
+                $this->setTempData($session, 'filter', 'completed');
+                $this->setStep($session, self::STEP_VIEW_JOBS);
                 $this->showJobsList($session);
                 break;
 
-            case 'view_all_jobs':
-                $this->setTemp($session, 'filter', 'all');
-                $this->nextStep($session, self::STEP_VIEW_JOBS);
+            case 'all_jobs':
+                $this->setTempData($session, 'filter', 'all');
+                $this->setStep($session, self::STEP_VIEW_JOBS);
                 $this->showJobsList($session);
                 break;
 
@@ -323,17 +242,20 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
         }
     }
 
+    /**
+     * Show simplified poster menu.
+     */
     protected function showPosterMenu(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
         if (!$user) {
-            $this->sendTextWithMenu($session->phone, "❌ Please register first.");
-            $this->goToMainMenu($session);
+            $this->sendText($session->phone, "❌ Please register first.");
+            $this->goToMenu($session);
             return;
         }
 
-        // Get job counts - handle enum status
+        // Get counts
         $activeCount = JobPost::where('poster_user_id', $user->id)
             ->whereIn('status', [JobStatus::OPEN, JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])
             ->count();
@@ -342,46 +264,33 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
             ->where('status', JobStatus::COMPLETED)
             ->count();
 
-        // Get pending applications count
-        $pendingApplications = JobApplication::where('status', 'pending')
-            ->whereHas('jobPost', function ($query) use ($user) {
-                $query->where('poster_user_id', $user->id)
-                    ->where('status', JobStatus::OPEN);
-            })->count();
+        $pendingApps = JobApplication::where('status', 'pending')
+            ->whereHas('jobPost', fn($q) => $q->where('poster_user_id', $user->id)->where('status', JobStatus::OPEN))
+            ->count();
 
-        $response = "📋 *My Posted Jobs*\n*എന്റെ പോസ്റ്റ് ചെയ്ത ജോലികൾ*\n\n" .
-            "🟢 Active Jobs: *{$activeCount}*\n" .
-            "✅ Completed: *{$completedCount}*\n";
+        // Compact menu
+        $message = "📋 *My Jobs*\n\n" .
+            "🟢 Active: *{$activeCount}*\n" .
+            "✅ Completed: *{$completedCount}*";
 
-        if ($pendingApplications > 0) {
-            $response .= "\n🔔 *{$pendingApplications} pending application(s)!*\n" .
-                "*{$pendingApplications} അപേക്ഷകൾ കാത്തിരിക്കുന്നു!*\n";
+        if ($pendingApps > 0) {
+            $message .= "\n\n🔔 *{$pendingApps} applications waiting!*";
         }
 
-        $response .= "\nSelect an option below:";
-        
-        // Send menu with list options
-        $this->whatsApp->sendList(
+        $this->sendButtons(
             $session->phone,
-            $response,
-            'Select Option',
-            [[
-                'title' => 'Job Options',
-                'rows' => [
-                    ['id' => 'view_active_jobs', 'title' => '🟢 Active Jobs', 'description' => "View open & assigned ({$activeCount})"],
-                    ['id' => 'view_completed_jobs', 'title' => '✅ Completed', 'description' => "View completed ({$completedCount})"],
-                    ['id' => 'view_all_jobs', 'title' => '📋 All Jobs', 'description' => 'View all posted jobs'],
-                    ['id' => 'post_new_job', 'title' => '➕ Post New Job', 'description' => 'Create a new job posting'],
-                    ['id' => 'main_menu', 'title' => '🏠 Main Menu', 'description' => 'Return to main menu'],
-                ],
-            ]],
-            '📋 My Jobs'
+            $message,
+            [
+                ['id' => 'post_job', 'title' => '➕ Post New Job'],
+                ['id' => 'active_jobs', 'title' => "📋 Active ({$activeCount})"],
+                ['id' => 'completed_jobs', 'title' => '✅ Completed'],
+            ]
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | View Jobs List
+    | Jobs List
     |--------------------------------------------------------------------------
     */
 
@@ -389,26 +298,8 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
     {
         $selectionId = $this->getSelectionId($message);
 
-        // Handle job selection
-        if ($selectionId && preg_match('/^view_posted_job_(\d+)$/', $selectionId, $matches)) {
-            $jobId = (int) $matches[1];
-            $this->setTemp($session, 'current_job_id', $jobId);
-            $this->nextStep($session, self::STEP_VIEW_JOB_DETAIL);
-            $this->showJobDetail($session);
-            return;
-        }
-
-        // Handle filter change
-        if (in_array($selectionId, ['filter_active', 'filter_completed', 'filter_all'])) {
-            $filter = str_replace('filter_', '', $selectionId);
-            $this->setTemp($session, 'filter', $filter);
-            $this->showJobsList($session);
-            return;
-        }
-
-        // Back to menu
-        if ($selectionId === 'back_to_poster_menu') {
-            $this->nextStep($session, self::STEP_MENU);
+        if ($selectionId === 'back') {
+            $this->setStep($session, self::STEP_MENU);
             $this->showPosterMenu($session);
             return;
         }
@@ -419,202 +310,145 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
     protected function showJobsList(ConversationSession $session): void
     {
         $user = $this->getUser($session);
-        $filter = $this->getTemp($session, 'filter', 'active');
-
-        if (!$user) {
-            $this->goToMainMenu($session);
-            return;
-        }
+        $filter = $this->getTempData($session, 'filter', 'active');
 
         $query = JobPost::where('poster_user_id', $user->id)
             ->with(['category', 'assignedWorker'])
             ->orderByDesc('created_at');
 
-        // Apply filter - use enum values
-        switch ($filter) {
-            case 'active':
-                $query->whereIn('status', [JobStatus::OPEN, JobStatus::ASSIGNED, JobStatus::IN_PROGRESS]);
-                $filterLabel = 'Active';
-                break;
-            case 'completed':
-                $query->where('status', JobStatus::COMPLETED);
-                $filterLabel = 'Completed';
-                break;
-            default:
-                $filterLabel = 'All';
+        // Apply filter
+        if ($filter === 'active') {
+            $query->whereIn('status', [JobStatus::OPEN, JobStatus::ASSIGNED, JobStatus::IN_PROGRESS]);
+            $filterLabel = 'Active';
+        } elseif ($filter === 'completed') {
+            $query->where('status', JobStatus::COMPLETED);
+            $filterLabel = 'Completed';
+        } else {
+            $filterLabel = 'All';
         }
 
-        // WhatsApp limit: max 10 items per section
         $jobs = $query->limit(10)->get();
 
         if ($jobs->isEmpty()) {
-            $this->whatsApp->sendButtons(
+            $this->sendButtons(
                 $session->phone,
-                "📭 *No {$filterLabel} Jobs*\n\n" .
-                "You don't have any {$filterLabel} jobs yet.\n\n" .
-                "Post a new job to find workers!",
+                "📭 *No {$filterLabel} Jobs*\n\nPost cheyyaan start cheyyuka!",
                 [
-                    ['id' => 'post_new_job', 'title' => '➕ Post Job'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '📋 No Jobs'
+                    ['id' => 'post_job', 'title' => '➕ Post Job'],
+                    ['id' => 'menu', 'title' => '📋 Menu'],
+                ]
             );
             return;
         }
 
-        // Build job list rows
+        // Build list
         $rows = [];
         foreach ($jobs as $job) {
-            $statusIcon = $this->getStatusIcon($job->status);
-            $statusValue = $this->getStatusValue($job->status);
-            
-            // Safe date formatting
-            $dateStr = 'TBD';
-            if ($job->job_date) {
-                try {
-                    $dateStr = $job->job_date->format('d M');
-                } catch (\Exception $e) {
-                    $dateStr = (string) $job->job_date;
-                }
-            }
+            $icon = $this->getStatusIcon($job->status);
+            $appCount = $job->applications_count ?? 0;
+            $appLabel = $appCount > 0 ? " • 👥{$appCount}" : '';
 
-            // Show application count for open jobs
-            $appCount = '';
-            if ($statusValue === 'open' && $job->applications_count > 0) {
-                $appCount = " • 👥{$job->applications_count}";
-            }
-            
             $rows[] = [
-                'id' => 'view_posted_job_' . $job->id,
-                'title' => mb_substr($statusIcon . ' ' . $job->title, 0, 24),
-                'description' => "₹" . number_format((float) ($job->pay_amount ?? 0)) . " | " . $dateStr . $appCount,
+                'id' => 'job_' . $job->id,
+                'title' => mb_substr("{$icon} {$job->title}", 0, 24),
+                'description' => "₹" . number_format((float) $job->pay_amount) . $appLabel,
             ];
         }
 
-        $this->whatsApp->sendList(
+        $this->sendList(
             $session->phone,
-            "📋 *{$filterLabel} Jobs* ({$jobs->count()})\n\nSelect a job to view details:",
-            'View Jobs',
-            [['title' => "{$filterLabel} Jobs", 'rows' => $rows]],
-            "📋 {$filterLabel} Jobs"
+            "📋 *{$filterLabel} Jobs* ({$jobs->count()})",
+            'View',
+            [['title' => 'Jobs', 'rows' => $rows]]
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | View Job Detail
+    | Job Detail
     |--------------------------------------------------------------------------
     */
 
-    protected function handleViewJobDetail(IncomingMessage $message, ConversationSession $session): void
+    protected function handleViewJob(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
-        $jobId = $this->getTemp($session, 'current_job_id');
 
-        if (!$jobId) {
-            $this->nextStep($session, self::STEP_VIEW_JOBS);
+        if ($selectionId === 'view_apps') {
+            $this->setStep($session, self::STEP_VIEW_APPLICATIONS);
+            $this->showApplicationsList($session);
+            return;
+        }
+
+        if ($selectionId === 'cancel_job') {
+            $this->setStep($session, self::STEP_CONFIRM_CANCEL);
+            $this->showCancelConfirmation($session);
+            return;
+        }
+
+        if ($selectionId === 'back') {
+            $this->setStep($session, self::STEP_VIEW_JOBS);
             $this->showJobsList($session);
             return;
         }
 
-        switch ($selectionId) {
-            case 'view_applications':
-                $this->nextStep($session, self::STEP_VIEW_APPLICATIONS);
-                $this->showApplicationsList($session);
-                break;
-
-            case 'cancel_job':
-                $this->nextStep($session, self::STEP_CONFIRM_CANCEL);
-                $this->showCancelConfirmation($session);
-                break;
-
-            case 'back_to_jobs_list':
-                $this->nextStep($session, self::STEP_VIEW_JOBS);
-                $this->showJobsList($session);
-                break;
-
-            case 'repost_job':
-                $this->repostJob($session, $jobId);
-                break;
-
-            default:
-                $this->showJobDetail($session);
-        }
+        $this->showJobDetail($session);
     }
 
     protected function showJobDetail(ConversationSession $session): void
     {
-        $jobId = $this->getTemp($session, 'current_job_id');
-        $job = JobPost::with(['category', 'assignedWorker', 'applications.worker'])->find($jobId);
+        $jobId = $this->getTempData($session, 'job_id');
+        $job = JobPost::with(['category', 'assignedWorker', 'applications'])->find($jobId);
 
         if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            $this->nextStep($session, self::STEP_VIEW_JOBS);
+            $this->sendText($session->phone, "❌ Job kandilla.");
+            $this->setStep($session, self::STEP_VIEW_JOBS);
             $this->showJobsList($session);
             return;
         }
 
-        $statusIcon = $this->getStatusIcon($job->status);
-        $statusValue = $this->getStatusValue($job->status);
-        $categoryIcon = $job->category?->icon ?? '📋';
-
-        $message = "📋 *JOB DETAILS*\n\n" .
-            "{$categoryIcon} *{$job->title}*\n" .
-            "📍 {$job->location_display}\n" .
-            "📅 {$job->formatted_date_time}\n" .
-            "⏱️ {$job->duration_display}\n" .
-            "💰 {$job->pay_display}\n\n" .
-            "{$statusIcon} *Status:* " . ucfirst($statusValue) . "\n";
-
-        // Show applications info
+        $icon = $this->getStatusIcon($job->status);
+        $statusLabel = $this->getStatusLabel($job->status);
+        $catIcon = $job->category?->icon ?? '📋';
         $appCount = $job->applications->count();
-        $pendingCount = $job->applications->filter(function ($app) {
-            return $this->getStatusValue($app->status) === 'pending';
-        })->count();
-        
+
+        $message = "{$catIcon} *{$job->title}*\n\n" .
+            "📍 {$job->location_name}\n" .
+            "💰 ₹" . number_format((float) $job->pay_amount) . "\n" .
+            "{$icon} Status: {$statusLabel}";
+
         if ($appCount > 0) {
-            $message .= "👥 *Applications:* {$appCount}";
+            $pendingCount = $job->applications->where('status', 'pending')->count();
+            $message .= "\n👥 Applications: {$appCount}";
             if ($pendingCount > 0) {
                 $message .= " ({$pendingCount} pending)";
             }
-            $message .= "\n";
         }
 
-        // Show assigned worker if any
         if ($job->assignedWorker) {
-            $workerName = $job->assignedWorker->name ?? 'Worker';
-            $message .= "\n👷 *Assigned to:* {$workerName}\n";
+            $message .= "\n👷 Worker: {$job->assignedWorker->name}";
         }
 
-        if ($job->description) {
-            $message .= "\n📝 *Description:*\n{$job->description}\n";
-        }
-        
-        // Build action buttons based on job status
+        // Buttons based on status
         $buttons = [];
-        
+        $statusValue = $job->status instanceof JobStatus ? $job->status->value : $job->status;
+
         if ($statusValue === 'open') {
             if ($appCount > 0) {
-                $buttons[] = ['id' => 'view_applications', 'title' => "👥 Applications ({$appCount})"];
+                $buttons[] = ['id' => 'view_apps', 'title' => "👥 Applications ({$appCount})"];
             }
-            $buttons[] = ['id' => 'cancel_job', 'title' => '❌ Cancel Job'];
-        } elseif (in_array($statusValue, ['cancelled', 'expired'])) {
-            $buttons[] = ['id' => 'repost_job', 'title' => '🔄 Repost'];
+            $buttons[] = ['id' => 'cancel_job', 'title' => '❌ Cancel'];
+        } elseif ($statusValue === 'in_progress') {
+            $buttons[] = ['id' => "work_done_{$job->id}", 'title' => '✅ Work Done'];
         }
-        
-        $buttons[] = ['id' => 'back_to_jobs_list', 'title' => '⬅️ Back'];
-        
-        $this->whatsApp->sendButtons(
-            $session->phone,
-            $message,
-            array_slice($buttons, 0, 3), // WhatsApp max 3 buttons
-            '📋 Job Details'
-        );
+
+        $buttons[] = ['id' => 'back', 'title' => '⬅️ Back'];
+
+        $this->sendButtons($session->phone, $message, array_slice($buttons, 0, 3));
     }
 
     /*
     |--------------------------------------------------------------------------
-    | View Applications
+    | Applications
     |--------------------------------------------------------------------------
     */
 
@@ -622,102 +456,62 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
     {
         $selectionId = $this->getSelectionId($message);
 
-        // Back to job detail
-        if ($selectionId === 'back_to_job_detail') {
-            $this->nextStep($session, self::STEP_VIEW_JOB_DETAIL);
+        if ($selectionId === 'back') {
+            $this->setStep($session, self::STEP_VIEW_JOB);
             $this->showJobDetail($session);
             return;
         }
 
-        // Re-show list
         $this->showApplicationsList($session);
     }
 
     protected function showApplicationsList(ConversationSession $session): void
     {
-        $jobId = $this->getTemp($session, 'current_job_id');
-        $job = JobPost::with(['applications.worker', 'category'])->find($jobId);
+        $jobId = $this->getTempData($session, 'job_id');
+        $job = JobPost::with('applications.worker')->find($jobId);
 
         if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
+            $this->sendText($session->phone, "❌ Job kandilla.");
             return;
         }
 
-        $applications = $job->applications()
-            ->with('worker')
-            ->orderBy('created_at', 'desc')
-            ->get();
+        $applications = $job->applications()->with('worker')->orderByDesc('created_at')->get();
 
         if ($applications->isEmpty()) {
             $this->sendButtons(
                 $session->phone,
-                "📭 *No Applications Yet*\n\n" .
-                "No one has applied to your job yet.\n" .
-                "ഇതുവരെ ആരും അപേക്ഷിച്ചിട്ടില്ല.\n\n" .
-                "Workers nearby will be notified!",
-                [
-                    ['id' => 'back_to_job_detail', 'title' => '⬅️ Back'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                "📋 {$job->title}"
+                "📭 *No Applications*\n\nWorkersine ariyichittund. Wait cheyyuka!",
+                [['id' => 'back', 'title' => '⬅️ Back']]
             );
             return;
         }
 
-        // Build list of applicants
         $rows = [];
         foreach ($applications as $app) {
             $worker = $app->worker;
-            $statusValue = $this->getStatusValue($app->status);
-            
-            $amount = $app->proposed_amount 
-                ? '₹' . number_format((float) $app->proposed_amount)
-                : '₹' . number_format((float) $job->pay_amount);
-            
-            $statusEmoji = match($statusValue) {
-                'pending' => '🟡',
-                'accepted' => '✅',
-                'rejected' => '❌',
-                'withdrawn' => '⬜',
-                default => '🔵',
-            };
-
-            $workerName = $worker->name ?? 'Worker';
+            $statusIcon = $this->getAppStatusIcon($app->status);
             $rating = $worker->rating ? "⭐{$worker->rating}" : '🆕';
 
             $rows[] = [
-                'id' => 'view_applicant_' . $app->id,
-                'title' => mb_substr("{$statusEmoji} {$workerName}", 0, 24),
-                'description' => mb_substr("{$rating} • {$amount}", 0, 72),
+                'id' => 'applicant_' . $app->id,
+                'title' => mb_substr("{$statusIcon} {$worker->name}", 0, 24),
+                'description' => "{$rating} • {$worker->jobs_completed} jobs",
             ];
         }
 
-        $count = $applications->count();
-        $pendingCount = $applications->filter(function ($app) {
-            return $this->getStatusValue($app->status) === 'pending';
-        })->count();
-        $categoryIcon = $job->category?->icon ?? '📋';
+        $pendingCount = $applications->where('status', 'pending')->count();
 
         $this->sendList(
             $session->phone,
-            "👥 *Applications for:*\n{$categoryIcon} *{$job->title}*\n\n" .
-            "Total: *{$count}* application(s)\n" .
-            "Pending: *{$pendingCount}*\n\n" .
-            "Select an applicant to view details and accept/reject.",
-            '👥 View Applicants',
-            [
-                [
-                    'title' => '👥 Applicants',
-                    'rows' => $rows,
-                ],
-            ],
-            "📋 {$job->title}"
+            "👥 *Applications* ({$applications->count()})\nPending: {$pendingCount}",
+            'View',
+            [['title' => 'Applicants', 'rows' => $rows]]
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | View Applicant Detail
+    | Applicant Detail
     |--------------------------------------------------------------------------
     */
 
@@ -725,222 +519,136 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
     {
         $selectionId = $this->getSelectionId($message);
 
-        // Back to applications list
-        if ($selectionId === 'back_to_applications') {
-            $this->nextStep($session, self::STEP_VIEW_APPLICATIONS);
+        if ($selectionId === 'back') {
+            $this->setStep($session, self::STEP_VIEW_APPLICATIONS);
             $this->showApplicationsList($session);
             return;
         }
 
-        // Re-show applicant detail
         $this->showApplicantDetail($session);
     }
 
     protected function showApplicantDetail(ConversationSession $session): void
     {
-        $applicationId = $this->getTemp($session, 'current_application_id');
-        $application = JobApplication::with(['worker', 'jobPost.category'])->find($applicationId);
+        $appId = $this->getTempData($session, 'app_id');
+        $app = JobApplication::with(['worker', 'jobPost'])->find($appId);
 
-        if (!$application) {
-            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
-            $this->nextStep($session, self::STEP_VIEW_APPLICATIONS);
+        if (!$app) {
+            $this->sendText($session->phone, "❌ Application kandilla.");
+            $this->setStep($session, self::STEP_VIEW_APPLICATIONS);
             $this->showApplicationsList($session);
             return;
         }
 
-        $worker = $application->worker;
-        $job = $application->jobPost;
-        $statusValue = $this->getStatusValue($application->status);
+        $worker = $app->worker;
+        $job = $app->jobPost;
+        $rating = $worker->rating ? "⭐ {$worker->rating}/5" : '🆕 New';
+        $statusValue = is_string($app->status) ? $app->status : $app->status->value;
 
-        $amount = $application->proposed_amount 
-            ? '₹' . number_format((float) $application->proposed_amount) . ' (proposed)'
-            : '₹' . number_format((float) $job->pay_amount);
-
-        $messageText = $application->message 
-            ? "\n\n✉️ *Message:*\n_{$application->message}_"
-            : "";
-
-        $rating = $worker->rating 
-            ? "⭐ {$worker->rating}/5" 
-            : "🆕 New worker";
-
-        $completedJobs = $worker->jobs_completed ?? 0;
-
-        $message = "👤 *APPLICANT DETAILS*\n\n" .
-            "👷 *{$worker->name}*\n" .
+        $message = "👤 *{$worker->name}*\n\n" .
             "{$rating}\n" .
-            "✅ {$completedJobs} jobs completed\n\n" .
-            "💰 *Amount:* {$amount}" .
-            $messageText . "\n\n" .
-            "📋 *For:* {$job->title}";
+            "✅ {$worker->jobs_completed} jobs done";
 
-        // Show accept/reject buttons only if pending
+        if ($app->message) {
+            $message .= "\n\n💬 \"{$app->message}\"";
+        }
+
+        // Buttons based on status
         if ($statusValue === 'pending') {
             $this->sendButtons(
                 $session->phone,
                 $message,
                 [
-                    ['id' => 'accept_app_' . $application->id, 'title' => '✅ Accept'],
-                    ['id' => 'reject_app_' . $application->id, 'title' => '❌ Reject'],
-                    ['id' => 'back_to_applications', 'title' => '⬅️ Back'],
-                ],
-                '👤 Applicant'
+                    ['id' => "accept_{$app->id}", 'title' => '✅ Accept'],
+                    ['id' => "reject_{$app->id}", 'title' => '❌ Reject'],
+                    ['id' => 'back', 'title' => '⬅️ Back'],
+                ]
             );
         } else {
-            $statusText = match($statusValue) {
-                'accepted' => '✅ ACCEPTED',
-                'rejected' => '❌ REJECTED',
-                'withdrawn' => '⬜ WITHDRAWN',
-                default => strtoupper($statusValue),
-            };
-
+            $statusLabel = strtoupper($statusValue);
             $this->sendButtons(
                 $session->phone,
-                $message . "\n\n*Status:* {$statusText}",
-                [
-                    ['id' => 'back_to_applications', 'title' => '⬅️ Back'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '👤 Applicant'
+                $message . "\n\n*Status:* {$statusLabel}",
+                [['id' => 'back', 'title' => '⬅️ Back']]
             );
         }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Accept/Reject Applications
+    | Accept/Reject
     |--------------------------------------------------------------------------
     */
 
-    protected function acceptApplication(ConversationSession $session, int $applicationId): void
+    protected function acceptApplication(ConversationSession $session, int $appId): void
     {
-        $application = JobApplication::with(['worker', 'jobPost'])->find($applicationId);
+        $app = JobApplication::with(['worker.user', 'jobPost'])->find($appId);
 
-        if (!$application) {
-            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
-            return;
-        }
-
-        $statusValue = $this->getStatusValue($application->status);
-
-        if ($statusValue !== 'pending') {
-            $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
+        if (!$app) {
+            $this->sendText($session->phone, "❌ Application kandilla.");
             return;
         }
 
         try {
-            $this->applicationService->acceptApplication($application);
+            $this->applicationService->acceptApplication($app);
 
-            $worker = $application->worker;
-            $job = $application->jobPost;
+            $worker = $app->worker;
+            $job = $app->jobPost;
 
             // Notify poster
             $this->sendButtons(
                 $session->phone,
-                "✅ *Worker Accepted!*\n*പണിക്കാരനെ സ്വീകരിച്ചു!*\n\n" .
-                "You've accepted *{$worker->name}* for:\n" .
-                "📋 {$job->title}\n\n" .
-                "The worker has been notified.\n" .
-                "പണിക്കാരനെ അറിയിച്ചു.\n\n" .
-                "📞 Worker Phone: " . ($worker->user->phone ?? 'Will be shared'),
+                "✅ *{$worker->name}* accepted!\n\n📞 {$worker->user?->phone}",
                 [
-                    ['id' => 'back_to_job_detail', 'title' => '📋 View Job'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '✅ Accepted'
+                    ['id' => 'job_' . $job->id, 'title' => '📋 View Job'],
+                    ['id' => 'menu', 'title' => '📋 Menu'],
+                ]
             );
 
             // Notify worker
-            $workerUser = $worker->user;
-            if ($workerUser?->phone) {
-                $this->whatsApp->sendButtons(
-                    $workerUser->phone,
-                    "🎉 *Good News!*\n*നല്ല വാർത്ത!*\n\n" .
-                    "Your application for *{$job->title}* has been ACCEPTED!\n" .
-                    "നിങ്ങളുടെ അപേക്ഷ സ്വീകരിച്ചു!\n\n" .
-                    "📍 {$job->location_display}\n" .
-                    "📅 {$job->formatted_date_time}\n" .
-                    "💰 {$job->pay_display}\n\n" .
-                    "Please contact the job poster to confirm details.\n" .
-                    "📞 Poster Phone: " . ($job->poster->phone ?? 'Not available'),
-                    [
-                        ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                    ],
-                    '🎉 Job Accepted!'
+            if ($worker->user?->phone) {
+                $this->sendButtons(
+                    $worker->user->phone,
+                    "🎉 *Job kitiyi!*\n\n{$job->title}\n📍 {$job->location_name}\n💰 ₹" . number_format((float) $job->pay_amount),
+                    [['id' => 'menu', 'title' => '📋 Menu']]
                 );
             }
 
-            $this->logInfo('Application accepted', [
-                'application_id' => $applicationId,
-                'job_id' => $job->id,
-                'worker_id' => $worker->id,
-            ]);
-
-            // Stay on job detail
-            $this->setTemp($session, 'current_job_id', $job->id);
-            $this->nextStep($session, self::STEP_VIEW_JOB_DETAIL);
+            $this->setTempData($session, 'job_id', $job->id);
+            $this->setStep($session, self::STEP_VIEW_JOB);
 
         } catch (\Exception $e) {
-            $this->logError('Failed to accept application', [
-                'error' => $e->getMessage(),
-                'application_id' => $applicationId,
-            ]);
-
-            $this->sendTextWithMenu($session->phone, "❌ Failed to accept application: " . $e->getMessage());
+            Log::error('Accept failed', ['error' => $e->getMessage()]);
+            $this->sendText($session->phone, "❌ Accept failed. Try again.");
         }
     }
 
-    protected function rejectApplication(ConversationSession $session, int $applicationId): void
+    protected function rejectApplication(ConversationSession $session, int $appId): void
     {
-        $application = JobApplication::with(['worker', 'jobPost'])->find($applicationId);
+        $app = JobApplication::with(['worker', 'jobPost'])->find($appId);
 
-        if (!$application) {
-            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
-            return;
-        }
-
-        $statusValue = $this->getStatusValue($application->status);
-
-        if ($statusValue !== 'pending') {
-            $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
+        if (!$app) {
+            $this->sendText($session->phone, "❌ Application kandilla.");
             return;
         }
 
         try {
-            $this->applicationService->rejectApplication($application);
+            $this->applicationService->rejectApplication($app);
 
-            $worker = $application->worker;
-            $job = $application->jobPost;
-
-            // Notify poster
             $this->sendButtons(
                 $session->phone,
-                "❌ *Application Rejected*\n\n" .
-                "You've rejected {$worker->name}'s application.\n\n" .
-                "View other applicants or return to menu.",
+                "❌ Application rejected.",
                 [
-                    ['id' => 'back_to_applications', 'title' => '👥 View Others'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '❌ Rejected'
+                    ['id' => 'back', 'title' => '👥 Other Applicants'],
+                    ['id' => 'menu', 'title' => '📋 Menu'],
+                ]
             );
 
-            $this->logInfo('Application rejected', [
-                'application_id' => $applicationId,
-                'job_id' => $job->id,
-                'worker_id' => $worker->id,
-            ]);
-
-            // Go back to applications list
-            $this->nextStep($session, self::STEP_VIEW_APPLICATIONS);
+            $this->setStep($session, self::STEP_VIEW_APPLICATIONS);
 
         } catch (\Exception $e) {
-            $this->logError('Failed to reject application', [
-                'error' => $e->getMessage(),
-                'application_id' => $applicationId,
-            ]);
-
-            $this->sendTextWithMenu($session->phone, "❌ Failed to reject application. Please try again.");
+            Log::error('Reject failed', ['error' => $e->getMessage()]);
+            $this->sendText($session->phone, "❌ Reject failed. Try again.");
         }
     }
 
@@ -953,15 +661,14 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
     protected function handleConfirmCancel(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
-        $jobId = $this->getTemp($session, 'current_job_id');
 
-        if ($selectionId === 'confirm_cancel_job') {
-            $this->cancelJob($session, $jobId);
+        if ($selectionId === 'yes_cancel') {
+            $this->cancelJob($session);
             return;
         }
 
-        if ($selectionId === 'back_to_job_detail' || $selectionId === 'cancel') {
-            $this->nextStep($session, self::STEP_VIEW_JOB_DETAIL);
+        if ($selectionId === 'no_cancel' || $selectionId === 'back') {
+            $this->setStep($session, self::STEP_VIEW_JOB);
             $this->showJobDetail($session);
             return;
         }
@@ -971,325 +678,216 @@ class JobPosterMenuFlowHandler extends AbstractFlowHandler
 
     protected function showCancelConfirmation(ConversationSession $session): void
     {
-        $jobId = $this->getTemp($session, 'current_job_id');
-        $job = JobPost::with('category')->find($jobId);
+        $jobId = $this->getTempData($session, 'job_id');
+        $job = JobPost::find($jobId);
 
         if (!$job) {
-            $this->nextStep($session, self::STEP_VIEW_JOBS);
+            $this->setStep($session, self::STEP_VIEW_JOBS);
             $this->showJobsList($session);
             return;
         }
 
-        $categoryIcon = $job->category?->icon ?? '📋';
-
         $this->sendButtons(
             $session->phone,
-            "⚠️ *Cancel Job?*\n\n" .
-            "{$categoryIcon} *{$job->title}*\n" .
-            "📍 {$job->location_display}\n" .
-            "💰 {$job->pay_display}\n\n" .
-            "Are you sure you want to cancel this job?\n\n" .
-            "_This action cannot be undone._",
+            "⚠️ *Cancel Job?*\n\n{$job->title}\n\nUrappaano?",
             [
-                ['id' => 'confirm_cancel_job', 'title' => '❌ Yes, Cancel'],
-                ['id' => 'back_to_job_detail', 'title' => '⬅️ No, Go Back'],
-            ],
-            '⚠️ Confirm Cancel'
+                ['id' => 'yes_cancel', 'title' => '❌ Yes, Cancel'],
+                ['id' => 'no_cancel', 'title' => '⬅️ No, Back'],
+            ]
         );
     }
 
-    protected function cancelJob(ConversationSession $session, int $jobId): void
+    protected function cancelJob(ConversationSession $session): void
     {
+        $jobId = $this->getTempData($session, 'job_id');
         $job = JobPost::find($jobId);
 
         if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            return;
-        }
-
-        $statusValue = $this->getStatusValue($job->status);
-
-        if (!in_array($statusValue, ['open', 'assigned'])) {
-            $this->sendTextWithMenu(
-                $session->phone,
-                "❌ Cannot cancel this job. It may already be completed or in progress."
-            );
+            $this->sendText($session->phone, "❌ Job kandilla.");
             return;
         }
 
         try {
-            // Update job status directly
             $job->update([
                 'status' => JobStatus::CANCELLED,
                 'cancelled_at' => now(),
-                'cancellation_reason' => 'Cancelled by poster',
             ]);
 
-            $categoryIcon = $job->category?->icon ?? '📋';
-            
             $this->sendButtons(
                 $session->phone,
-                "✅ *Job Cancelled*\n\n" .
-                "{$categoryIcon} {$job->title}\n\n" .
-                "The job has been cancelled.",
+                "✅ Job cancelled.",
                 [
-                    ['id' => 'post_new_job', 'title' => '➕ Post New Job'],
-                    ['id' => 'view_all_jobs', 'title' => '📂 My Jobs'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                    ['id' => 'post_job', 'title' => '➕ New Job'],
+                    ['id' => 'menu', 'title' => '📋 Menu'],
                 ]
             );
 
-            $this->nextStep($session, self::STEP_MENU);
+            $this->setStep($session, self::STEP_MENU);
 
         } catch (\Exception $e) {
-            $this->logError('Failed to cancel job', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error('Cancel failed', ['error' => $e->getMessage()]);
+            $this->sendText($session->phone, "❌ Cancel failed. Try again.");
+        }
+    }
 
-            $this->sendTextWithMenu(
-                $session->phone,
-                "❌ Failed to cancel job. Please try again."
+    /*
+    |--------------------------------------------------------------------------
+    | Work Done / Payment / Rating
+    |--------------------------------------------------------------------------
+    */
+
+    protected function confirmWorkDone(ConversationSession $session, int $jobId): void
+    {
+        $job = JobPost::with(['verification', 'assignedWorker'])->find($jobId);
+
+        if (!$job || !$job->verification) {
+            $this->sendText($session->phone, "❌ Job kandilla.");
+            return;
+        }
+
+        $this->executionService->confirmCompletionByPoster($job->verification);
+
+        // Ask for payment method
+        $this->sendButtons(
+            $session->phone,
+            "💰 *Payment engane?*\n\n{$job->title}\n💵 ₹" . number_format((float) $job->pay_amount),
+            [
+                ['id' => "pay_cash_{$job->id}", 'title' => '💵 Cash'],
+                ['id' => "pay_upi_{$job->id}", 'title' => '📱 UPI'],
+            ]
+        );
+
+        $this->setTempData($session, 'job_id', $jobId);
+        $this->setStep($session, self::STEP_PAYMENT);
+    }
+
+    protected function handlePayment(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Handled by button click
+        $this->promptCurrentStep($session);
+    }
+
+    protected function processPayment(ConversationSession $session, string $method, int $jobId): void
+    {
+        $job = JobPost::with(['verification', 'assignedWorker'])->find($jobId);
+
+        if (!$job || !$job->verification) {
+            $this->sendText($session->phone, "❌ Job kandilla.");
+            return;
+        }
+
+        $paymentMethod = $method === 'upi' ? PaymentMethod::UPI : PaymentMethod::CASH;
+        $this->executionService->confirmPayment($job->verification, $paymentMethod);
+
+        // Ask for rating
+        $worker = $job->assignedWorker;
+        $this->sendButtons(
+            $session->phone,
+            "⭐ *{$worker->name}-ne rate cheyyuka:*",
+            [
+                ['id' => "rate_5_{$job->id}", 'title' => '⭐⭐⭐⭐⭐'],
+                ['id' => "rate_4_{$job->id}", 'title' => '⭐⭐⭐⭐'],
+                ['id' => "rate_3_{$job->id}", 'title' => '⭐⭐⭐'],
+            ]
+        );
+
+        $this->setStep($session, self::STEP_RATING);
+    }
+
+    protected function handleRating(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Handled by button click
+        $this->promptCurrentStep($session);
+    }
+
+    protected function processRating(ConversationSession $session, int $rating, int $jobId): void
+    {
+        $job = JobPost::with(['verification', 'assignedWorker'])->find($jobId);
+
+        if (!$job || !$job->verification) {
+            $this->sendText($session->phone, "❌ Job kandilla.");
+            return;
+        }
+
+        $this->executionService->rateWorker($job->verification, $rating);
+        $this->executionService->completeJob($job);
+
+        // Notify worker
+        $worker = $job->assignedWorker;
+        if ($worker->user?->phone) {
+            $stars = str_repeat('⭐', $rating);
+            $this->sendText(
+                $worker->user->phone,
+                "✅ *Job complete!*\n💰 ₹" . number_format((float) $job->pay_amount) . " earned\nRating: {$stars}"
             );
         }
+
+        $this->sendButtons(
+            $session->phone,
+            "✅ *Job completed!*\n\nNanni! 🙏",
+            [
+                ['id' => 'post_job', 'title' => '➕ New Job'],
+                ['id' => 'menu', 'title' => '📋 Menu'],
+            ]
+        );
+
+        $this->clearTempData($session);
+        $this->setStep($session, self::STEP_MENU);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Repost Job
+    | Helpers
     |--------------------------------------------------------------------------
     */
 
-    protected function repostJob(ConversationSession $session, int $jobId): void
+    protected function getStatusIcon($status): string
     {
-        $job = JobPost::with('category')->find($jobId);
-
-        if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            return;
-        }
-
-        // Pre-fill job posting flow with this job's data
-        $this->setTemp($session, 'category_id', $job->job_category_id);
-        $this->setTemp($session, 'category_name', $job->category->display_name ?? 'Other');
-        $this->setTemp($session, 'title', $job->title);
-        $this->setTemp($session, 'description', $job->description);
-        $this->setTemp($session, 'location_name', $job->location_name);
-        $this->setTemp($session, 'latitude', $job->latitude);
-        $this->setTemp($session, 'longitude', $job->longitude);
-        $this->setTemp($session, 'duration_hours', $job->duration_hours);
-        $this->setTemp($session, 'pay_amount', $job->pay_amount);
-        $this->setTemp($session, 'special_instructions', $job->special_instructions);
-
-        $this->flowRouter->startFlow($session, FlowType::JOB_POST);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Job Completion & Payment Flow
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Handle poster confirming work is done.
-     */
-    protected function handlePosterConfirmWorkDone(ConversationSession $session, int $jobId): void
-    {
-        $job = JobPost::with(['verification', 'assignedWorker'])->find($jobId);
-
-        if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            return;
-        }
-
-        if (!$job->verification) {
-            $this->sendTextWithMenu($session->phone, "❌ No verification record found for this job.");
-            return;
-        }
-
-        try {
-            // Mark poster confirmed
-            $job->verification->update(['poster_confirmed_at' => now()]);
-
-            // Store job ID for payment flow
-            $this->setTemp($session, 'payment_job_id', $jobId);
-
-            // Ask for payment method
-            $this->sendMessage($session, JobMessages::requestPaymentConfirmation($job));
-
-            Log::info('Poster confirmed work done', [
-                'job_id' => $jobId,
-                'verification_id' => $job->verification->id,
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Failed to confirm work done', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
-            $this->sendTextWithMenu($session->phone, "❌ Failed to confirm. Please try again.");
-        }
-    }
-
-    /**
-     * Handle payment method selection.
-     */
-    protected function handlePaymentMethodSelection(ConversationSession $session, string $method): void
-    {
-        $jobId = $this->getTemp($session, 'payment_job_id');
-        $job = JobPost::with(['verification', 'assignedWorker'])->find($jobId);
-
-        if (!$job || !$job->verification) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            return;
-        }
-
-        $paymentMethod = match($method) {
-            'pay_cash' => 'cash',
-            'pay_upi' => 'upi',
-            'pay_other' => 'other',
-            default => 'cash',
+        $value = $status instanceof JobStatus ? $status->value : $status;
+        
+        return match ($value) {
+            'open' => '🟢',
+            'assigned' => '🔵',
+            'in_progress' => '🟡',
+            'completed' => '✅',
+            'cancelled' => '❌',
+            default => '📋',
         };
-
-        try {
-            // Record payment confirmation
-            $job->verification->update([
-                'payment_method' => $paymentMethod,
-                'payment_confirmed_at' => now(),
-            ]);
-
-            // Store for rating step
-            $this->setTemp($session, 'payment_method', $paymentMethod);
-
-            // Ask for rating
-            $this->sendMessage($session, JobMessages::paymentConfirmed($job, $paymentMethod));
-
-            Log::info('Payment confirmed', [
-                'job_id' => $jobId,
-                'method' => $paymentMethod,
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Failed to confirm payment', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
-            $this->sendTextWithMenu($session->phone, "❌ Failed to process payment. Please try again.");
-        }
     }
 
-    /**
-     * Handle rating selection.
-     */
-    protected function handleRatingSelection(ConversationSession $session, int $rating): void
+    protected function getStatusLabel($status): string
     {
-        $jobId = $this->getTemp($session, 'payment_job_id');
-        $job = JobPost::with(['verification', 'assignedWorker'])->find($jobId);
-
-        if (!$job || !$job->verification) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            return;
-        }
-
-        try {
-            // Record rating
-            $job->verification->update([
-                'rating' => $rating,
-                'rated_at' => now(),
-            ]);
-
-            // Mark job as completed
-            $job->update(['status' => JobStatus::COMPLETED]);
-
-            // Update worker stats
-            $worker = $job->assignedWorker;
-            if ($worker) {
-                $worker->increment('jobs_completed');
-                $worker->increment('total_earnings', $job->pay_amount ?? 0);
-                
-                // Recalculate rating
-                $avgRating = $worker->verifications()
-                    ->whereNotNull('rating')
-                    ->avg('rating');
-                
-                if ($avgRating) {
-                    $worker->update([
-                        'rating' => round((float) $avgRating, 1),
-                        'rating_count' => $worker->verifications()->whereNotNull('rating')->count(),
-                    ]);
-                }
-
-                // Notify worker of completion and rating
-                $workerPhone = $worker->user?->phone;
-                if ($workerPhone) {
-                    $stars = str_repeat('⭐', $rating);
-                    $this->whatsApp->sendButtons(
-                        $workerPhone,
-                        "🎉 *Job Complete & Paid!*\n" .
-                        "*ജോലി പൂർത്തിയാക്കി & പണം ലഭിച്ചു!*\n\n" .
-                        "📋 *{$job->title}*\n" .
-                        "💰 {$job->pay_display}\n" .
-                        "Rating: {$stars}\n\n" .
-                        "Great work! Keep it up! 💪",
-                        [
-                            ['id' => 'find_jobs', 'title' => '🔍 Find More Jobs'],
-                            ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                        ],
-                        '🎉 Paid!'
-                    );
-                }
-            }
-
-            // Send completion message to poster
-            $this->sendMessage($session, JobMessages::jobFullyCompleted($job, $rating));
-
-            // Clear temp data
-            $this->clearTemp($session);
-
-            Log::info('Job fully completed', [
-                'job_id' => $jobId,
-                'rating' => $rating,
-                'worker_id' => $worker?->id,
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Failed to complete job', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
-            $this->sendTextWithMenu($session->phone, "❌ Failed to complete. Please try again.");
-        }
+        $value = $status instanceof JobStatus ? $status->value : $status;
+        
+        return match ($value) {
+            'open' => 'Open',
+            'assigned' => 'Assigned',
+            'in_progress' => 'In Progress',
+            'completed' => 'Completed',
+            'cancelled' => 'Cancelled',
+            default => ucfirst($value),
+        };
     }
 
-    /**
-     * Send a message using JobMessages array format.
-     */
-    protected function sendMessage(ConversationSession $session, array $message): void
+    protected function getAppStatusIcon($status): string
     {
-        $type = $message['type'] ?? 'text';
+        $value = is_string($status) ? $status : $status->value;
+        
+        return match ($value) {
+            'pending' => '🟡',
+            'accepted' => '✅',
+            'rejected' => '❌',
+            default => '🔵',
+        };
+    }
 
-        switch ($type) {
-            case 'buttons':
-                $this->whatsApp->sendButtons(
-                    $session->phone,
-                    $message['body'],
-                    $message['buttons'],
-                    $message['header'] ?? null
-                );
-                break;
+    protected function setStep(ConversationSession $session, string $step): void
+    {
+        $this->sessionManager->setFlowStep($session, FlowType::JOB_POSTER_MENU, $step);
+    }
 
-            case 'list':
-                $this->whatsApp->sendList(
-                    $session->phone,
-                    $message['body'],
-                    $message['button'] ?? 'Select',
-                    $message['sections'],
-                    $message['header'] ?? null
-                );
-                break;
-
-            default:
-                $this->whatsApp->sendText($session->phone, $message['body'] ?? $message['text'] ?? '');
-        }
+    protected function startFlow(ConversationSession $session, FlowType $flow): void
+    {
+        $this->sessionManager->setFlowStep($session, $flow, 'start');
     }
 }

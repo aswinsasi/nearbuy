@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -9,74 +11,36 @@ use Illuminate\Database\Eloquent\Builder;
 use Carbon\Carbon;
 
 /**
- * Worker Earning Model - Weekly earnings tracking.
+ * Worker Earning Model - Individual job earnings tracking.
+ *
+ * Simple structure: worker_id, job_post_id, amount, earned_at
+ * Helpers: totalEarnings(), weeklyEarnings(), monthlyEarnings()
  *
  * @property int $id
  * @property int $worker_id
- * @property \Carbon\Carbon $week_start
- * @property \Carbon\Carbon $week_end
- * @property int $total_jobs
- * @property int $total_applications
- * @property int $accepted_applications
- * @property float $total_earnings
- * @property float $average_per_job
- * @property float $total_hours_worked
- * @property array|null $earnings_by_category
- * @property float|null $average_rating
- * @property int $on_time_count
- * @property int $late_count
+ * @property int $job_post_id
+ * @property float $amount
+ * @property \Carbon\Carbon $earned_at
  *
- * @srs-ref Section 3.7 - Worker Earnings Analytics
+ * @srs-ref Section 3.5 - Earnings Showcase
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class WorkerEarning extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     */
+    public $timestamps = false;
+
     protected $fillable = [
         'worker_id',
-        'week_start',
-        'week_end',
-        'total_jobs',
-        'total_applications',
-        'accepted_applications',
-        'total_earnings',
-        'average_per_job',
-        'total_hours_worked',
-        'earnings_by_category',
-        'average_rating',
-        'on_time_count',
-        'late_count',
+        'job_post_id',
+        'amount',
+        'earned_at',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
-        'week_start' => 'date',
-        'week_end' => 'date',
-        'total_earnings' => 'decimal:2',
-        'average_per_job' => 'decimal:2',
-        'total_hours_worked' => 'decimal:2',
-        'earnings_by_category' => 'array',
-        'average_rating' => 'decimal:1',
-    ];
-
-    /**
-     * Default attribute values.
-     */
-    protected $attributes = [
-        'total_jobs' => 0,
-        'total_applications' => 0,
-        'accepted_applications' => 0,
-        'total_earnings' => 0.00,
-        'average_per_job' => 0.00,
-        'total_hours_worked' => 0.00,
-        'on_time_count' => 0,
-        'late_count' => 0,
+        'amount' => 'decimal:2',
+        'earned_at' => 'datetime',
     ];
 
     /*
@@ -85,12 +49,14 @@ class WorkerEarning extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get the worker.
-     */
     public function worker(): BelongsTo
     {
         return $this->belongsTo(JobWorker::class, 'worker_id');
+    }
+
+    public function jobPost(): BelongsTo
+    {
+        return $this->belongsTo(JobPost::class, 'job_post_id');
     }
 
     /*
@@ -99,280 +65,278 @@ class WorkerEarning extends Model
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Scope to filter by worker.
-     */
     public function scopeByWorker(Builder $query, int $workerId): Builder
     {
         return $query->where('worker_id', $workerId);
     }
 
-    /**
-     * Scope to get earnings for a specific week.
-     */
-    public function scopeForWeek(Builder $query, $date): Builder
-    {
-        $weekStart = Carbon::parse($date)->startOfWeek()->toDateString();
-        return $query->where('week_start', $weekStart);
-    }
-
-    /**
-     * Scope to get this week's earnings.
-     */
     public function scopeThisWeek(Builder $query): Builder
     {
-        return $query->forWeek(now());
+        return $query->whereBetween('earned_at', [
+            now()->startOfWeek(),
+            now()->endOfWeek(),
+        ]);
     }
 
-    /**
-     * Scope to get this month's earnings.
-     */
+    public function scopeLastWeek(Builder $query): Builder
+    {
+        return $query->whereBetween('earned_at', [
+            now()->subWeek()->startOfWeek(),
+            now()->subWeek()->endOfWeek(),
+        ]);
+    }
+
     public function scopeThisMonth(Builder $query): Builder
     {
-        return $query->whereBetween('week_start', [
-            now()->startOfMonth()->toDateString(),
-            now()->endOfMonth()->toDateString(),
+        return $query->whereBetween('earned_at', [
+            now()->startOfMonth(),
+            now()->endOfMonth(),
         ]);
     }
 
-    /**
-     * Scope to get last month's earnings.
-     */
-    public function scopeLastMonth(Builder $query): Builder
+    public function scopeForWeek(Builder $query, Carbon $weekStart): Builder
     {
-        return $query->whereBetween('week_start', [
-            now()->subMonth()->startOfMonth()->toDateString(),
-            now()->subMonth()->endOfMonth()->toDateString(),
+        return $query->whereBetween('earned_at', [
+            $weekStart->copy()->startOfWeek(),
+            $weekStart->copy()->endOfWeek(),
         ]);
     }
 
-    /**
-     * Scope to order by most recent.
-     */
-    public function scopeLatest(Builder $query): Builder
+    public function scopeForMonth(Builder $query, Carbon $monthStart): Builder
     {
-        return $query->orderBy('week_start', 'desc');
-    }
-
-    /**
-     * Scope to get high earning weeks.
-     */
-    public function scopeHighEarning(Builder $query, float $minAmount = 5000): Builder
-    {
-        return $query->where('total_earnings', '>=', $minAmount);
+        return $query->whereBetween('earned_at', [
+            $monthStart->copy()->startOfMonth(),
+            $monthStart->copy()->endOfMonth(),
+        ]);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Accessors
+    | Static Helpers - Earnings Calculations
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get week range display.
+     * Total earnings for a worker (all time).
      */
-    public function getWeekRangeAttribute(): string
+    public static function totalEarnings(int $workerId): float
     {
-        return $this->week_start->format('M j') . ' - ' . $this->week_end->format('M j, Y');
+        return (float) self::byWorker($workerId)->sum('amount');
     }
 
     /**
-     * Get total earnings display.
+     * Weekly earnings for a worker.
      */
-    public function getEarningsDisplayAttribute(): string
+    public static function weeklyEarnings(int $workerId, ?Carbon $weekStart = null): float
     {
-        return '₹' . number_format($this->total_earnings);
-    }
+        $query = self::byWorker($workerId);
 
-    /**
-     * Get average per job display.
-     */
-    public function getAveragePerJobDisplayAttribute(): string
-    {
-        return '₹' . number_format($this->average_per_job);
-    }
-
-    /**
-     * Get acceptance rate.
-     */
-    public function getAcceptanceRateAttribute(): float
-    {
-        if ($this->total_applications === 0) {
-            return 0;
-        }
-
-        return round(($this->accepted_applications / $this->total_applications) * 100, 1);
-    }
-
-    /**
-     * Get on-time rate.
-     */
-    public function getOnTimeRateAttribute(): float
-    {
-        $total = $this->on_time_count + $this->late_count;
-        if ($total === 0) {
-            return 100;
-        }
-
-        return round(($this->on_time_count / $total) * 100, 1);
-    }
-
-    /**
-     * Get rating display.
-     */
-    public function getRatingDisplayAttribute(): ?string
-    {
-        if (!$this->average_rating) {
-            return null;
-        }
-
-        return '⭐ ' . number_format($this->average_rating, 1);
-    }
-
-    /**
-     * Check if this is current week.
-     */
-    public function getIsCurrentWeekAttribute(): bool
-    {
-        return $this->week_start->eq(now()->startOfWeek());
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Methods
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Get or create earnings record for a week.
-     */
-    public static function getOrCreateForWeek(JobWorker $worker, $date = null): self
-    {
-        $date = $date ? Carbon::parse($date) : now();
-        $weekStart = $date->startOfWeek()->toDateString();
-        $weekEnd = $date->endOfWeek()->toDateString();
-
-        return self::firstOrCreate(
-            [
-                'worker_id' => $worker->id,
-                'week_start' => $weekStart,
-            ],
-            [
-                'week_end' => $weekEnd,
-            ]
-        );
-    }
-
-    /**
-     * Record a completed job.
-     */
-    public function recordCompletedJob(float $amount, float $hours, int $categoryId, bool $onTime = true): void
-    {
-        $this->total_jobs++;
-        $this->total_earnings += $amount;
-        $this->total_hours_worked += $hours;
-
-        if ($this->total_jobs > 0) {
-            $this->average_per_job = $this->total_earnings / $this->total_jobs;
-        }
-
-        if ($onTime) {
-            $this->on_time_count++;
+        if ($weekStart) {
+            $query->forWeek($weekStart);
         } else {
-            $this->late_count++;
+            $query->thisWeek();
         }
 
-        // Update category breakdown
-        $byCategory = $this->earnings_by_category ?? [];
-        if (!isset($byCategory[$categoryId])) {
-            $byCategory[$categoryId] = ['jobs' => 0, 'earnings' => 0];
-        }
-        $byCategory[$categoryId]['jobs']++;
-        $byCategory[$categoryId]['earnings'] += $amount;
-        $this->earnings_by_category = $byCategory;
-
-        $this->save();
+        return (float) $query->sum('amount');
     }
 
     /**
-     * Record an application.
+     * Monthly earnings for a worker.
      */
-    public function recordApplication(bool $accepted = false): void
+    public static function monthlyEarnings(int $workerId, ?Carbon $monthStart = null): float
     {
-        $this->total_applications++;
-        if ($accepted) {
-            $this->accepted_applications++;
+        $query = self::byWorker($workerId);
+
+        if ($monthStart) {
+            $query->forMonth($monthStart);
+        } else {
+            $query->thisMonth();
         }
-        $this->save();
+
+        return (float) $query->sum('amount');
     }
 
     /**
-     * Update average rating for the week.
+     * Jobs count for a worker this week.
      */
-    public function updateAverageRating(float $newRating): void
+    public static function weeklyJobsCount(int $workerId, ?Carbon $weekStart = null): int
     {
-        $currentTotal = ($this->average_rating ?? 0) * $this->total_jobs;
-        $newAverage = ($currentTotal + $newRating) / max(1, $this->total_jobs);
-        
-        $this->update(['average_rating' => round($newAverage, 1)]);
+        $query = self::byWorker($workerId);
+
+        if ($weekStart) {
+            $query->forWeek($weekStart);
+        } else {
+            $query->thisWeek();
+        }
+
+        return $query->count();
+    }
+
+    /**
+     * Jobs count for a worker this month.
+     */
+    public static function monthlyJobsCount(int $workerId, ?Carbon $monthStart = null): int
+    {
+        $query = self::byWorker($workerId);
+
+        if ($monthStart) {
+            $query->forMonth($monthStart);
+        } else {
+            $query->thisMonth();
+        }
+
+        return $query->count();
+    }
+
+    /**
+     * Record earning for a completed job.
+     */
+    public static function recordEarning(int $workerId, int $jobPostId, float $amount): self
+    {
+        return self::create([
+            'worker_id' => $workerId,
+            'job_post_id' => $jobPostId,
+            'amount' => $amount,
+            'earned_at' => now(),
+        ]);
+    }
+
+    /**
+     * Get weekly summary for a worker.
+     */
+    public static function getWeeklySummary(int $workerId, ?Carbon $weekStart = null): array
+    {
+        $weekStart = $weekStart ?? now()->startOfWeek();
+        $weekEnd = $weekStart->copy()->endOfWeek();
+
+        $earnings = self::byWorker($workerId)->forWeek($weekStart)->get();
+
+        return [
+            'week_start' => $weekStart->format('M j'),
+            'week_end' => $weekEnd->format('M j, Y'),
+            'total_amount' => $earnings->sum('amount'),
+            'jobs_count' => $earnings->count(),
+            'amount_display' => '₹' . number_format($earnings->sum('amount')),
+        ];
     }
 
     /**
      * Get monthly summary for a worker.
      */
-    public static function getMonthlySummary(JobWorker $worker, $month = null): array
+    public static function getMonthlySummary(int $workerId, ?Carbon $monthStart = null): array
     {
-        $month = $month ? Carbon::parse($month) : now();
+        $monthStart = $monthStart ?? now()->startOfMonth();
 
-        $earnings = self::byWorker($worker->id)
-            ->whereBetween('week_start', [
-                $month->startOfMonth()->toDateString(),
-                $month->endOfMonth()->toDateString(),
-            ])
-            ->get();
+        $earnings = self::byWorker($workerId)->forMonth($monthStart)->get();
 
         return [
-            'month' => $month->format('F Y'),
-            'total_earnings' => $earnings->sum('total_earnings'),
-            'total_jobs' => $earnings->sum('total_jobs'),
-            'total_hours' => $earnings->sum('total_hours_worked'),
-            'average_rating' => $earnings->avg('average_rating'),
-            'weeks' => $earnings->count(),
+            'month' => $monthStart->format('F Y'),
+            'total_amount' => $earnings->sum('amount'),
+            'jobs_count' => $earnings->count(),
+            'amount_display' => '₹' . number_format($earnings->sum('amount')),
+            'avg_per_job' => $earnings->count() > 0
+                ? round($earnings->sum('amount') / $earnings->count())
+                : 0,
         ];
     }
 
     /**
-     * Convert to summary format.
+     * Get earnings history (last N weeks).
      */
-    public function toSummary(): array
+    public static function getEarningsHistory(int $workerId, int $weeks = 8): array
     {
-        return [
-            'week_range' => $this->week_range,
-            'is_current_week' => $this->is_current_week,
-            'total_jobs' => $this->total_jobs,
-            'total_earnings' => $this->earnings_display,
-            'average_per_job' => $this->average_per_job_display,
-            'total_hours' => $this->total_hours_worked,
-            'acceptance_rate' => $this->acceptance_rate . '%',
-            'on_time_rate' => $this->on_time_rate . '%',
-            'average_rating' => $this->rating_display,
-        ];
+        $history = [];
+
+        for ($i = 0; $i < $weeks; $i++) {
+            $weekStart = now()->subWeeks($i)->startOfWeek();
+            $history[] = self::getWeeklySummary($workerId, $weekStart);
+        }
+
+        return $history;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Boot
-    |--------------------------------------------------------------------------
-    */
+    /**
+     * Get top earners for a period (for leaderboard).
+     */
+    public static function getTopEarners(
+        ?Carbon $start = null,
+        ?Carbon $end = null,
+        int $limit = 10,
+        ?string $city = null
+    ): array {
+        $start = $start ?? now()->startOfMonth();
+        $end = $end ?? now()->endOfMonth();
 
-    protected static function boot()
-    {
-        parent::boot();
+        $query = self::query()
+            ->selectRaw('worker_id, SUM(amount) as total_earned, COUNT(*) as jobs_count')
+            ->whereBetween('earned_at', [$start, $end])
+            ->groupBy('worker_id')
+            ->orderByDesc('total_earned')
+            ->limit($limit);
 
-        static::creating(function ($model) {
-            if (empty($model->week_end) && $model->week_start) {
-                $model->week_end = Carbon::parse($model->week_start)->endOfWeek()->toDateString();
+        $results = $query->get();
+
+        $leaderboard = [];
+        $rank = 1;
+        $medals = ['👑', '🥈', '🥉'];
+
+        foreach ($results as $row) {
+            $worker = JobWorker::with('user')->find($row->worker_id);
+
+            if (!$worker) {
+                continue;
             }
-        });
+
+            // Filter by city if specified
+            if ($city && $worker->city !== $city) {
+                continue;
+            }
+
+            $medal = $medals[$rank - 1] ?? ($rank . '.');
+
+            $leaderboard[] = [
+                'rank' => $rank,
+                'medal' => $medal,
+                'worker_id' => $row->worker_id,
+                'name' => $worker->name,
+                'total_earned' => (float) $row->total_earned,
+                'total_display' => '₹' . number_format($row->total_earned),
+                'jobs_count' => $row->jobs_count,
+                'rating' => $worker->rating ?? 0,
+            ];
+
+            $rank++;
+        }
+
+        return $leaderboard;
+    }
+
+    /**
+     * Get worker's rank in leaderboard.
+     */
+    public static function getWorkerRank(
+        int $workerId,
+        ?Carbon $start = null,
+        ?Carbon $end = null
+    ): ?int {
+        $start = $start ?? now()->startOfMonth();
+        $end = $end ?? now()->endOfMonth();
+
+        $workerEarnings = self::byWorker($workerId)
+            ->whereBetween('earned_at', [$start, $end])
+            ->sum('amount');
+
+        if ($workerEarnings <= 0) {
+            return null;
+        }
+
+        $rank = self::query()
+            ->selectRaw('worker_id, SUM(amount) as total')
+            ->whereBetween('earned_at', [$start, $end])
+            ->groupBy('worker_id')
+            ->havingRaw('SUM(amount) > ?', [$workerEarnings])
+            ->count();
+
+        return $rank + 1;
     }
 }

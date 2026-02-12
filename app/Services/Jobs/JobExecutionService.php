@@ -4,34 +4,31 @@ declare(strict_types=1);
 
 namespace App\Services\Jobs;
 
-use App\Enums\BadgeType;
 use App\Enums\JobStatus;
 use App\Enums\PaymentMethod;
 use App\Models\JobPost;
 use App\Models\JobVerification;
 use App\Models\JobWorker;
-use App\Models\WorkerBadge;
-use App\Models\WorkerEarning;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Service for managing job execution and verification.
  *
- * Handles:
- * - Starting job execution
- * - Recording arrival and completion
- * - Mutual confirmation from worker and poster
- * - Payment confirmation
- * - Rating and badge management
- * - Worker statistics updates
+ * Handles all SRS requirements NP-022 to NP-028:
+ * - NP-022: Worker sends arrival photo
+ * - NP-023: Notify task giver with photo and timestamp
+ * - NP-024: Handover confirmation for queue jobs
+ * - NP-025: Mutual completion confirmation
+ * - NP-026: Rating (1-5 stars) + optional review
+ * - NP-027: Payment method selection (Cash/UPI)
+ * - NP-028: Update worker stats (jobs_completed++, recalculate rating)
  *
- * @srs-ref Section 3.5 - Job Verification & Completion
+ * @srs-ref NP-022 to NP-028
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobExecutionService
 {
-
     /*
     |--------------------------------------------------------------------------
     | Job Execution Start
@@ -47,13 +44,9 @@ class JobExecutionService
      */
     public function startJobExecution(JobPost $job): JobVerification
     {
-        // Validate job can be started
-        if (!$this->isJobReadyToStart($job)) {
+        if (!$this->canStartJob($job)) {
             throw new \InvalidArgumentException(
-                sprintf(
-                    'This job cannot be started. Current status: %s',
-                    (string) ($job->status?->value ?? 'unknown')
-                )
+                "Job cannot be started. Status: {$job->status_display}"
             );
         }
 
@@ -62,7 +55,6 @@ class JobExecutionService
             $verification = $job->verification;
 
             if (!$verification) {
-                // Create verification record
                 $verification = JobVerification::create([
                     'job_post_id' => $job->id,
                     'worker_id' => $job->assigned_worker_id,
@@ -80,42 +72,21 @@ class JobExecutionService
     }
 
     /**
-     * Check if a job is ready to start.
-     *
-     * @param JobPost $job
-     * @return bool
+     * Check if a job can be started.
      */
-    public function isJobReadyToStart(JobPost $job): bool
+    public function canStartJob(JobPost $job): bool
     {
-        // Get status value (handle both enum and string)
-        $statusValue = $job->status instanceof JobStatus 
-            ? $job->status->value 
-            : (string) $job->status;
+        $status = $job->status instanceof JobStatus 
+            ? $job->status 
+            : JobStatus::tryFrom($job->status);
 
-        Log::debug('isJobReadyToStart check', [
-            'job_id' => $job->id,
-            'status_raw' => $job->status,
-            'status_value' => $statusValue,
-            'assigned_worker_id' => $job->assigned_worker_id,
-            'job_date' => $job->job_date,
-        ]);
-
-        // Must be assigned or in progress
-        if (!in_array($statusValue, ['assigned', 'in_progress'])) {
-            Log::debug('Job failed status check', ['status' => $statusValue]);
+        // Must be assigned or already in progress
+        if (!in_array($status, [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])) {
             return false;
         }
 
         // Must have an assigned worker
         if (!$job->assigned_worker_id) {
-            Log::debug('Job has no assigned worker');
-            return false;
-        }
-
-        // Job date should be today or past (allow starting on job day)
-        // Skip this check if job_date is null (flexible timing)
-        if ($job->job_date && $job->job_date->isFuture() && !$job->job_date->isToday()) {
-            Log::debug('Job date is in the future', ['job_date' => $job->job_date]);
             return false;
         }
 
@@ -124,12 +95,14 @@ class JobExecutionService
 
     /*
     |--------------------------------------------------------------------------
-    | Arrival Recording
+    | Arrival Recording (NP-022, NP-023)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Record worker arrival at job location.
+     * Record worker arrival with photo.
+     *
+     * NP-022: Worker sends arrival photo when reaching job location
      *
      * @param JobVerification $verification
      * @param string|null $photoUrl Arrival photo URL
@@ -147,11 +120,11 @@ class JobExecutionService
 
             // Update worker's last active
             $worker = $verification->worker;
-            if ($worker) {
+            if ($worker && method_exists($worker, 'touchLastActive')) {
                 $worker->touchLastActive();
             }
 
-            Log::info('Worker arrival recorded', [
+            Log::info('Worker arrival recorded (NP-022)', [
                 'verification_id' => $verification->id,
                 'job_id' => $verification->job_post_id,
                 'has_photo' => !empty($photoUrl),
@@ -161,188 +134,168 @@ class JobExecutionService
     }
 
     /**
-     * Notify poster of worker arrival.
+     * Poster confirms worker arrival.
      *
-     * @param JobPost $job
-     * @return void
-     */
-    public function notifyPosterOfArrival(JobPost $job): void
-    {
-        // This is handled by the flow handler for immediate WhatsApp notification
-        // This method can be used for additional notifications (push, email, etc.)
-        Log::info('Poster notified of arrival', [
-            'job_id' => $job->id,
-            'poster_id' => $job->poster_user_id,
-        ]);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Handover (for queue-standing jobs)
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Confirm handover for queue-standing jobs.
+     * NP-023: Notify task giver with photo and timestamp
      *
      * @param JobVerification $verification
-     * @param string $confirmedBy 'worker' or 'poster'
      */
-    public function confirmHandover(JobVerification $verification, string $confirmedBy): void
+    public function confirmArrival(JobVerification $verification): void
     {
-        // For queue-standing jobs, handover means worker took over the position
-        // This is tracked similarly to arrival confirmation
-        
-        if ($confirmedBy === 'worker') {
-            $verification->update(['worker_confirmed_at' => now()]);
-        } else {
-            $verification->update(['poster_confirmed_at' => now()]);
-        }
+        $verification->confirmArrival();
 
-        Log::info('Handover confirmed', [
-            'verification_id' => $verification->id,
-            'confirmed_by' => $confirmedBy,
-        ]);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Completion Recording
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Record job completion with optional photo.
-     *
-     * @param JobVerification $verification
-     * @param string|null $photoUrl Completion photo URL
-     */
-    public function recordCompletion(JobVerification $verification, ?string $photoUrl = null): void
-    {
-        $verification->recordCompletion($photoUrl);
-
-        Log::info('Job completion recorded', [
+        Log::info('Poster confirmed arrival (NP-023)', [
             'verification_id' => $verification->id,
             'job_id' => $verification->job_post_id,
-            'has_photo' => !empty($photoUrl),
         ]);
-    }
-
-    /**
-     * Confirm completion by worker or poster.
-     *
-     * @param JobVerification $verification
-     * @param string $confirmedBy 'worker' or 'poster'
-     * @throws \InvalidArgumentException
-     */
-    public function confirmCompletion(JobVerification $verification, string $confirmedBy): void
-    {
-        if (!in_array($confirmedBy, ['worker', 'poster'])) {
-            throw new \InvalidArgumentException('confirmedBy must be "worker" or "poster"');
-        }
-
-        if ($confirmedBy === 'worker') {
-            $verification->confirmByWorker();
-            Log::info('Worker confirmed completion', [
-                'verification_id' => $verification->id,
-                'job_id' => $verification->job_post_id,
-            ]);
-        } else {
-            $verification->confirmByPoster();
-            Log::info('Poster confirmed completion', [
-                'verification_id' => $verification->id,
-                'job_id' => $verification->job_post_id,
-            ]);
-        }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Rating
+    | Handover (NP-024)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Rate the worker (by poster).
+     * Check if job requires handover confirmation.
      *
-     * @param JobPost $job
-     * @param int $rating 1-5
-     * @param string|null $comment Optional comment
+     * NP-024: For handover jobs (queue standing), BOTH confirm handover
      */
-    public function rateWorker(JobPost $job, int $rating, ?string $comment = null): void
+    public function requiresHandover(JobPost $job): bool
     {
+        return $job->is_handover_job;
+    }
+
+    /**
+     * Worker confirms handover.
+     *
+     * @param JobVerification $verification
+     */
+    public function confirmHandoverByWorker(JobVerification $verification): void
+    {
+        $verification->confirmHandoverByWorker();
+
+        Log::info('Worker confirmed handover (NP-024)', [
+            'verification_id' => $verification->id,
+            'job_id' => $verification->job_post_id,
+        ]);
+    }
+
+    /**
+     * Poster confirms handover.
+     *
+     * @param JobVerification $verification
+     */
+    public function confirmHandoverByPoster(JobVerification $verification): void
+    {
+        $verification->confirmHandoverByPoster();
+
+        Log::info('Poster confirmed handover (NP-024)', [
+            'verification_id' => $verification->id,
+            'job_id' => $verification->job_post_id,
+        ]);
+    }
+
+    /**
+     * Check if handover is complete (both confirmed).
+     */
+    public function isHandoverComplete(JobVerification $verification): bool
+    {
+        return $verification->is_handover_complete;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Completion Confirmation (NP-025)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Worker confirms job completion.
+     *
+     * NP-025: MUTUAL confirmation to mark completed
+     *
+     * @param JobVerification $verification
+     */
+    public function confirmCompletionByWorker(JobVerification $verification): void
+    {
+        $verification->confirmByWorker();
+
+        Log::info('Worker confirmed completion (NP-025)', [
+            'verification_id' => $verification->id,
+            'job_id' => $verification->job_post_id,
+        ]);
+    }
+
+    /**
+     * Poster confirms job completion.
+     *
+     * NP-025: MUTUAL confirmation to mark completed
+     *
+     * @param JobVerification $verification
+     */
+    public function confirmCompletionByPoster(JobVerification $verification): void
+    {
+        $verification->confirmByPoster();
+
+        Log::info('Poster confirmed completion (NP-025)', [
+            'verification_id' => $verification->id,
+            'job_id' => $verification->job_post_id,
+        ]);
+    }
+
+    /**
+     * Check if job is mutually confirmed.
+     */
+    public function isMutuallyConfirmed(JobVerification $verification): bool
+    {
+        return $verification->is_mutually_confirmed;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Rating (NP-026)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Rate the worker.
+     *
+     * NP-026: Task giver rates worker (1-5 stars) + optional review
+     *
+     * @param JobVerification $verification
+     * @param int $rating 1-5 stars
+     * @param string|null $comment Optional review
+     */
+    public function rateWorker(
+        JobVerification $verification,
+        int $rating,
+        ?string $comment = null
+    ): void {
         $rating = max(1, min(5, $rating));
 
-        $verification = $job->verification;
-
-        if (!$verification) {
-            throw new \InvalidArgumentException('Job verification not found');
-        }
-
         DB::transaction(function () use ($verification, $rating, $comment) {
-            // Save rating to verification
             $verification->rateWorker($rating, $comment);
 
-            // Update worker's overall rating
-            $worker = $verification->worker;
-            if ($worker) {
-                $this->calculateNewRating($worker);
-            }
-
-            Log::info('Worker rated', [
+            Log::info('Worker rated (NP-026)', [
                 'verification_id' => $verification->id,
                 'worker_id' => $verification->worker_id,
                 'rating' => $rating,
+                'has_comment' => !empty($comment),
             ]);
         });
     }
 
-    /**
-     * Rate the poster (by worker).
-     *
-     * @param JobPost $job
-     * @param int $rating 1-5
-     * @param string|null $feedback Optional feedback
-     */
-    public function ratePoster(JobPost $job, int $rating, ?string $feedback = null): void
-    {
-        $rating = max(1, min(5, $rating));
-
-        $verification = $job->verification;
-
-        if (!$verification) {
-            throw new \InvalidArgumentException('Job verification not found');
-        }
-
-        $verification->ratePoster($rating, $feedback);
-
-        Log::info('Poster rated by worker', [
-            'verification_id' => $verification->id,
-            'job_id' => $job->id,
-            'rating' => $rating,
-        ]);
-    }
-
-    /**
-     * Calculate and update worker's rating.
-     *
-     * @param JobWorker $worker
-     * @return float New rating
-     */
-    public function calculateNewRating(JobWorker $worker): float
-    {
-        $worker->recalculateRating();
-        return $worker->rating;
-    }
-
     /*
     |--------------------------------------------------------------------------
-    | Payment
+    | Payment (NP-027)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Confirm payment from poster.
+     * Confirm payment.
+     *
+     * NP-027: Task giver confirms payment method: Cash or UPI
      *
      * @param JobVerification $verification
      * @param PaymentMethod $method
@@ -356,7 +309,7 @@ class JobExecutionService
         DB::transaction(function () use ($verification, $method, $reference) {
             $verification->confirmPayment($method, $reference);
 
-            Log::info('Payment confirmed', [
+            Log::info('Payment confirmed (NP-027)', [
                 'verification_id' => $verification->id,
                 'job_id' => $verification->job_post_id,
                 'method' => $method->value,
@@ -366,20 +319,25 @@ class JobExecutionService
 
     /*
     |--------------------------------------------------------------------------
-    | Job Completion
+    | Job Completion (NP-028)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Complete a job and update all related records.
+     * Complete job and update worker stats.
+     *
+     * NP-028: Update worker stats: jobs_completed++, recalculate rating
      *
      * @param JobPost $job
-     * @throws \Exception
      */
     public function completeJob(JobPost $job): void
     {
-        // Check if already completed
-        if ($job->status === JobStatus::COMPLETED) {
+        $status = $job->status instanceof JobStatus 
+            ? $job->status 
+            : JobStatus::tryFrom($job->status);
+
+        // Already completed
+        if ($status === JobStatus::COMPLETED) {
             return;
         }
 
@@ -387,16 +345,10 @@ class JobExecutionService
             // Complete the job
             $job->complete();
 
-            // Record worker earnings
-            $this->recordWorkerEarnings($job);
+            // Update worker stats (NP-028)
+            $this->updateWorkerStats($job);
 
-            // Award badges if earned
-            $worker = $job->assignedWorker;
-            if ($worker) {
-                $this->checkAndAwardBadges($worker);
-            }
-
-            Log::info('Job completed', [
+            Log::info('Job completed (NP-028)', [
                 'job_id' => $job->id,
                 'worker_id' => $job->assigned_worker_id,
                 'amount' => $job->pay_amount,
@@ -405,11 +357,13 @@ class JobExecutionService
     }
 
     /**
-     * Record worker earnings for completed job.
+     * Update worker statistics after job completion.
+     *
+     * NP-028: jobs_completed++, recalculate rating
      *
      * @param JobPost $job
      */
-    protected function recordWorkerEarnings(JobPost $job): void
+    protected function updateWorkerStats(JobPost $job): void
     {
         $worker = $job->assignedWorker;
 
@@ -417,146 +371,59 @@ class JobExecutionService
             return;
         }
 
-        // Get or create this week's earnings record using existing method
-        $earning = WorkerEarning::getOrCreateForWeek($worker);
+        // Increment jobs completed
+        $worker->increment('jobs_completed');
 
-        // Calculate hours worked
-        $hours = $job->duration_hours ?? 1;
-        
-        // Check if on time (using verification arrival time)
-        $onTime = true;
+        // Add to total earnings
+        if (method_exists($worker, 'addEarnings')) {
+            $worker->addEarnings((float) $job->pay_amount);
+        } else {
+            $worker->increment('total_earnings', (float) $job->pay_amount);
+        }
+
+        // Recalculate rating if verification has rating
         $verification = $job->verification;
-        if ($verification && $verification->arrival_verified_at && $job->job_time) {
-            $expectedTime = $job->job_date->setTimeFromTimeString($job->job_time);
-            $graceTime = $expectedTime->copy()->addMinutes(15);
-            $onTime = $verification->arrival_verified_at->lte($graceTime);
-        }
-
-        // Record the completed job using existing method
-        $earning->recordCompletedJob(
-            $job->pay_amount,
-            $hours,
-            $job->job_category_id,
-            $onTime
-        );
-
-        // Update rating if available
         if ($verification && $verification->rating) {
-            $earning->updateAverageRating($verification->rating);
+            $this->recalculateWorkerRating($worker);
         }
 
-        Log::info('Worker earnings recorded', [
+        // Update last active
+        if (method_exists($worker, 'touchLastActive')) {
+            $worker->touchLastActive();
+        }
+
+        Log::info('Worker stats updated (NP-028)', [
             'worker_id' => $worker->id,
-            'job_id' => $job->id,
-            'amount' => $job->pay_amount,
-            'week_total' => $earning->total_earnings,
+            'jobs_completed' => $worker->jobs_completed,
+            'total_earnings' => $worker->total_earnings ?? null,
+            'rating' => $worker->rating ?? null,
         ]);
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Badge Management
-    |--------------------------------------------------------------------------
-    */
-
     /**
-     * Check and award badges for a worker.
+     * Recalculate worker's average rating.
      *
      * @param JobWorker $worker
-     * @return array Array of badge names awarded
      */
-    public function checkAndAwardBadges(JobWorker $worker): array
+    protected function recalculateWorkerRating(JobWorker $worker): void
     {
-        $awardedBadges = [];
+        if (method_exists($worker, 'recalculateRating')) {
+            $worker->recalculateRating();
+        } else {
+            // Manual calculation
+            $avgRating = JobVerification::where('worker_id', $worker->id)
+                ->whereNotNull('rating')
+                ->avg('rating');
 
-        // Refresh worker data
-        $worker->refresh();
+            $ratingCount = JobVerification::where('worker_id', $worker->id)
+                ->whereNotNull('rating')
+                ->count();
 
-        // Check milestone badges (FIRST_JOB, TEN_JOBS, FIFTY_JOBS, HUNDRED_JOBS) using existing method
-        $milestoneBadges = WorkerBadge::checkMilestoneBadges($worker);
-        foreach ($milestoneBadges as $badge) {
-            $awardedBadges[] = $badge->display;
-        }
-
-        // Check performance badges
-        $performanceBadges = $this->checkPerformanceBadges($worker);
-        $awardedBadges = array_merge($awardedBadges, $performanceBadges);
-
-        // Check reliability badges
-        $reliabilityBadges = $this->checkReliabilityBadges($worker);
-        $awardedBadges = array_merge($awardedBadges, $reliabilityBadges);
-
-        if (!empty($awardedBadges)) {
-            Log::info('Badges awarded', [
-                'worker_id' => $worker->id,
-                'badges' => $awardedBadges,
+            $worker->update([
+                'rating' => $avgRating ? round($avgRating, 1) : null,
+                'rating_count' => $ratingCount,
             ]);
         }
-
-        return $awardedBadges;
-    }
-
-    /**
-     * Check and award performance badges.
-     */
-    protected function checkPerformanceBadges(JobWorker $worker): array
-    {
-        $awarded = [];
-
-        // FIVE_STAR badge - 5.0 rating for 20+ jobs
-        if ($worker->rating_count >= 20 && $worker->rating >= 5.0) {
-            $badge = WorkerBadge::checkAndAwardBadge($worker, BadgeType::FIVE_STAR);
-            if ($badge) {
-                $awarded[] = $badge->display;
-            }
-        }
-
-        // TOP_EARNER badge - ₹10,000+ in a week
-        $weeklyEarning = $this->getWeeklyEarnings($worker);
-        if ($weeklyEarning && $weeklyEarning->total_earnings >= 10000) {
-            $badge = WorkerBadge::checkAndAwardBadge($worker, BadgeType::TOP_EARNER);
-            if ($badge) {
-                $awarded[] = $badge->display;
-            }
-        }
-
-        // EARLY_BIRD badge - check if applicable
-        $badge = WorkerBadge::checkAndAwardBadge($worker, BadgeType::EARLY_BIRD);
-        if ($badge) {
-            $awarded[] = $badge->display;
-        }
-
-        return $awarded;
-    }
-
-    /**
-     * Check and award reliability badges.
-     */
-    protected function checkReliabilityBadges(JobWorker $worker): array
-    {
-        $awarded = [];
-
-        // TRUSTED badge - verified with 50+ jobs and 4.5+ rating
-        if ($worker->is_verified && $worker->jobs_completed >= 50 && $worker->rating >= 4.5) {
-            $badge = WorkerBadge::checkAndAwardBadge($worker, BadgeType::TRUSTED);
-            if ($badge) {
-                $awarded[] = $badge->display;
-            }
-        }
-
-        // RELIABLE badge - never cancelled 30+ jobs
-        $badge = WorkerBadge::checkAndAwardBadge($worker, BadgeType::RELIABLE);
-        if ($badge) {
-            $awarded[] = $badge->display;
-        }
-
-        // PUNCTUAL badge - on time for 20 consecutive jobs
-        $badge = WorkerBadge::checkAndAwardBadge($worker, BadgeType::PUNCTUAL);
-        if ($badge) {
-            $awarded[] = $badge->display;
-        }
-
-        return $awarded;
     }
 
     /*
@@ -567,9 +434,6 @@ class JobExecutionService
 
     /**
      * Get active job for a worker.
-     *
-     * @param JobWorker $worker
-     * @return JobPost|null
      */
     public function getActiveJobForWorker(JobWorker $worker): ?JobPost
     {
@@ -580,10 +444,7 @@ class JobExecutionService
     }
 
     /**
-     * Get today's jobs for a worker that need to be started.
-     *
-     * @param JobWorker $worker
-     * @return \Illuminate\Support\Collection
+     * Get today's jobs for a worker.
      */
     public function getTodaysJobsForWorker(JobWorker $worker): \Illuminate\Support\Collection
     {
@@ -596,36 +457,30 @@ class JobExecutionService
     }
 
     /**
-     * Get jobs pending confirmation for a poster.
-     *
-     * @param int $posterUserId
-     * @return \Illuminate\Support\Collection
+     * Get jobs pending poster confirmation.
      */
     public function getJobsPendingPosterConfirmation(int $posterUserId): \Illuminate\Support\Collection
     {
         return JobPost::where('poster_user_id', $posterUserId)
             ->where('status', JobStatus::IN_PROGRESS)
             ->whereHas('verification', function ($q) {
-                $q->whereNotNull('worker_confirmed_at')
-                    ->whereNull('poster_confirmed_at');
+                $q->where('completion_confirmed_by_worker', true)
+                    ->where('completion_confirmed_by_poster', false);
             })
             ->with(['assignedWorker', 'category', 'verification'])
             ->get();
     }
 
     /**
-     * Get jobs pending payment for a poster.
-     *
-     * @param int $posterUserId
-     * @return \Illuminate\Support\Collection
+     * Get jobs pending payment.
      */
     public function getJobsPendingPayment(int $posterUserId): \Illuminate\Support\Collection
     {
         return JobPost::where('poster_user_id', $posterUserId)
             ->where('status', JobStatus::IN_PROGRESS)
             ->whereHas('verification', function ($q) {
-                $q->whereNotNull('worker_confirmed_at')
-                    ->whereNotNull('poster_confirmed_at')
+                $q->where('completion_confirmed_by_worker', true)
+                    ->where('completion_confirmed_by_poster', true)
                     ->whereNull('payment_confirmed_at');
             })
             ->with(['assignedWorker', 'category', 'verification'])
@@ -633,69 +488,123 @@ class JobExecutionService
     }
 
     /**
-     * Get worker's weekly earnings.
-     *
-     * @param JobWorker $worker
-     * @return WorkerEarning|null
+     * Get verification for job.
      */
-    public function getWeeklyEarnings(JobWorker $worker): ?WorkerEarning
+    public function getVerification(JobPost $job): ?JobVerification
     {
-        return WorkerEarning::byWorker($worker->id)
-            ->thisWeek()
-            ->first();
+        return $job->verification;
     }
 
     /**
-     * Get worker's earnings history.
-     *
-     * @param JobWorker $worker
-     * @param int $weeks Number of weeks to retrieve
-     * @return \Illuminate\Support\Collection
+     * Get or create verification for job.
      */
-    public function getEarningsHistory(JobWorker $worker, int $weeks = 12): \Illuminate\Support\Collection
+    public function getOrCreateVerification(JobPost $job): JobVerification
     {
-        return WorkerEarning::byWorker($worker->id)
-            ->latest()
-            ->limit($weeks)
-            ->get();
-    }
+        $verification = $job->verification;
 
-    /**
-     * Get monthly summary for a worker.
-     *
-     * @param JobWorker $worker
-     * @param mixed $month
-     * @return array
-     */
-    public function getMonthlySummary(JobWorker $worker, $month = null): array
-    {
-        return WorkerEarning::getMonthlySummary($worker, $month);
-    }
+        if (!$verification) {
+            $verification = $this->startJobExecution($job);
+        }
 
-    /**
-     * Get worker's badges.
-     *
-     * @param JobWorker $worker
-     * @return \Illuminate\Support\Collection
-     */
-    public function getWorkerBadges(JobWorker $worker): \Illuminate\Support\Collection
-    {
-        return WorkerBadge::byWorker($worker->id)
-            ->latest()
-            ->get();
+        return $verification;
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Reminders & Notifications
+    | Statistics
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get jobs that need start reminder (approaching job time).
+     * Get worker's completion summary for message.
      *
-     * @param int $minutesBefore Minutes before job time
-     * @return \Illuminate\Support\Collection
+     * Used for NP-028 completion message:
+     * "✅ Job complete! 💰 ₹[Amount] earned!
+     *  ⭐ Rating: [X]/5
+     *  Total: [Y] jobs | ⭐ [Avg rating]"
+     */
+    public function getWorkerCompletionSummary(JobPost $job): array
+    {
+        $worker = $job->assignedWorker;
+        $verification = $job->verification;
+
+        return [
+            'amount_earned' => $job->pay_display,
+            'rating_received' => $verification?->rating,
+            'rating_stars' => $verification?->rating_stars,
+            'total_jobs' => $worker?->jobs_completed ?? 0,
+            'avg_rating' => $worker?->rating ?? 0,
+            'total_earnings' => $worker?->total_earnings ?? 0,
+        ];
+    }
+
+    /**
+     * Get job execution statistics.
+     */
+    public function getJobExecutionStats(JobPost $job): array
+    {
+        $verification = $job->verification;
+
+        if (!$verification) {
+            return [
+                'started' => false,
+                'progress' => 0,
+            ];
+        }
+
+        return [
+            'started' => true,
+            'arrived' => $verification->has_arrived,
+            'arrival_time' => $verification->arrival_time_formatted,
+            'arrival_confirmed' => $verification->is_arrival_confirmed,
+            'handover_worker' => $verification->handover_confirmed_by_worker,
+            'handover_poster' => $verification->handover_confirmed_by_poster,
+            'worker_confirmed' => $verification->is_worker_confirmed,
+            'poster_confirmed' => $verification->is_poster_confirmed,
+            'mutually_confirmed' => $verification->is_mutually_confirmed,
+            'payment_confirmed' => $verification->is_payment_confirmed,
+            'payment_method' => $verification->payment_method?->value,
+            'rating' => $verification->rating,
+            'has_dispute' => $verification->has_dispute,
+            'progress' => $verification->progress,
+        ];
+    }
+
+    /**
+     * Get worker performance statistics.
+     */
+    public function getWorkerPerformanceStats(JobWorker $worker): array
+    {
+        $verifications = JobVerification::where('worker_id', $worker->id)
+            ->whereHas('jobPost', function ($q) {
+                $q->where('status', JobStatus::COMPLETED);
+            })
+            ->get();
+
+        $completedCount = $verifications->count();
+        $averageRating = $verifications->whereNotNull('rating')->avg('rating');
+        $fiveStarCount = $verifications->where('rating', 5)->count();
+
+        return [
+            'total_jobs' => $worker->jobs_completed,
+            'total_earnings' => $worker->total_earnings ?? 0,
+            'average_rating' => round($averageRating ?? 0, 1),
+            'rating_count' => $worker->rating_count ?? 0,
+            'five_star_count' => $fiveStarCount,
+            'five_star_rate' => $completedCount > 0 
+                ? round(($fiveStarCount / $completedCount) * 100, 1) 
+                : 0,
+        ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reminder Methods
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get jobs needing start reminder.
      */
     public function getJobsNeedingStartReminder(int $minutesBefore = 30): \Illuminate\Support\Collection
     {
@@ -709,24 +618,27 @@ class JobExecutionService
             ->with(['assignedWorker.user', 'category', 'poster'])
             ->get()
             ->filter(function ($job) use ($now, $reminderTime) {
-                $jobTime = $job->job_date->setTimeFromTimeString($job->job_time);
-                return $jobTime->isBetween($now, $reminderTime);
+                if (!$job->job_time) return false;
+                
+                try {
+                    $jobTime = $job->job_date->setTimeFromTimeString($job->job_time);
+                    return $jobTime->isBetween($now, $reminderTime);
+                } catch (\Exception $e) {
+                    return false;
+                }
             });
     }
 
     /**
-     * Get verifications that need completion reminder.
-     *
-     * @param int $hoursOld Hours since arrival without completion
-     * @return \Illuminate\Support\Collection
+     * Get verifications needing completion reminder.
      */
     public function getVerificationsNeedingCompletionReminder(int $hoursOld = 2): \Illuminate\Support\Collection
     {
         $cutoff = now()->subHours($hoursOld);
 
-        return JobVerification::whereNotNull('arrival_verified_at')
-            ->where('arrival_verified_at', '<=', $cutoff)
-            ->whereNull('worker_confirmed_at')
+        return JobVerification::whereNotNull('arrival_at')
+            ->where('arrival_at', '<=', $cutoff)
+            ->where('completion_confirmed_by_worker', false)
             ->whereHas('jobPost', function ($q) {
                 $q->where('status', JobStatus::IN_PROGRESS);
             })
@@ -735,124 +647,19 @@ class JobExecutionService
     }
 
     /**
-     * Get verifications pending poster confirmation.
-     *
-     * @param int $hoursOld Hours since worker confirmed
-     * @return \Illuminate\Support\Collection
+     * Get verifications pending poster action.
      */
     public function getVerificationsPendingPosterAction(int $hoursOld = 1): \Illuminate\Support\Collection
     {
         $cutoff = now()->subHours($hoursOld);
 
-        return JobVerification::whereNotNull('worker_confirmed_at')
-            ->where('worker_confirmed_at', '<=', $cutoff)
-            ->whereNull('poster_confirmed_at')
+        return JobVerification::where('completion_confirmed_by_worker', true)
+            ->where('worker_completed_at', '<=', $cutoff)
+            ->where('completion_confirmed_by_poster', false)
             ->whereHas('jobPost', function ($q) {
                 $q->where('status', JobStatus::IN_PROGRESS);
             })
             ->with(['jobPost.category', 'worker', 'jobPost.poster'])
             ->get();
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Statistics
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Get execution statistics for a job.
-     *
-     * @param JobPost $job
-     * @return array
-     */
-    public function getJobExecutionStats(JobPost $job): array
-    {
-        $verification = $job->verification;
-
-        if (!$verification) {
-            return [
-                'started' => false,
-                'progress' => 0,
-            ];
-        }
-
-        $arrivalTime = $verification->arrival_verified_at;
-        $completionTime = $verification->completion_verified_at ?? $verification->worker_confirmed_at;
-
-        return [
-            'started' => true,
-            'arrival_time' => $arrivalTime?->format('H:i'),
-            'completion_time' => $completionTime?->format('H:i'),
-            'duration_minutes' => $arrivalTime && $completionTime
-                ? $arrivalTime->diffInMinutes($completionTime)
-                : null,
-            'worker_confirmed' => $verification->is_worker_confirmed,
-            'poster_confirmed' => $verification->is_poster_confirmed,
-            'payment_confirmed' => $verification->is_payment_confirmed,
-            'payment_method' => $verification->payment_method?->value,
-            'rating' => $verification->rating,
-            'has_dispute' => $verification->has_dispute,
-            'progress' => $verification->progress,
-        ];
-    }
-
-    /**
-     * Get worker performance statistics.
-     *
-     * @param JobWorker $worker
-     * @return array
-     */
-    public function getWorkerPerformanceStats(JobWorker $worker): array
-    {
-        $verifications = $worker->verifications()
-            ->whereHas('jobPost', function ($q) {
-                $q->where('status', JobStatus::COMPLETED);
-            })
-            ->get();
-
-        $completedCount = $verifications->count();
-        $averageRating = $verifications->whereNotNull('rating')->avg('rating');
-        $fiveStarCount = $verifications->where('rating', 5)->count();
-
-        // Calculate average completion time
-        $durations = $verifications
-            ->filter(fn($v) => $v->arrival_verified_at && $v->worker_confirmed_at)
-            ->map(fn($v) => $v->arrival_verified_at->diffInMinutes($v->worker_confirmed_at));
-
-        $averageDuration = $durations->isNotEmpty() ? $durations->avg() : null;
-
-        // On-time rate (arrived within job time + 15 min grace period)
-        $onTimeCount = 0;
-        foreach ($verifications as $verification) {
-            $job = $verification->jobPost;
-            if ($job->job_time && $verification->arrival_verified_at) {
-                $expectedTime = $job->job_date->setTimeFromTimeString($job->job_time);
-                $graceTime = $expectedTime->copy()->addMinutes(15);
-                if ($verification->arrival_verified_at->lte($graceTime)) {
-                    $onTimeCount++;
-                }
-            } else {
-                $onTimeCount++; // No specific time = on time by default
-            }
-        }
-
-        $onTimeRate = $completedCount > 0 
-            ? round(($onTimeCount / $completedCount) * 100, 1) 
-            : 100;
-
-        return [
-            'total_jobs' => $worker->jobs_completed,
-            'total_earnings' => $worker->total_earnings,
-            'average_rating' => round($averageRating ?? 0, 1),
-            'rating_count' => $worker->rating_count,
-            'five_star_count' => $fiveStarCount,
-            'five_star_rate' => $completedCount > 0 
-                ? round(($fiveStarCount / $completedCount) * 100, 1) 
-                : 0,
-            'average_duration_minutes' => $averageDuration ? round($averageDuration) : null,
-            'on_time_rate' => $onTimeRate,
-            'badges_count' => $worker->badges()->count(),
-        ];
     }
 }

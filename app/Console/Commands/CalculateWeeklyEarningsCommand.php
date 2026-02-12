@@ -4,266 +4,236 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
-use App\Enums\JobStatus;
-use App\Models\JobPost;
 use App\Models\JobWorker;
 use App\Models\WorkerEarning;
+use App\Services\Jobs\JobStatsService;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Calculate weekly earnings for all workers.
+ * Weekly Earnings Summary Command.
  *
- * This command aggregates completed job earnings per worker per week
- * and optionally sends summary notifications.
+ * Sends Monday 8 AM weekly summary to all workers.
+ *
+ * SRS Section 3.5 - Earnings Showcase:
+ * "💰 Weekly Summary! 🎉
+ * This week: ₹[Amount] from [X] jobs!
+ * Total: ₹[Total] earned on NearBuy
+ * 🏆 Rank: #[X] in [City]
+ * [📊 Full Stats] [📤 Share Earnings]"
+ *
+ * Schedule: Monday 8:00 AM
  *
  * @example
- * php artisan jobs:calculate-earnings
- * php artisan jobs:calculate-earnings --week=2025-01
- * php artisan jobs:calculate-earnings --notify
- * php artisan jobs:calculate-earnings --dry-run
+ * php artisan jobs:weekly-summary
+ * php artisan jobs:weekly-summary --worker=123
+ * php artisan jobs:weekly-summary --dry-run
+ * php artisan jobs:weekly-summary --week=2026-05
  *
- * @srs-ref Njaanum Panikkar Module - Worker Earnings
+ * @srs-ref Section 3.5 - Earnings Showcase
+ * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class CalculateWeeklyEarningsCommand extends Command
 {
-    /**
-     * The name and signature of the console command.
-     */
-    protected $signature = 'jobs:calculate-earnings
-                            {--week= : Specific week to calculate (YYYY-WW format, e.g., 2025-01)}
-                            {--notify : Send weekly summary to workers}
-                            {--dry-run : Show calculations without saving}';
+    protected $signature = 'jobs:weekly-summary
+                            {--worker= : Send to specific worker ID only}
+                            {--week= : Specific week (YYYY-WW format, e.g., 2026-05)}
+                            {--dry-run : Show summaries without sending}
+                            {--leaderboard : Also send monthly leaderboard}';
 
-    /**
-     * The console command description.
-     */
-    protected $description = 'Calculate weekly earnings for all workers';
+    protected $description = 'Send weekly earnings summary to workers (Monday 8 AM)';
 
-    /**
-     * Execute the console command.
-     */
-    public function handle(WhatsAppService $whatsApp): int
+    public function __construct(
+        protected JobStatsService $statsService,
+        protected WhatsAppService $whatsApp
+    ) {
+        parent::__construct();
+    }
+
+    public function handle(): int
     {
-        // Determine which week to calculate
-        $weekOption = $this->option('week');
-        
-        if ($weekOption) {
-            [$year, $week] = explode('-', $weekOption);
-            $weekStart = Carbon::now()->setISODate((int) $year, (int) $week)->startOfWeek();
-        } else {
-            // Default to last week (for Sunday midnight run)
-            $weekStart = Carbon::now()->subWeek()->startOfWeek();
-        }
+        $this->info('💰 Generating weekly summaries...');
 
+        // Determine week to summarize (default: last week)
+        $weekStart = $this->getWeekStart();
         $weekEnd = $weekStart->copy()->endOfWeek();
-        $weekNumber = $weekStart->weekOfYear;
-        $year = $weekStart->year;
 
-        $this->info("Calculating earnings for Week {$weekNumber}, {$year}");
-        $this->info("Period: {$weekStart->format('Y-m-d')} to {$weekEnd->format('Y-m-d')}");
+        $this->info("Week: {$weekStart->format('M j')} - {$weekEnd->format('M j, Y')}");
 
-        // Get all completed jobs for the week grouped by worker
-        $earningsByWorker = JobPost::query()
-            ->where('status', JobStatus::COMPLETED)
-            ->whereBetween('completed_at', [$weekStart, $weekEnd])
-            ->whereNotNull('assigned_worker_id')
-            ->select([
-                'assigned_worker_id',
-                DB::raw('COUNT(*) as jobs_count'),
-                DB::raw('SUM(final_amount) as total_earnings'),
-                DB::raw('AVG(final_amount) as avg_per_job'),
-                DB::raw('MIN(final_amount) as min_earning'),
-                DB::raw('MAX(final_amount) as max_earning'),
-            ])
-            ->groupBy('assigned_worker_id')
-            ->with(['assignedWorker.user'])
-            ->get();
+        // Get workers with earnings last week
+        $workers = $this->getWorkersWithEarnings($weekStart, $weekEnd);
 
-        if ($earningsByWorker->isEmpty()) {
-            $this->info('No completed jobs found for this week.');
+        if ($workers->isEmpty()) {
+            $this->info('No workers with earnings this week.');
             return self::SUCCESS;
         }
 
-        $this->info("Found earnings for {$earningsByWorker->count()} worker(s).");
+        $this->info("Processing {$workers->count()} worker(s)...");
 
-        if ($this->option('dry-run')) {
-            return $this->showEarnings($earningsByWorker, $weekStart, $weekEnd);
-        }
+        $sent = 0;
+        $skipped = 0;
 
-        $saved = 0;
-        $notified = 0;
+        /** @var JobWorker $worker */
+        foreach ($workers as $worker) {
+            $summary = $this->statsService->generateWeeklySummary($worker);
 
-        foreach ($earningsByWorker as $earning) {
-            try {
-                $worker = JobWorker::find($earning->assigned_worker_id);
+            if ($this->option('dry-run')) {
+                $this->showSummary($worker, $summary);
+                continue;
+            }
 
-                if (!$worker) {
-                    continue;
-                }
-
-                // Create or update earnings record
-                $workerEarning = WorkerEarning::updateOrCreate(
-                    [
-                        'worker_id' => $worker->id,
-                        'year' => $year,
-                        'week_number' => $weekNumber,
-                    ],
-                    [
-                        'week_start' => $weekStart,
-                        'week_end' => $weekEnd,
-                        'jobs_completed' => $earning->jobs_count,
-                        'total_earnings' => $earning->total_earnings ?? 0,
-                        'average_per_job' => $earning->avg_per_job ?? 0,
-                        'min_earning' => $earning->min_earning ?? 0,
-                        'max_earning' => $earning->max_earning ?? 0,
-                        'calculated_at' => now(),
-                    ]
-                );
-
-                $saved++;
-
-                // Send notification if requested
-                if ($this->option('notify')) {
-                    $notified += $this->sendWeeklySummary($whatsApp, $worker, $workerEarning);
-                }
-
-                Log::info('Weekly earnings calculated', [
-                    'worker_id' => $worker->id,
-                    'week' => "{$year}-{$weekNumber}",
-                    'jobs' => $earning->jobs_count,
-                    'total' => $earning->total_earnings,
-                ]);
-
-            } catch (\Exception $e) {
-                $this->error("Failed to process worker {$earning->assigned_worker_id}: {$e->getMessage()}");
-                Log::error('Failed to calculate worker earnings', [
-                    'worker_id' => $earning->assigned_worker_id,
-                    'error' => $e->getMessage(),
-                ]);
+            if ($this->sendSummary($worker, $summary)) {
+                $sent++;
+                $this->line("📨 Sent to {$worker->name}");
+            } else {
+                $skipped++;
             }
         }
 
-        $this->info("✅ Saved earnings for {$saved} worker(s).");
-
-        if ($this->option('notify')) {
-            $this->info("📨 Sent {$notified} weekly summary(s).");
+        // Send leaderboard if requested
+        if ($this->option('leaderboard') && !$this->option('dry-run')) {
+            $this->sendLeaderboard();
         }
+
+        if ($this->option('dry-run')) {
+            $this->newLine();
+            $this->info('Dry run complete — no messages sent.');
+            return self::SUCCESS;
+        }
+
+        $this->newLine();
+        $this->info("✅ Sent {$sent} weekly summaries. Skipped {$skipped}.");
 
         return self::SUCCESS;
     }
 
     /**
-     * Send weekly summary to worker.
+     * Get week start date.
      */
-    protected function sendWeeklySummary(WhatsAppService $whatsApp, JobWorker $worker, WorkerEarning $earning): int
+    protected function getWeekStart(): Carbon
     {
-        if (!$worker->user || !$worker->user->phone) {
-            return 0;
+        if ($week = $this->option('week')) {
+            [$year, $weekNum] = explode('-', $week);
+            return Carbon::now()
+                ->setISODate((int) $year, (int) $weekNum)
+                ->startOfWeek();
+        }
+
+        // Default: last week
+        return now()->subWeek()->startOfWeek();
+    }
+
+    /**
+     * Get workers with earnings in the period.
+     */
+    protected function getWorkersWithEarnings(Carbon $start, Carbon $end)
+    {
+        $query = JobWorker::query()
+            ->whereHas('earnings', function ($q) use ($start, $end) {
+                $q->whereBetween('earned_at', [$start, $end]);
+            })
+            ->with('user');
+
+        if ($workerId = $this->option('worker')) {
+            $query->where('id', $workerId);
+        }
+
+        return $query->get();
+    }
+
+    /**
+     * Show summary (dry run).
+     */
+    protected function showSummary(JobWorker $worker, array $summary): void
+    {
+        $data = $summary['data'];
+
+        $this->newLine();
+        $this->line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        $this->line("👷 {$worker->name} (#{$worker->id})");
+        $this->line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        $this->line("💰 Weekly: ₹" . number_format($data['weekly_amount']));
+        $this->line("📋 Jobs: {$data['weekly_jobs']}");
+        $this->line("📊 Total: ₹" . number_format($data['total_earnings']));
+
+        if ($data['rank']) {
+            $this->line("🏆 Rank: #{$data['rank']} in {$data['city']}");
+        }
+    }
+
+    /**
+     * Send summary to worker.
+     */
+    protected function sendSummary(JobWorker $worker, array $summary): bool
+    {
+        if (!$worker->user?->phone) {
+            return false;
         }
 
         try {
-            $totalFormatted = '₹' . number_format($earning->total_earnings);
-            $avgFormatted = '₹' . number_format($earning->average_per_job);
-
-            // Get comparison with previous week
-            $prevWeek = WorkerEarning::where('worker_id', $worker->id)
-                ->where('year', $earning->year)
-                ->where('week_number', $earning->week_number - 1)
-                ->first();
-
-            $comparisonText = '';
-            if ($prevWeek) {
-                $diff = $earning->total_earnings - $prevWeek->total_earnings;
-                $percentChange = $prevWeek->total_earnings > 0
-                    ? round(($diff / $prevWeek->total_earnings) * 100)
-                    : 0;
-
-                if ($diff > 0) {
-                    $comparisonText = "\n📈 *{$percentChange}% more* than last week!";
-                } elseif ($diff < 0) {
-                    $comparisonText = "\n📉 {$percentChange}% less than last week";
-                } else {
-                    $comparisonText = "\n➡️ Same as last week";
-                }
-            }
-
-            $message = "📊 *Weekly Earnings Summary*\n" .
-                "*ആഴ്ചയിലെ വരുമാന റിപ്പോർട്ട്*\n\n" .
-                "👤 *{$worker->name}*\n" .
-                "📅 Week {$earning->week_number}, {$earning->year}\n\n" .
-                "💰 *Total Earnings:* {$totalFormatted}\n" .
-                "✅ *Jobs Completed:* {$earning->jobs_completed}\n" .
-                "📊 *Avg per Job:* {$avgFormatted}" .
-                $comparisonText . "\n\n" .
-                "Keep up the great work! 💪\n" .
-                "നല്ല പ്രവർത്തനം തുടരുക!";
-
-            $whatsApp->sendButtons(
+            $this->whatsApp->sendButtons(
                 $worker->user->phone,
-                $message,
-                [
-                    ['id' => 'job_browse', 'title' => '🔍 Find More Jobs'],
-                    ['id' => 'job_worker_menu', 'title' => '👷 My Dashboard'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '📊 Weekly Summary'
+                $summary['message'],
+                $summary['buttons'],
+                '💰 Weekly Summary'
             );
 
-            return 1;
+            Log::info('Weekly summary sent', [
+                'worker_id' => $worker->id,
+                'amount' => $summary['data']['weekly_amount'],
+                'jobs' => $summary['data']['weekly_jobs'],
+            ]);
+
+            return true;
 
         } catch (\Exception $e) {
             Log::error('Failed to send weekly summary', [
                 'worker_id' => $worker->id,
                 'error' => $e->getMessage(),
             ]);
-            return 0;
+            return false;
         }
     }
 
     /**
-     * Show earnings that would be saved (dry run).
+     * Send monthly leaderboard to all workers.
      */
-    protected function showEarnings($earnings, Carbon $weekStart, Carbon $weekEnd): int
+    protected function sendLeaderboard(): void
     {
-        $this->newLine();
-        $this->info("Week: {$weekStart->format('M d')} - {$weekEnd->format('M d, Y')}");
-        $this->newLine();
+        $this->info('📊 Sending monthly leaderboard...');
 
-        $headers = ['Worker ID', 'Name', 'Jobs', 'Total', 'Avg/Job', 'Min', 'Max'];
-        $rows = [];
-        $grandTotal = 0;
-        $totalJobs = 0;
+        $leaderboard = $this->statsService->generateLeaderboardMessage();
 
-        foreach ($earnings as $earning) {
-            $worker = JobWorker::find($earning->assigned_worker_id);
-            $name = $worker?->name ?? 'Unknown';
+        // Get all active workers
+        $workers = JobWorker::where('is_available', true)
+            ->whereHas('user')
+            ->with('user')
+            ->get();
 
-            $rows[] = [
-                $earning->assigned_worker_id,
-                mb_substr($name, 0, 15),
-                $earning->jobs_count,
-                '₹' . number_format($earning->total_earnings ?? 0),
-                '₹' . number_format($earning->avg_per_job ?? 0),
-                '₹' . number_format($earning->min_earning ?? 0),
-                '₹' . number_format($earning->max_earning ?? 0),
-            ];
+        $sent = 0;
 
-            $grandTotal += $earning->total_earnings ?? 0;
-            $totalJobs += $earning->jobs_count;
+        /** @var JobWorker $worker */
+        foreach ($workers as $worker) {
+            if (!$worker->user?->phone) {
+                continue;
+            }
+
+            try {
+                $this->whatsApp->sendText(
+                    $worker->user->phone,
+                    $leaderboard
+                );
+                $sent++;
+            } catch (\Exception $e) {
+                Log::error('Failed to send leaderboard', [
+                    'worker_id' => $worker->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
-        $this->table($headers, $rows);
-
-        $this->newLine();
-        $this->info("📊 Summary:");
-        $this->info("   Workers: {$earnings->count()}");
-        $this->info("   Total Jobs: {$totalJobs}");
-        $this->info("   Grand Total: ₹" . number_format($grandTotal));
-
-        return self::SUCCESS;
+        $this->info("📊 Sent leaderboard to {$sent} workers.");
     }
 }

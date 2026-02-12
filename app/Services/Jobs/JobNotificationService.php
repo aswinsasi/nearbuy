@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Services\Jobs;
 
 use App\Enums\BadgeType;
-use App\Enums\JobPostStatus;
 use App\Enums\JobStatus;
 use App\Enums\PaymentMethod;
 use App\Jobs\SendJobNotificationJob;
@@ -13,27 +12,19 @@ use App\Jobs\SendWhatsAppMessage;
 use App\Models\JobApplication;
 use App\Models\JobPost;
 use App\Models\JobWorker;
-use App\Models\User;
-use App\Models\WorkerBadge;
-use App\Models\WorkerEarning;
-use App\Services\WhatsApp\Messages\JobMessages;
 use App\Services\WhatsApp\WhatsAppService;
-use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Service for managing job-related notifications.
+ * Service for job-related notifications.
  *
- * Handles:
- * - Notifying workers of new jobs
- * - Application notifications
- * - Selection/rejection notifications
- * - Job reminders
- * - Earnings summaries
- * - Badge awards
+ * NP-015: Notification includes all job details + distance
+ * NP-016: Social proof count in notifications ("X workers already applied")
  *
- * @srs-ref Section 3.5 - Job Notifications
+ * Format: MAX 5 lines + 2-3 buttons
+ *
+ * @srs-ref NP-015, NP-016
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobNotificationService
@@ -43,21 +34,6 @@ class JobNotificationService
      */
     public const BATCH_SIZE = 50;
 
-    /**
-     * Reminder time before job (in minutes).
-     */
-    public const REMINDER_MINUTES_BEFORE = 60;
-
-    /**
-     * Weekly earnings summary day (0 = Sunday).
-     */
-    public const WEEKLY_SUMMARY_DAY = 0;
-
-    /**
-     * Weekly earnings summary hour (24-hour format).
-     */
-    public const WEEKLY_SUMMARY_HOUR = 9;
-
     public function __construct(
         protected WhatsAppService $whatsApp,
         protected JobMatchingService $matchingService
@@ -65,41 +41,35 @@ class JobNotificationService
 
     /*
     |--------------------------------------------------------------------------
-    | New Job Notifications
+    | New Job Notifications (NP-015, NP-016)
     |--------------------------------------------------------------------------
     */
 
     /**
      * Notify matching workers about a new job posting.
      *
-     * @param JobPost $job The job to notify about
-     * @param int $radiusKm Search radius for workers
+     * NP-014: Notify within 5km (expands to 10km if <3 workers)
+     *
+     * @param JobPost $job
      * @return int Number of workers notified
      */
-    public function notifyWorkersOfNewJob(JobPost $job, int $radiusKm = 5): int
+    public function notifyWorkersOfNewJob(JobPost $job): int
     {
         if ($job->status !== JobStatus::OPEN) {
-            Log::warning('Attempted to notify workers of non-open job', [
-                'job_id' => $job->id,
-                'status' => $job->status->value,
-            ]);
             return 0;
         }
 
-        // Find matching workers
-        $workers = $this->matchingService->findMatchingWorkers($job, $radiusKm);
+        // Find matching workers (NP-014 compliant)
+        $workers = $this->matchingService->findMatchingWorkers($job);
 
         if ($workers->isEmpty()) {
-            Log::info('No matching workers found for job', [
-                'job_id' => $job->id,
-                'radius_km' => $radiusKm,
-            ]);
+            Log::info('No matching workers for job', ['job_id' => $job->id]);
             return 0;
         }
 
         $notifiedCount = 0;
 
-        // Process in batches for large worker sets
+        // Process in batches
         $workers->chunk(self::BATCH_SIZE)->each(function ($batch) use ($job, &$notifiedCount) {
             foreach ($batch as $worker) {
                 $this->sendNewJobNotification($job, $worker);
@@ -112,7 +82,7 @@ class JobNotificationService
 
         Log::info('Workers notified of new job', [
             'job_id' => $job->id,
-            'workers_notified' => $notifiedCount,
+            'count' => $notifiedCount,
         ]);
 
         return $notifiedCount;
@@ -120,6 +90,14 @@ class JobNotificationService
 
     /**
      * Send new job notification to a specific worker.
+     *
+     * NP-015: Includes job details + distance
+     * NP-016: Social proof count ("X workers notified")
+     *
+     * Format: MAX 5 lines + 2-3 buttons
+     *
+     * @param JobPost $job
+     * @param JobWorker $worker
      */
     public function sendNewJobNotification(JobPost $job, JobWorker $worker): void
     {
@@ -131,33 +109,37 @@ class JobNotificationService
 
         // Calculate distance
         $distance = $this->matchingService->calculateDistance(
-            $worker->latitude,
-            $worker->longitude,
-            $job->latitude,
-            $job->longitude
+            (float) $worker->latitude,
+            (float) $worker->longitude,
+            (float) $job->latitude,
+            (float) $job->longitude
         );
+        $distanceDisplay = $this->matchingService->formatDistance($distance);
 
-        $distanceDisplay = $distance < 1
-            ? round($distance * 1000) . 'm'
-            : round($distance, 1) . ' km';
+        // Get social proof count (NP-016)
+        $workersNotified = $job->workers_notified ?? 0;
+        $socialProof = $workersNotified > 1 ? " • 👥{$workersNotified}" : '';
 
-        // Build message
-        $message = $this->buildNewJobMessage($job, $distanceDisplay);
+        // Build compact notification (MAX 5 lines - NP-015)
+        $catIcon = $job->category?->icon ?? '📋';
+        $pay = '₹' . number_format((float) $job->pay_amount);
+        $dateDisplay = $job->job_date ? $job->job_date->format('d M') : 'Flexible';
 
-        // Build action buttons
+        // 5 lines max:
+        // Line 1: Title with icon
+        // Line 2: Pay + Distance
+        // Line 3: Location
+        // Line 4: Date/Time
+        // Line 5: Social proof
+        $message = "🆕 *{$catIcon} {$job->title}*\n" .
+            "💰 {$pay} • 📍 {$distanceDisplay}\n" .
+            "📍 {$job->location_name}\n" .
+            "📅 {$dateDisplay}{$socialProof}";
+
+        // 2-3 buttons
         $buttons = [
-            [
-                'id' => 'apply_job_' . $job->id,
-                'title' => '✅ Apply / അപേക്ഷിക്കുക',
-            ],
-            [
-                'id' => 'view_job_' . $job->id,
-                'title' => '👁️ View Details',
-            ],
-            [
-                'id' => 'skip_job_' . $job->id,
-                'title' => '⏭️ Skip',
-            ],
+            ['id' => 'apply_' . $job->id, 'title' => '✅ Apply'],
+            ['id' => 'skip_' . $job->id, 'title' => '⏭️ Skip'],
         ];
 
         // Queue notification
@@ -168,55 +150,11 @@ class JobNotificationService
             $buttons
         )->onQueue('job-notifications');
 
-        Log::debug('New job notification sent', [
+        Log::debug('Job notification sent', [
             'job_id' => $job->id,
             'worker_id' => $worker->id,
-            'distance_km' => $distance,
+            'distance' => $distanceDisplay,
         ]);
-    }
-
-    /**
-     * Build new job notification message.
-     */
-    protected function buildNewJobMessage(JobPost $job, string $distanceDisplay): string
-    {
-        $category = $job->category;
-        $poster = $job->poster;
-
-        $lines = [
-            "🆕 *New Job Available!*",
-            "*പുതിയ ജോലി ലഭ്യമാണ്!*",
-            "",
-            "{$category->icon} *{$job->title}*",
-            "",
-            "💰 *{$job->amount_display}*" . ($job->is_negotiable ? ' (Negotiable)' : ''),
-            "📍 {$job->location_display}",
-            "🚗 {$distanceDisplay} away",
-            "📅 {$job->scheduled_date->format('M j')} at {$job->scheduled_time->format('g:i A')}",
-        ];
-
-        if ($job->estimated_duration) {
-            $lines[] = "⏱️ ~{$job->estimated_duration} hours";
-        }
-
-        if ($job->description) {
-            $lines[] = "";
-            $lines[] = "📝 " . \Illuminate\Support\Str::limit($job->description, 100);
-        }
-
-        if ($poster) {
-            $lines[] = "";
-            $lines[] = "👤 Posted by: {$poster->name}";
-            if ($poster->rating_count > 0) {
-                $lines[] = "⭐ {$poster->average_rating}/5 ({$poster->rating_count} reviews)";
-            }
-        }
-
-        $lines[] = "";
-        $lines[] = "_Apply now to get this job!_";
-        $lines[] = "_ഈ ജോലി ലഭിക്കാൻ ഇപ്പോൾ അപേക്ഷിക്കുക!_";
-
-        return implode("\n", $lines);
     }
 
     /*
@@ -227,6 +165,11 @@ class JobNotificationService
 
     /**
      * Notify job poster about a new application.
+     *
+     * Format: MAX 5 lines + 2-3 buttons
+     * Includes social proof (NP-016): "X applications pending"
+     *
+     * @param JobApplication $application
      */
     public function notifyPosterOfApplication(JobApplication $application): void
     {
@@ -238,21 +181,22 @@ class JobNotificationService
             return;
         }
 
-        $message = $this->buildApplicationNotificationMessage($application, $job, $worker);
+        // Social proof (NP-016)
+        $pendingCount = $job->applications()->where('status', 'pending')->count();
+        $socialProof = $pendingCount > 1 ? "\n👥 {$pendingCount} applications" : '';
+
+        // Worker rating
+        $rating = $worker->rating ? "⭐{$worker->rating}" : '🆕';
+        $jobs = $worker->jobs_completed ?? 0;
+
+        // Compact notification (5 lines max)
+        $message = "📩 *New Application!*\n" .
+            "📋 {$job->title}\n" .
+            "👤 {$worker->name} ({$rating} • {$jobs} jobs){$socialProof}";
 
         $buttons = [
-            [
-                'id' => 'view_applicant_' . $application->id,
-                'title' => '👁️ View Profile',
-            ],
-            [
-                'id' => 'accept_applicant_' . $application->id,
-                'title' => '✅ Accept',
-            ],
-            [
-                'id' => 'view_all_applicants_' . $job->id,
-                'title' => '📋 All Applicants',
-            ],
+            ['id' => 'applicant_' . $application->id, 'title' => '👁️ View'],
+            ['id' => 'accept_' . $application->id, 'title' => '✅ Accept'],
         ];
 
         SendWhatsAppMessage::dispatch(
@@ -265,53 +209,7 @@ class JobNotificationService
         Log::debug('Poster notified of application', [
             'job_id' => $job->id,
             'application_id' => $application->id,
-            'poster_id' => $poster->id,
         ]);
-    }
-
-    /**
-     * Build application notification message.
-     */
-    protected function buildApplicationNotificationMessage(
-        JobApplication $application,
-        JobPost $job,
-        JobWorker $worker
-    ): string {
-        $pendingCount = $job->applications()->pending()->count();
-
-        $lines = [
-            "📩 *New Application Received!*",
-            "*പുതിയ അപേക്ഷ ലഭിച്ചു!*",
-            "",
-            "For: {$job->category->icon} *{$job->title}*",
-            "",
-            "👤 *{$worker->name}*",
-        ];
-
-        if ($worker->rating_count > 0) {
-            $lines[] = "⭐ {$worker->average_rating}/5 ({$worker->rating_count} reviews)";
-        }
-
-        $lines[] = "✅ {$worker->jobs_completed} jobs completed";
-
-        if ($worker->hasVehicle()) {
-            $lines[] = "🚗 Has vehicle: {$worker->vehicle_type->label()}";
-        }
-
-        if ($application->proposed_amount) {
-            $lines[] = "";
-            $lines[] = "💰 Proposed: {$application->proposed_amount_display}";
-        }
-
-        if ($application->message) {
-            $lines[] = "";
-            $lines[] = "💬 \"{$application->message}\"";
-        }
-
-        $lines[] = "";
-        $lines[] = "📊 Total pending applications: {$pendingCount}";
-
-        return implode("\n", $lines);
     }
 
     /*
@@ -321,7 +219,9 @@ class JobNotificationService
     */
 
     /**
-     * Notify worker that they were selected for a job.
+     * Notify worker that they were selected.
+     *
+     * @param JobApplication $application
      */
     public function notifyWorkerSelected(JobApplication $application): void
     {
@@ -333,21 +233,20 @@ class JobNotificationService
             return;
         }
 
-        $message = $this->buildSelectionMessage($job, $application);
+        $poster = $job->poster;
+        $pay = '₹' . number_format((float) $job->pay_amount);
+        $dateDisplay = $job->job_date ? $job->job_date->format('d M') : 'Flexible';
+
+        // Compact: 5 lines
+        $message = "🎉 *Job kitiyi!*\n" .
+            "📋 {$job->title}\n" .
+            "💰 {$pay} • 📅 {$dateDisplay}\n" .
+            "📍 {$job->location_name}\n" .
+            "📞 {$poster->phone}";
 
         $buttons = [
-            [
-                'id' => 'confirm_job_' . $job->id,
-                'title' => '✅ Confirm / സ്ഥിരീകരിക്കുക',
-            ],
-            [
-                'id' => 'view_job_details_' . $job->id,
-                'title' => '📋 View Details',
-            ],
-            [
-                'id' => 'contact_poster_' . $job->id,
-                'title' => '💬 Contact Poster',
-            ],
+            ['id' => 'view_job_' . $job->id, 'title' => '📋 Details'],
+            ['id' => 'menu', 'title' => '📋 Menu'],
         ];
 
         SendWhatsAppMessage::dispatch(
@@ -360,50 +259,13 @@ class JobNotificationService
         Log::info('Worker notified of selection', [
             'job_id' => $job->id,
             'worker_id' => $worker->id,
-            'application_id' => $application->id,
         ]);
     }
 
     /**
-     * Build selection notification message.
-     */
-    protected function buildSelectionMessage(JobPost $job, JobApplication $application): string
-    {
-        $poster = $job->poster;
-        $finalAmount = $application->proposed_amount ?? $job->amount;
-
-        $lines = [
-            "🎉 *Congratulations! You Got the Job!*",
-            "*അഭിനന്ദനങ്ങൾ! നിങ്ങൾ തിരഞ്ഞെടുക്കപ്പെട്ടു!*",
-            "",
-            "{$job->category->icon} *{$job->title}*",
-            "",
-            "💰 Amount: ₹" . number_format($finalAmount),
-            "📅 Date: {$job->scheduled_date->format('l, M j, Y')}",
-            "🕐 Time: {$job->scheduled_time->format('g:i A')}",
-            "📍 Location: {$job->location_display}",
-        ];
-
-        if ($poster) {
-            $lines[] = "";
-            $lines[] = "👤 Contact: {$poster->name}";
-            $lines[] = "📞 Phone: {$poster->phone}";
-        }
-
-        if ($job->special_instructions) {
-            $lines[] = "";
-            $lines[] = "📝 Instructions: {$job->special_instructions}";
-        }
-
-        $lines[] = "";
-        $lines[] = "_Please confirm your availability._";
-        $lines[] = "_ദയവായി നിങ്ങളുടെ ലഭ്യത സ്ഥിരീകരിക്കുക._";
-
-        return implode("\n", $lines);
-    }
-
-    /**
      * Notify worker that their application was rejected.
+     *
+     * @param JobApplication $application
      */
     public function notifyWorkerRejected(JobApplication $application): void
     {
@@ -415,17 +277,14 @@ class JobNotificationService
             return;
         }
 
-        $message = $this->buildRejectionMessage($job);
+        // Compact: 3 lines
+        $message = "📋 *Application Update*\n" .
+            "{$job->title} - not selected\n" .
+            "New jobs vannaal ariyikkam! 💪";
 
         $buttons = [
-            [
-                'id' => 'browse_jobs',
-                'title' => '🔍 Find Other Jobs',
-            ],
-            [
-                'id' => 'main_menu',
-                'title' => '🏠 Main Menu',
-            ],
+            ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+            ['id' => 'menu', 'title' => '📋 Menu'],
         ];
 
         SendWhatsAppMessage::dispatch(
@@ -434,28 +293,6 @@ class JobNotificationService
             'buttons',
             $buttons
         )->onQueue('job-notifications');
-
-        Log::debug('Worker notified of rejection', [
-            'job_id' => $job->id,
-            'worker_id' => $worker->id,
-        ]);
-    }
-
-    /**
-     * Build rejection notification message.
-     */
-    protected function buildRejectionMessage(JobPost $job): string
-    {
-        return implode("\n", [
-            "📋 *Application Update*",
-            "",
-            "Your application for *{$job->title}* was not selected this time.",
-            "",
-            "നിങ്ങളുടെ *{$job->title}* അപേക്ഷ ഇത്തവണ തിരഞ്ഞെടുത്തില്ല.",
-            "",
-            "_Don't worry! New jobs are posted regularly._",
-            "_വിഷമിക്കേണ്ട! പുതിയ ജോലികൾ പതിവായി പോസ്റ്റ് ചെയ്യുന്നു._",
-        ]);
     }
 
     /*
@@ -465,30 +302,31 @@ class JobNotificationService
     */
 
     /**
-     * Send job reminder (1 hour before scheduled time).
+     * Send job reminder (1 hour before).
+     *
+     * @param JobPost $job
      */
     public function sendJobReminder(JobPost $job): void
     {
-        if (!in_array($job->status, [JobStatus::ASSIGNED])) {
+        if ($job->status !== JobStatus::ASSIGNED) {
             return;
         }
 
         $worker = $job->assignedWorker;
-
         if (!$worker) {
             return;
         }
 
-        // Send to worker
+        // Notify worker
         $this->sendWorkerReminder($job, $worker);
 
-        // Send to poster
+        // Notify poster
         $this->sendPosterReminder($job);
 
-        Log::info('Job reminders sent', [
-            'job_id' => $job->id,
-            'worker_id' => $worker->id,
-        ]);
+        // Mark reminder sent
+        $job->update(['reminder_sent_at' => now()]);
+
+        Log::info('Job reminders sent', ['job_id' => $job->id]);
     }
 
     /**
@@ -497,40 +335,23 @@ class JobNotificationService
     protected function sendWorkerReminder(JobPost $job, JobWorker $worker): void
     {
         $user = $worker->user;
-
         if (!$user || !$user->phone) {
             return;
         }
 
-        $message = implode("\n", [
-            "⏰ *Job Reminder!*",
-            "*ജോലി ഓർമ്മപ്പെടുത്തൽ!*",
-            "",
-            "{$job->category->icon} *{$job->title}*",
-            "",
-            "📅 Today at {$job->scheduled_time->format('g:i A')}",
-            "📍 {$job->location_display}",
-            "",
-            "👤 Contact: {$job->poster->name}",
-            "📞 {$job->poster->phone}",
-            "",
-            "_Tap 'Start Job' when you arrive._",
-            "_നിങ്ങൾ എത്തുമ്പോൾ 'Start Job' ടാപ്പ് ചെയ്യുക._",
-        ]);
+        $timeDisplay = $job->job_time ?? 'Soon';
+        $poster = $job->poster;
+
+        // Compact: 5 lines
+        $message = "⏰ *Job Reminder!*\n" .
+            "📋 {$job->title}\n" .
+            "📍 {$job->location_name}\n" .
+            "🕐 {$timeDisplay}\n" .
+            "📞 {$poster->phone}";
 
         $buttons = [
-            [
-                'id' => 'start_job_' . $job->id,
-                'title' => '🚀 Start Job',
-            ],
-            [
-                'id' => 'get_directions_' . $job->id,
-                'title' => '📍 Get Directions',
-            ],
-            [
-                'id' => 'contact_poster_' . $job->id,
-                'title' => '📞 Contact',
-            ],
+            ['id' => 'start_job_' . $job->id, 'title' => '🚀 Start'],
+            ['id' => 'get_directions_' . $job->id, 'title' => '📍 Directions'],
         ];
 
         SendWhatsAppMessage::dispatch(
@@ -553,31 +374,17 @@ class JobNotificationService
             return;
         }
 
-        $message = implode("\n", [
-            "⏰ *Job Reminder!*",
-            "*ജോലി ഓർമ്മപ്പെടുത്തൽ!*",
-            "",
-            "{$job->category->icon} *{$job->title}*",
-            "",
-            "📅 Today at {$job->scheduled_time->format('g:i A')}",
-            "",
-            "👷 Worker: *{$worker->name}*",
-            "📞 {$worker->user->phone}",
-            "⭐ {$worker->short_rating}",
-            "",
-            "_Your worker will arrive soon._",
-            "_നിങ്ങളുടെ തൊഴിലാളി ഉടൻ എത്തും._",
-        ]);
+        $timeDisplay = $job->job_time ?? 'Soon';
+        $rating = $worker->rating ? "⭐{$worker->rating}" : '';
+
+        // Compact: 4 lines
+        $message = "⏰ *Job Reminder!*\n" .
+            "📋 {$job->title}\n" .
+            "👷 {$worker->name} {$rating}\n" .
+            "📞 {$worker->user->phone}";
 
         $buttons = [
-            [
-                'id' => 'contact_worker_' . $job->id,
-                'title' => '📞 Contact Worker',
-            ],
-            [
-                'id' => 'view_job_' . $job->id,
-                'title' => '👁️ View Job',
-            ],
+            ['id' => 'contact_worker_' . $job->id, 'title' => '📞 Contact'],
         ];
 
         SendWhatsAppMessage::dispatch(
@@ -589,27 +396,20 @@ class JobNotificationService
     }
 
     /**
-     * Get jobs needing reminders.
+     * Get jobs needing reminders (1 hour before).
      */
     public function getJobsNeedingReminders(): Collection
     {
-        $reminderTime = now()->addMinutes(self::REMINDER_MINUTES_BEFORE);
+        $reminderTime = now()->addMinutes(60);
 
-        return JobPost::whereIn('status', [JobStatus::ASSIGNED])
-            ->whereDate('scheduled_date', today())
-            ->whereTime('scheduled_time', '>=', now()->format('H:i:s'))
-            ->whereTime('scheduled_time', '<=', $reminderTime->format('H:i:s'))
+        return JobPost::where('status', JobStatus::ASSIGNED)
+            ->whereDate('job_date', today())
+            ->whereNotNull('job_time')
+            ->whereTime('job_time', '>=', now()->format('H:i:s'))
+            ->whereTime('job_time', '<=', $reminderTime->format('H:i:s'))
             ->whereNull('reminder_sent_at')
             ->with(['assignedWorker.user', 'poster', 'category'])
             ->get();
-    }
-
-    /**
-     * Mark reminder as sent.
-     */
-    public function markReminderSent(JobPost $job): void
-    {
-        $job->update(['reminder_sent_at' => now()]);
     }
 
     /*
@@ -620,10 +420,14 @@ class JobNotificationService
 
     /**
      * Notify about job cancellation.
+     *
+     * @param JobPost $job
+     * @param string $reason
+     * @param string $cancelledBy
      */
     public function notifyJobCancelled(JobPost $job, string $reason, string $cancelledBy = 'poster'): void
     {
-        // Notify assigned worker if any
+        // Notify assigned worker
         if ($job->assigned_worker_id) {
             $this->notifyWorkerOfCancellation($job, $reason);
         }
@@ -636,15 +440,9 @@ class JobNotificationService
         // Notify pending applicants
         $this->notifyApplicantsOfCancellation($job);
 
-        Log::info('Cancellation notifications sent', [
-            'job_id' => $job->id,
-            'cancelled_by' => $cancelledBy,
-        ]);
+        Log::info('Cancellation notifications sent', ['job_id' => $job->id]);
     }
 
-    /**
-     * Notify worker of job cancellation.
-     */
     protected function notifyWorkerOfCancellation(JobPost $job, string $reason): void
     {
         $worker = $job->assignedWorker;
@@ -654,40 +452,19 @@ class JobNotificationService
             return;
         }
 
-        $message = implode("\n", [
-            "❌ *Job Cancelled*",
-            "*ജോലി റദ്ദാക്കി*",
-            "",
-            "{$job->category->icon} *{$job->title}*",
-            "",
-            "📝 Reason: {$reason}",
-            "",
-            "_We apologize for the inconvenience._",
-            "_അസൗകര്യത്തിൽ ക്ഷമിക്കുക._",
-        ]);
+        $message = "❌ *Job Cancelled*\n" .
+            "📋 {$job->title}\n" .
+            "📝 {$reason}";
 
         $buttons = [
-            [
-                'id' => 'browse_jobs',
-                'title' => '🔍 Find Other Jobs',
-            ],
-            [
-                'id' => 'main_menu',
-                'title' => '🏠 Main Menu',
-            ],
+            ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+            ['id' => 'menu', 'title' => '📋 Menu'],
         ];
 
-        SendWhatsAppMessage::dispatch(
-            $user->phone,
-            $message,
-            'buttons',
-            $buttons
-        )->onQueue('job-notifications');
+        SendWhatsAppMessage::dispatch($user->phone, $message, 'buttons', $buttons)
+            ->onQueue('job-notifications');
     }
 
-    /**
-     * Notify poster of worker cancellation.
-     */
     protected function notifyPosterOfCancellation(JobPost $job, string $reason): void
     {
         $poster = $job->poster;
@@ -696,249 +473,46 @@ class JobNotificationService
             return;
         }
 
-        $message = implode("\n", [
-            "❌ *Worker Cancelled*",
-            "*തൊഴിലാളി റദ്ദാക്കി*",
-            "",
-            "{$job->category->icon} *{$job->title}*",
-            "",
-            "📝 Reason: {$reason}",
-            "",
-            "_You can select another applicant or repost the job._",
-        ]);
+        $message = "❌ *Worker Cancelled*\n" .
+            "📋 {$job->title}\n" .
+            "📝 {$reason}";
 
         $buttons = [
-            [
-                'id' => 'view_applicants_' . $job->id,
-                'title' => '👥 Other Applicants',
-            ],
-            [
-                'id' => 'repost_job_' . $job->id,
-                'title' => '🔄 Repost Job',
-            ],
+            ['id' => 'repost_' . $job->id, 'title' => '🔄 Repost'],
+            ['id' => 'menu', 'title' => '📋 Menu'],
         ];
 
-        SendWhatsAppMessage::dispatch(
-            $poster->phone,
-            $message,
-            'buttons',
-            $buttons
-        )->onQueue('job-notifications');
+        SendWhatsAppMessage::dispatch($poster->phone, $message, 'buttons', $buttons)
+            ->onQueue('job-notifications');
     }
 
-    /**
-     * Notify all pending applicants of job cancellation.
-     */
     protected function notifyApplicantsOfCancellation(JobPost $job): void
     {
-        $applications = $job->applications()->pending()->with('worker.user')->get();
+        $applications = $job->applications()->where('status', 'pending')->with('worker.user')->get();
 
-        foreach ($applications as $application) {
-            $user = $application->worker?->user;
-
+        foreach ($applications as $app) {
+            $user = $app->worker?->user;
             if (!$user || !$user->phone) {
                 continue;
             }
 
-            $message = implode("\n", [
-                "📋 *Job Update*",
-                "",
-                "The job *{$job->title}* you applied for has been cancelled.",
-                "",
-                "നിങ്ങൾ അപേക്ഷിച്ച *{$job->title}* ജോലി റദ്ദാക്കി.",
-            ]);
+            $message = "📋 *Job Cancelled*\n{$job->title}";
 
-            SendWhatsAppMessage::dispatch(
-                $user->phone,
-                $message,
-                'text'
-            )->onQueue('job-notifications');
+            SendWhatsAppMessage::dispatch($user->phone, $message, 'text')
+                ->onQueue('job-notifications');
         }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Earnings & Badge Notifications
+    | Completion & Payment Notifications
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Send weekly earnings summary to worker.
-     */
-    public function sendWeeklyEarnings(JobWorker $worker): void
-    {
-        $user = $worker->user;
-
-        if (!$user || !$user->phone) {
-            return;
-        }
-
-        // Get this week's earnings
-        $earning = WorkerEarning::getOrCreateForWeek($worker);
-
-        if ($earning->total_earned <= 0 && $earning->jobs_completed <= 0) {
-            // No activity, skip notification
-            return;
-        }
-
-        $message = $this->buildWeeklyEarningsMessage($worker, $earning);
-
-        $buttons = [
-            [
-                'id' => 'view_stats',
-                'title' => '📊 Full Stats',
-            ],
-            [
-                'id' => 'browse_jobs',
-                'title' => '🔍 Find Jobs',
-            ],
-            [
-                'id' => 'share_stats',
-                'title' => '📤 Share',
-            ],
-        ];
-
-        SendWhatsAppMessage::dispatch(
-            $user->phone,
-            $message,
-            'buttons',
-            $buttons
-        )->onQueue('job-notifications');
-
-        Log::info('Weekly earnings summary sent', [
-            'worker_id' => $worker->id,
-            'total_earned' => $earning->total_earned,
-            'jobs_completed' => $earning->jobs_completed,
-        ]);
-    }
-
-    /**
-     * Build weekly earnings summary message.
-     */
-    protected function buildWeeklyEarningsMessage(JobWorker $worker, WorkerEarning $earning): string
-    {
-        $lines = [
-            "📊 *Weekly Earnings Summary*",
-            "*ആഴ്ചയിലെ വരുമാന സംഗ്രഹം*",
-            "",
-            "👋 Hi {$worker->name}!",
-            "",
-            "This week you earned:",
-            "",
-            "💰 *₹" . number_format($earning->total_earned) . "*",
-            "",
-            "📋 Jobs completed: {$earning->jobs_completed}",
-            "⏱️ Hours worked: " . round($earning->total_hours, 1),
-        ];
-
-        if ($earning->average_rating > 0) {
-            $lines[] = "⭐ Average rating: " . round($earning->average_rating, 1) . "/5";
-        }
-
-        if ($earning->on_time_jobs > 0) {
-            $onTimeRate = round(($earning->on_time_jobs / $earning->jobs_completed) * 100);
-            $lines[] = "⏰ On-time rate: {$onTimeRate}%";
-        }
-
-        // Add comparison to last week
-        $lastWeek = WorkerEarning::byWorker($worker->id)
-            ->where('week_start', '<', $earning->week_start)
-            ->orderBy('week_start', 'desc')
-            ->first();
-
-        if ($lastWeek && $lastWeek->total_earned > 0) {
-            $change = $earning->total_earned - $lastWeek->total_earned;
-            $percentChange = round(($change / $lastWeek->total_earned) * 100);
-
-            if ($change > 0) {
-                $lines[] = "";
-                $lines[] = "📈 *+₹" . number_format($change) . "* (+{$percentChange}%) from last week!";
-            } elseif ($change < 0) {
-                $lines[] = "";
-                $lines[] = "📉 ₹" . number_format(abs($change)) . " ({$percentChange}%) less than last week";
-            }
-        }
-
-        $lines[] = "";
-        $lines[] = "_Keep up the great work! 💪_";
-        $lines[] = "_മികച്ച പ്രവർത്തനം തുടരുക! 💪_";
-
-        return implode("\n", $lines);
-    }
-
-    /**
-     * Send badge earned notification.
-     */
-    public function sendBadgeEarned(JobWorker $worker, BadgeType $badge): void
-    {
-        $user = $worker->user;
-
-        if (!$user || !$user->phone) {
-            return;
-        }
-
-        $message = $this->buildBadgeEarnedMessage($worker, $badge);
-
-        $buttons = [
-            [
-                'id' => 'view_badges',
-                'title' => '🏆 My Badges',
-            ],
-            [
-                'id' => 'share_badge_' . $badge->value,
-                'title' => '📤 Share',
-            ],
-            [
-                'id' => 'browse_jobs',
-                'title' => '🔍 Find Jobs',
-            ],
-        ];
-
-        SendWhatsAppMessage::dispatch(
-            $user->phone,
-            $message,
-            'buttons',
-            $buttons
-        )->onQueue('job-notifications');
-
-        Log::info('Badge earned notification sent', [
-            'worker_id' => $worker->id,
-            'badge' => $badge->value,
-        ]);
-    }
-
-    /**
-     * Build badge earned message.
-     */
-    protected function buildBadgeEarnedMessage(JobWorker $worker, BadgeType $badge): string
-    {
-        $totalBadges = WorkerBadge::byWorker($worker->id)->count();
-
-        return implode("\n", [
-            "🏆 *New Badge Earned!*",
-            "*പുതിയ ബാഡ്ജ് നേടി!*",
-            "",
-            "Congratulations {$worker->name}! 🎉",
-            "",
-            "{$badge->emoji()} *{$badge->label()}*",
-            "",
-            $badge->description(),
-            "",
-            "You now have *{$totalBadges} badges*!",
-            "",
-            "_Share your achievement with friends!_",
-            "_നിങ്ങളുടെ നേട്ടം സുഹൃത്തുക്കളുമായി പങ്കിടുക!_",
-        ]);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Completion Notifications
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Notify worker of job completion with earnings summary.
+     * Notify worker of job completion.
+     *
+     * @param JobPost $job
      */
     public function notifyJobCompleted(JobPost $job): void
     {
@@ -949,120 +523,29 @@ class JobNotificationService
             return;
         }
 
-        $message = $this->buildCompletionMessage($job, $worker);
+        $pay = '₹' . number_format((float) $job->pay_amount);
+        $rating = $job->verification?->rating;
+        $ratingDisplay = $rating ? str_repeat('⭐', $rating) : '';
+
+        $message = "✅ *Job Complete!*\n" .
+            "📋 {$job->title}\n" .
+            "💰 {$pay} earned\n" .
+            "{$ratingDisplay}";
 
         $buttons = [
-            [
-                'id' => 'view_earnings',
-                'title' => '💰 My Earnings',
-            ],
-            [
-                'id' => 'browse_jobs',
-                'title' => '🔍 More Jobs',
-            ],
-            [
-                'id' => 'share_completion',
-                'title' => '📤 Share',
-            ],
+            ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+            ['id' => 'earnings', 'title' => '💰 Earnings'],
         ];
 
-        SendWhatsAppMessage::dispatch(
-            $user->phone,
-            $message,
-            'buttons',
-            $buttons
-        )->onQueue('job-notifications');
+        SendWhatsAppMessage::dispatch($user->phone, $message, 'buttons', $buttons)
+            ->onQueue('job-notifications');
     }
 
     /**
-     * Build job completion message.
-     */
-    protected function buildCompletionMessage(JobPost $job, JobWorker $worker): string
-    {
-        $earning = WorkerEarning::getOrCreateForWeek($worker);
-
-        $lines = [
-            "✅ *Job Completed!*",
-            "*ജോലി പൂർത്തിയായി!*",
-            "",
-            "{$job->category->icon} *{$job->title}*",
-            "",
-            "💰 Earned: *₹" . number_format($job->final_amount ?? $job->amount) . "*",
-        ];
-
-        if ($job->worker_rating) {
-            $lines[] = "⭐ Your rating: {$job->worker_rating}/5";
-        }
-
-        $lines[] = "";
-        $lines[] = "📊 *This Week's Progress:*";
-        $lines[] = "💰 Total: ₹" . number_format($earning->total_earned);
-        $lines[] = "📋 Jobs: {$earning->jobs_completed}";
-
-        $lines[] = "";
-        $lines[] = "_Great work! Keep it up! 💪_";
-
-        return implode("\n", $lines);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Bulk Notifications
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Send weekly summaries to all active workers.
-     */
-    public function sendAllWeeklySummaries(): int
-    {
-        $workers = JobWorker::verified()
-            ->active()
-            ->whereHas('earnings', function ($q) {
-                $q->thisWeek()->where('jobs_completed', '>', 0);
-            })
-            ->get();
-
-        $count = 0;
-
-        foreach ($workers as $worker) {
-            SendJobNotificationJob::dispatch('weekly_earnings', $worker->id)
-                ->onQueue('job-notifications')
-                ->delay(now()->addSeconds($count * 2)); // Stagger to avoid rate limits
-
-            $count++;
-        }
-
-        Log::info('Weekly summaries queued', ['count' => $count]);
-
-        return $count;
-    }
-
-    /**
-     * Process all pending job reminders.
-     */
-    public function processJobReminders(): int
-    {
-        $jobs = $this->getJobsNeedingReminders();
-        $count = 0;
-
-        foreach ($jobs as $job) {
-            $this->sendJobReminder($job);
-            $this->markReminderSent($job);
-            $count++;
-        }
-
-        return $count;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Payment Notifications
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Notify worker of payment confirmation.
+     * Notify worker of payment.
+     *
+     * @param JobPost $job
+     * @param PaymentMethod $method
      */
     public function notifyPaymentReceived(JobPost $job, PaymentMethod $method): void
     {
@@ -1073,49 +556,166 @@ class JobNotificationService
             return;
         }
 
-        $message = implode("\n", [
-            "💰 *Payment Confirmed!*",
-            "*പേയ്മെന്റ് സ്ഥിരീകരിച്ചു!*",
-            "",
-            "{$job->category->icon} *{$job->title}*",
-            "",
-            "Amount: *₹" . number_format($job->final_amount ?? $job->amount) . "*",
-            "Method: {$method->label()}",
-            "",
-            "_Thank you for your work!_",
-            "_നിങ്ങളുടെ പ്രവർത്തനത്തിന് നന്ദി!_",
-        ]);
+        $pay = '₹' . number_format((float) $job->pay_amount);
+        $methodDisplay = $method === PaymentMethod::UPI ? '📱 UPI' : '💵 Cash';
 
-        SendWhatsAppMessage::dispatch(
-            $user->phone,
-            $message,
-            'text'
-        )->onQueue('job-notifications');
+        $message = "💰 *Payment Confirmed!*\n" .
+            "📋 {$job->title}\n" .
+            "{$pay} via {$methodDisplay}";
+
+        SendWhatsAppMessage::dispatch($user->phone, $message, 'text')
+            ->onQueue('job-notifications');
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Cleanup
+    | Weekly Earnings
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get notification statistics.
+     * Send weekly earnings summary to worker.
+     *
+     * @param JobWorker $worker
      */
-    public function getNotificationStats(Carbon $from, Carbon $to): array
+    public function sendWeeklyEarnings(JobWorker $worker): void
     {
-        // This would typically query a notifications table
-        // For now, return placeholder stats
-        return [
-            'total_sent' => 0,
-            'job_alerts' => 0,
-            'reminders' => 0,
-            'weekly_summaries' => 0,
-            'badge_notifications' => 0,
-            'period' => [
-                'from' => $from->toDateString(),
-                'to' => $to->toDateString(),
-            ],
+        $user = $worker->user;
+
+        if (!$user || !$user->phone) {
+            return;
+        }
+
+        // Get this week's earnings
+        $startOfWeek = now()->startOfWeek();
+        $weekEarnings = JobPost::where('assigned_worker_id', $worker->id)
+            ->where('status', JobStatus::COMPLETED)
+            ->where('completed_at', '>=', $startOfWeek)
+            ->sum('pay_amount');
+
+        $weekJobs = JobPost::where('assigned_worker_id', $worker->id)
+            ->where('status', JobStatus::COMPLETED)
+            ->where('completed_at', '>=', $startOfWeek)
+            ->count();
+
+        if ($weekEarnings <= 0 && $weekJobs <= 0) {
+            return;
+        }
+
+        $earnings = '₹' . number_format((float) $weekEarnings);
+
+        // Compact: 4 lines
+        $message = "📊 *Weekly Summary*\n" .
+            "💰 {$earnings} earned\n" .
+            "📋 {$weekJobs} jobs completed\n" .
+            "Keep up the great work! 💪";
+
+        $buttons = [
+            ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+            ['id' => 'earnings', 'title' => '💰 Full Stats'],
         ];
+
+        SendWhatsAppMessage::dispatch($user->phone, $message, 'buttons', $buttons)
+            ->onQueue('job-notifications');
+
+        Log::info('Weekly earnings sent', [
+            'worker_id' => $worker->id,
+            'earnings' => $weekEarnings,
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Badge Notifications
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Send badge earned notification.
+     *
+     * @param JobWorker $worker
+     * @param BadgeType $badge
+     */
+    public function sendBadgeEarned(JobWorker $worker, BadgeType $badge): void
+    {
+        $user = $worker->user;
+
+        if (!$user || !$user->phone) {
+            return;
+        }
+
+        // Compact: 3 lines
+        $message = "🏆 *New Badge!*\n" .
+            "{$badge->emoji()} {$badge->label()}\n" .
+            "Congrats, {$worker->name}! 🎉";
+
+        $buttons = [
+            ['id' => 'view_badges', 'title' => '🏆 My Badges'],
+            ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+        ];
+
+        SendWhatsAppMessage::dispatch($user->phone, $message, 'buttons', $buttons)
+            ->onQueue('job-notifications');
+
+        Log::info('Badge notification sent', [
+            'worker_id' => $worker->id,
+            'badge' => $badge->value,
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Bulk Operations
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Send weekly summaries to all active workers.
+     *
+     * @return int Count of workers notified
+     */
+    public function sendAllWeeklySummaries(): int
+    {
+        $startOfWeek = now()->startOfWeek();
+
+        $workerIds = JobPost::where('status', JobStatus::COMPLETED)
+            ->where('completed_at', '>=', $startOfWeek)
+            ->distinct()
+            ->pluck('assigned_worker_id');
+
+        $count = 0;
+
+        foreach ($workerIds as $workerId) {
+            if ($workerId) {
+                SendJobNotificationJob::dispatch(
+                    SendJobNotificationJob::TYPE_WEEKLY_EARNINGS,
+                    $workerId
+                )->onQueue('job-notifications')->delay(now()->addSeconds($count * 2));
+
+                $count++;
+            }
+        }
+
+        Log::info('Weekly summaries queued', ['count' => $count]);
+
+        return $count;
+    }
+
+    /**
+     * Process all pending job reminders.
+     *
+     * @return int Count of reminders sent
+     */
+    public function processJobReminders(): int
+    {
+        $jobs = $this->getJobsNeedingReminders();
+        $count = 0;
+
+        foreach ($jobs as $job) {
+            $this->sendJobReminder($job);
+            $count++;
+        }
+
+        return $count;
     }
 }

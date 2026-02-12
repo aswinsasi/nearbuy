@@ -1,7 +1,11 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Jobs;
 
+use App\Enums\BadgeType;
+use App\Models\JobApplication;
 use App\Models\JobPost;
 use App\Models\JobWorker;
 use App\Services\Jobs\JobNotificationService;
@@ -15,7 +19,7 @@ use Illuminate\Support\Facades\Log;
 /**
  * Job for sending job-related notifications asynchronously.
  *
- * Handles various job notification types with retry support.
+ * Handles various notification types with retry support.
  *
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
@@ -34,7 +38,7 @@ class SendJobNotificationJob implements ShouldQueue
     public int $backoff = 60;
 
     /**
-     * Notification types supported.
+     * Notification types.
      */
     public const TYPE_NEW_JOB = 'new_job';
     public const TYPE_APPLICATION = 'application';
@@ -42,6 +46,7 @@ class SendJobNotificationJob implements ShouldQueue
     public const TYPE_REJECTION = 'rejection';
     public const TYPE_REMINDER = 'reminder';
     public const TYPE_CANCELLATION = 'cancellation';
+    public const TYPE_COMPLETION = 'completion';
     public const TYPE_WEEKLY_EARNINGS = 'weekly_earnings';
     public const TYPE_BADGE_EARNED = 'badge_earned';
 
@@ -49,8 +54,8 @@ class SendJobNotificationJob implements ShouldQueue
      * Create a new job instance.
      *
      * @param string $type Notification type
-     * @param int $targetId Target ID (worker_id, job_id, or application_id based on type)
-     * @param array $data Additional data for the notification
+     * @param int $targetId Target ID (worker_id, job_id, or application_id)
+     * @param array $data Additional data
      */
     public function __construct(
         public string $type,
@@ -65,15 +70,16 @@ class SendJobNotificationJob implements ShouldQueue
     {
         try {
             match ($this->type) {
-                self::TYPE_NEW_JOB => $this->handleNewJobNotification($notificationService),
-                self::TYPE_APPLICATION => $this->handleApplicationNotification($notificationService),
-                self::TYPE_SELECTION => $this->handleSelectionNotification($notificationService),
-                self::TYPE_REJECTION => $this->handleRejectionNotification($notificationService),
-                self::TYPE_REMINDER => $this->handleReminderNotification($notificationService),
-                self::TYPE_CANCELLATION => $this->handleCancellationNotification($notificationService),
-                self::TYPE_WEEKLY_EARNINGS => $this->handleWeeklyEarningsNotification($notificationService),
-                self::TYPE_BADGE_EARNED => $this->handleBadgeEarnedNotification($notificationService),
-                default => Log::warning('Unknown job notification type', ['type' => $this->type]),
+                self::TYPE_NEW_JOB => $this->handleNewJob($notificationService),
+                self::TYPE_APPLICATION => $this->handleApplication($notificationService),
+                self::TYPE_SELECTION => $this->handleSelection($notificationService),
+                self::TYPE_REJECTION => $this->handleRejection($notificationService),
+                self::TYPE_REMINDER => $this->handleReminder($notificationService),
+                self::TYPE_CANCELLATION => $this->handleCancellation($notificationService),
+                self::TYPE_COMPLETION => $this->handleCompletion($notificationService),
+                self::TYPE_WEEKLY_EARNINGS => $this->handleWeeklyEarnings($notificationService),
+                self::TYPE_BADGE_EARNED => $this->handleBadgeEarned($notificationService),
+                default => Log::warning('Unknown notification type', ['type' => $this->type]),
             };
 
             Log::debug('Job notification processed', [
@@ -94,8 +100,9 @@ class SendJobNotificationJob implements ShouldQueue
 
     /**
      * Handle new job notification.
+     * targetId = job_id, data['worker_id'] = worker to notify
      */
-    protected function handleNewJobNotification(JobNotificationService $service): void
+    protected function handleNewJob(JobNotificationService $service): void
     {
         $job = JobPost::find($this->targetId);
         $workerId = $this->data['worker_id'] ?? null;
@@ -112,10 +119,11 @@ class SendJobNotificationJob implements ShouldQueue
 
     /**
      * Handle application notification.
+     * targetId = application_id
      */
-    protected function handleApplicationNotification(JobNotificationService $service): void
+    protected function handleApplication(JobNotificationService $service): void
     {
-        $application = \App\Models\JobApplication::with(['jobPost', 'worker'])->find($this->targetId);
+        $application = JobApplication::with(['jobPost', 'worker'])->find($this->targetId);
 
         if ($application) {
             $service->notifyPosterOfApplication($application);
@@ -124,10 +132,11 @@ class SendJobNotificationJob implements ShouldQueue
 
     /**
      * Handle selection notification.
+     * targetId = application_id
      */
-    protected function handleSelectionNotification(JobNotificationService $service): void
+    protected function handleSelection(JobNotificationService $service): void
     {
-        $application = \App\Models\JobApplication::with(['jobPost', 'worker'])->find($this->targetId);
+        $application = JobApplication::with(['jobPost', 'worker'])->find($this->targetId);
 
         if ($application) {
             $service->notifyWorkerSelected($application);
@@ -136,10 +145,11 @@ class SendJobNotificationJob implements ShouldQueue
 
     /**
      * Handle rejection notification.
+     * targetId = application_id
      */
-    protected function handleRejectionNotification(JobNotificationService $service): void
+    protected function handleRejection(JobNotificationService $service): void
     {
-        $application = \App\Models\JobApplication::with(['jobPost', 'worker'])->find($this->targetId);
+        $application = JobApplication::with(['jobPost', 'worker'])->find($this->targetId);
 
         if ($application) {
             $service->notifyWorkerRejected($application);
@@ -148,10 +158,11 @@ class SendJobNotificationJob implements ShouldQueue
 
     /**
      * Handle reminder notification.
+     * targetId = job_id
      */
-    protected function handleReminderNotification(JobNotificationService $service): void
+    protected function handleReminder(JobNotificationService $service): void
     {
-        $job = JobPost::with(['assignedWorker', 'user'])->find($this->targetId);
+        $job = JobPost::with(['assignedWorker.user', 'poster'])->find($this->targetId);
 
         if ($job) {
             $service->sendJobReminder($job);
@@ -160,22 +171,38 @@ class SendJobNotificationJob implements ShouldQueue
 
     /**
      * Handle cancellation notification.
+     * targetId = job_id, data['reason'], data['cancelled_by']
      */
-    protected function handleCancellationNotification(JobNotificationService $service): void
+    protected function handleCancellation(JobNotificationService $service): void
     {
-        $job = JobPost::with(['assignedWorker', 'user', 'applications.worker'])->find($this->targetId);
-        $reason = $this->data['reason'] ?? 'Job cancelled';
-        $cancelledBy = $this->data['cancelled_by'] ?? 'poster';
+        $job = JobPost::with(['assignedWorker.user', 'poster', 'applications.worker.user'])
+            ->find($this->targetId);
 
         if ($job) {
+            $reason = $this->data['reason'] ?? 'Job cancelled';
+            $cancelledBy = $this->data['cancelled_by'] ?? 'poster';
             $service->notifyJobCancelled($job, $reason, $cancelledBy);
         }
     }
 
     /**
-     * Handle weekly earnings notification.
+     * Handle completion notification.
+     * targetId = job_id
      */
-    protected function handleWeeklyEarningsNotification(JobNotificationService $service): void
+    protected function handleCompletion(JobNotificationService $service): void
+    {
+        $job = JobPost::with(['assignedWorker.user', 'verification'])->find($this->targetId);
+
+        if ($job) {
+            $service->notifyJobCompleted($job);
+        }
+    }
+
+    /**
+     * Handle weekly earnings notification.
+     * targetId = worker_id
+     */
+    protected function handleWeeklyEarnings(JobNotificationService $service): void
     {
         $worker = JobWorker::with('user')->find($this->targetId);
 
@@ -186,14 +213,15 @@ class SendJobNotificationJob implements ShouldQueue
 
     /**
      * Handle badge earned notification.
+     * targetId = worker_id, data['badge_type']
      */
-    protected function handleBadgeEarnedNotification(JobNotificationService $service): void
+    protected function handleBadgeEarned(JobNotificationService $service): void
     {
         $worker = JobWorker::with('user')->find($this->targetId);
         $badgeType = $this->data['badge_type'] ?? null;
 
         if ($worker && $badgeType) {
-            $badge = \App\Enums\BadgeType::tryFrom($badgeType);
+            $badge = BadgeType::tryFrom($badgeType);
             if ($badge) {
                 $service->sendBadgeEarned($worker, $badge);
             }
@@ -213,10 +241,14 @@ class SendJobNotificationJob implements ShouldQueue
     }
 
     /**
-     * Get the tags that should be assigned to the job.
+     * Get the tags for the job.
      */
     public function tags(): array
     {
-        return ['job-notification', 'type:' . $this->type, 'target:' . $this->targetId];
+        return [
+            'job-notification',
+            'type:' . $this->type,
+            'target:' . $this->targetId,
+        ];
     }
 }

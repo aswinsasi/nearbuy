@@ -17,11 +17,12 @@ use Illuminate\Support\Facades\Log;
  * Service for managing job applications.
  *
  * Handles:
- * - Worker applications to jobs
- * - Application acceptance/rejection
+ * - Worker applications to jobs (NP-017)
+ * - Application acceptance/rejection (NP-019, NP-020, NP-021)
  * - Application queries and statistics
+ * - Notification helpers
  *
- * @srs-ref Section 3.4 - Job Applications
+ * @srs-ref NP-015 to NP-021
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobApplicationService
@@ -38,22 +39,38 @@ class JobApplicationService
 
     /*
     |--------------------------------------------------------------------------
-    | Application Creation
+    | Application Creation (NP-017)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Apply to a job.
+     * Apply to a job (instant apply without message).
+     *
+     * @srs-ref NP-017 - Worker can apply with optional message
+     *
+     * @param JobWorker $worker The worker applying
+     * @param JobPost $job The job to apply for
+     * @return JobApplication
+     * @throws \InvalidArgumentException
+     */
+    public function applyToJob(JobWorker $worker, JobPost $job): JobApplication
+    {
+        return $this->applyToJobWithMessage($worker, $job, null);
+    }
+
+    /**
+     * Apply to a job with optional message.
+     *
+     * @srs-ref NP-017 - Worker can apply with optional message (availability/experience)
      *
      * @param JobWorker $worker The worker applying
      * @param JobPost $job The job to apply for
      * @param string|null $message Optional message to poster
-     * @param float|null $proposedAmount Optional proposed amount (different from posted)
+     * @param float|null $proposedAmount Optional proposed amount
      * @return JobApplication
      * @throws \InvalidArgumentException
-     * @throws \Exception
      */
-    public function applyToJob(
+    public function applyToJobWithMessage(
         JobWorker $worker,
         JobPost $job,
         ?string $message = null,
@@ -63,23 +80,26 @@ class JobApplicationService
         $this->validateApplication($worker, $job);
 
         return DB::transaction(function () use ($worker, $job, $message, $proposedAmount) {
+            // Calculate distance
+            $distanceKm = $this->calculateDistance($worker, $job);
+
             // Create application
             $application = JobApplication::create([
                 'job_post_id' => $job->id,
                 'worker_id' => $worker->id,
                 'message' => $message ? mb_substr(trim($message), 0, 300) : null,
                 'proposed_amount' => $proposedAmount,
+                'distance_km' => $distanceKm,
                 'status' => JobApplicationStatus::PENDING,
                 'applied_at' => now(),
             ]);
-
-            // Note: applications_count is automatically incremented in JobApplication::boot()
 
             Log::info('Job application created', [
                 'application_id' => $application->id,
                 'job_id' => $job->id,
                 'worker_id' => $worker->id,
-                'proposed_amount' => $proposedAmount,
+                'has_message' => !empty($message),
+                'distance_km' => $distanceKm,
             ]);
 
             return $application;
@@ -96,21 +116,28 @@ class JobApplicationService
         // Check job is open
         if ($job->status !== JobStatus::OPEN) {
             throw new \InvalidArgumentException(
-                'This job is no longer accepting applications.'
+                'Ee job ippo applications accept cheyyunnilla.'
             );
         }
 
         // Check job hasn't expired
         if ($job->is_expired) {
             throw new \InvalidArgumentException(
-                'This job has expired.'
+                'Ee job expire aayittund.'
+            );
+        }
+
+        // Check worker is not the poster
+        if ($worker->user_id === $job->poster_user_id) {
+            throw new \InvalidArgumentException(
+                'Swantham job-inu apply cheyyaan pattilla.'
             );
         }
 
         // Check worker hasn't already applied
         if ($this->hasWorkerApplied($worker, $job)) {
             throw new \InvalidArgumentException(
-                'You have already applied for this job.'
+                'Ningal ee job-inu already apply cheythittund.'
             );
         }
 
@@ -118,32 +145,56 @@ class JobApplicationService
         $pendingCount = $this->getWorkerPendingApplicationsCount($worker);
         if ($pendingCount >= self::MAX_PENDING_PER_WORKER) {
             throw new \InvalidArgumentException(
-                'You have too many pending applications. Please wait for responses.'
+                'Too many pending applications. Response varunnathu vare wait cheyyuka.'
             );
         }
 
         // Check job hasn't reached max applications
         if ($job->applications_count >= self::MAX_APPLICATIONS_PER_JOB) {
             throw new \InvalidArgumentException(
-                'This job has reached maximum applications.'
+                'Ee job maximum applications-il ethi.'
             );
         }
 
-        // Check worker is available for job time
+        // Check worker is available (no active job at conflicting time)
         $activeJob = $this->getWorkerActiveJob($worker);
         if ($activeJob && $this->hasTimeConflict($activeJob, $job)) {
             throw new \InvalidArgumentException(
-                'You have another job scheduled at this time.'
+                'Ee time-nu vere job und. Time conflict.'
             );
         }
+    }
 
-        // Check worker can do this job type
-        // $category = $job->category;
-        // if ($category && !$worker->canAcceptJob($category)) {
-        //     throw new \InvalidArgumentException(
-        //         'This job type is not in your registered skills.'
-        //     );
-        // }
+    /**
+     * Calculate distance between worker and job location.
+     */
+    protected function calculateDistance(JobWorker $worker, JobPost $job): ?float
+    {
+        if (!$job->latitude || !$job->longitude) {
+            return null;
+        }
+
+        if (!$worker->latitude || !$worker->longitude) {
+            return null;
+        }
+
+        // Haversine formula
+        $earthRadius = 6371; // km
+
+        $latFrom = deg2rad((float) $worker->latitude);
+        $lonFrom = deg2rad((float) $worker->longitude);
+        $latTo = deg2rad((float) $job->latitude);
+        $lonTo = deg2rad((float) $job->longitude);
+
+        $latDelta = $latTo - $latFrom;
+        $lonDelta = $lonTo - $lonFrom;
+
+        $a = sin($latDelta / 2) ** 2 +
+            cos($latFrom) * cos($latTo) * sin($lonDelta / 2) ** 2;
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return round($earthRadius * $c, 2);
     }
 
     /**
@@ -152,6 +203,10 @@ class JobApplicationService
     protected function hasTimeConflict(JobPost $existingJob, JobPost $newJob): bool
     {
         // Different days - no conflict
+        if (!$existingJob->job_date || !$newJob->job_date) {
+            return false;
+        }
+
         if (!$existingJob->job_date->isSameDay($newJob->job_date)) {
             return false;
         }
@@ -168,30 +223,36 @@ class JobApplicationService
 
     /*
     |--------------------------------------------------------------------------
-    | Application Status Management
+    | Application Status Management (NP-019, NP-020, NP-021)
     |--------------------------------------------------------------------------
     */
 
     /**
      * Accept an application and assign worker to job.
      *
+     * @srs-ref NP-019 - Task giver selects ONE worker via button
+     * @srs-ref NP-020 - Notify selected worker with confirmation + contact
+     *
      * @param JobApplication $application
      * @throws \Exception
      */
     public function acceptApplication(JobApplication $application): void
     {
-        if ($application->status !== JobApplicationStatus::PENDING) {
+        $status = $application->status instanceof JobApplicationStatus
+            ? $application->status
+            : JobApplicationStatus::tryFrom($application->status);
+
+        if ($status !== JobApplicationStatus::PENDING) {
             throw new \InvalidArgumentException(
-                'Only pending applications can be accepted.'
+                'Pending applications mathrame accept cheyyaan pattullu.'
             );
         }
 
         $job = $application->jobPost;
 
-        // CORRECT
         if ($job->status !== JobStatus::OPEN) {
             throw new \InvalidArgumentException(
-                'This job is no longer open for selection.'
+                'Ee job ippo open alla.'
             );
         }
 
@@ -203,7 +264,10 @@ class JobApplicationService
             ]);
 
             // Assign worker to job
-            $job->assign($application->worker);
+            $job->update([
+                'status' => JobStatus::ASSIGNED,
+                'assigned_worker_id' => $application->worker_id,
+            ]);
 
             // Reject all other pending applications
             $this->rejectAllOtherApplications($job, $application);
@@ -224,9 +288,13 @@ class JobApplicationService
      */
     public function rejectApplication(JobApplication $application, ?string $reason = null): void
     {
-        if ($application->status !== JobApplicationStatus::PENDING) {
+        $status = $application->status instanceof JobApplicationStatus
+            ? $application->status
+            : JobApplicationStatus::tryFrom($application->status);
+
+        if ($status !== JobApplicationStatus::PENDING) {
             throw new \InvalidArgumentException(
-                'Only pending applications can be rejected.'
+                'Pending applications mathrame reject cheyyaan pattullu.'
             );
         }
 
@@ -246,10 +314,13 @@ class JobApplicationService
     /**
      * Reject all pending applications for a job except one.
      *
+     * @srs-ref NP-021 - Notify REJECTED workers that position filled
+     *
      * @param JobPost $job
      * @param JobApplication $except The application to keep
+     * @return int Number of applications rejected
      */
-    public function rejectAllOtherApplications(JobPost $job, JobApplication $except): void
+    public function rejectAllOtherApplications(JobPost $job, JobApplication $except): int
     {
         $updated = JobApplication::where('job_post_id', $job->id)
             ->where('id', '!=', $except->id)
@@ -264,6 +335,26 @@ class JobApplicationService
             'accepted_application_id' => $except->id,
             'rejected_count' => $updated,
         ]);
+
+        return $updated;
+    }
+
+    /**
+     * Get rejected applications for notification.
+     *
+     * @srs-ref NP-021 - For notifying rejected workers
+     *
+     * @return Collection<JobApplication>
+     */
+    public function getRejectedApplicationsForNotification(JobPost $job, JobApplication $except): Collection
+    {
+        return JobApplication::where('job_post_id', $job->id)
+            ->where('id', '!=', $except->id)
+            ->where('status', JobApplicationStatus::REJECTED)
+            ->whereNotNull('responded_at')
+            ->where('responded_at', '>=', now()->subMinutes(5)) // Recently rejected
+            ->with(['worker.user'])
+            ->get();
     }
 
     /**
@@ -273,9 +364,13 @@ class JobApplicationService
      */
     public function withdrawApplication(JobApplication $application): void
     {
-        if ($application->status !== JobApplicationStatus::PENDING) {
+        $status = $application->status instanceof JobApplicationStatus
+            ? $application->status
+            : JobApplicationStatus::tryFrom($application->status);
+
+        if ($status !== JobApplicationStatus::PENDING) {
             throw new \InvalidArgumentException(
-                'Only pending applications can be withdrawn.'
+                'Pending applications mathrame withdraw cheyyaan pattullu.'
             );
         }
 
@@ -286,7 +381,7 @@ class JobApplicationService
             ]);
 
             // Decrement job applications count
-            $application->jobPost->decrementApplicationsCount();
+            $application->jobPost?->decrementApplicationsCount();
         });
 
         Log::info('Application withdrawn', [
@@ -298,59 +393,9 @@ class JobApplicationService
 
     /*
     |--------------------------------------------------------------------------
-    | Application Queries
+    | Application Queries (NP-015, NP-016, NP-018)
     |--------------------------------------------------------------------------
     */
-
-    /**
-     * Get all applications for a job.
-     *
-     * @param JobPost $job
-     * @return Collection<JobApplication>
-     */
-    public function getApplicationsForJob(JobPost $job): Collection
-    {
-        return JobApplication::where('job_post_id', $job->id)
-            ->with(['worker.user'])
-            ->orderBy('applied_at', 'desc')
-            ->get();
-    }
-
-    /**
-     * Get pending applications for a job.
-     *
-     * @param JobPost $job
-     * @return Collection<JobApplication>
-     */
-    public function getPendingApplications(JobPost $job): Collection
-    {
-        return JobApplication::where('job_post_id', $job->id)
-            ->where('status', JobApplicationStatus::PENDING)
-            ->with(['worker.user'])
-            ->orderBy('applied_at', 'asc')
-            ->get();
-    }
-
-    /**
-     * Get pending applications count for a job.
-     */
-    public function getPendingApplicationsCount(JobPost $job): int
-    {
-        return JobApplication::where('job_post_id', $job->id)
-            ->where('status', JobApplicationStatus::PENDING)
-            ->count();
-    }
-
-    /**
-     * Get the accepted application for a job.
-     */
-    public function getAcceptedApplication(JobPost $job): ?JobApplication
-    {
-        return JobApplication::where('job_post_id', $job->id)
-            ->where('status', JobApplicationStatus::ACCEPTED)
-            ->with(['worker'])
-            ->first();
-    }
 
     /**
      * Check if a worker has applied to a job.
@@ -373,24 +418,124 @@ class JobApplicationService
     }
 
     /**
-     * Get worker's currently active application (accepted but job not completed).
+     * Get all applications for a job.
+     *
+     * @return Collection<JobApplication>
      */
-    public function getWorkerActiveApplication(JobWorker $worker): ?JobApplication
+    public function getApplicationsForJob(JobPost $job): Collection
     {
-        return JobApplication::where('worker_id', $worker->id)
+        return JobApplication::where('job_post_id', $job->id)
+            ->with(['worker.user'])
+            ->orderBy('applied_at', 'desc')
+            ->get();
+    }
+
+    /**
+     * Get pending applications for a job (for task giver review).
+     *
+     * @srs-ref NP-018 - Show task giver ALL applications
+     *
+     * @param JobPost $job
+     * @return Collection<JobApplication>
+     */
+    public function getPendingApplications(JobPost $job): Collection
+    {
+        return JobApplication::where('job_post_id', $job->id)
+            ->where('status', JobApplicationStatus::PENDING)
+            ->with(['worker.user'])
+            ->orderBy('applied_at', 'asc') // FIFO order
+            ->get();
+    }
+
+    /**
+     * Get pending applications count.
+     *
+     * @srs-ref NP-016 - Social proof "X workers already applied"
+     */
+    public function getPendingApplicationsCount(JobPost $job): int
+    {
+        return JobApplication::where('job_post_id', $job->id)
+            ->where('status', JobApplicationStatus::PENDING)
+            ->count();
+    }
+
+    /**
+     * Get the accepted application for a job.
+     */
+    public function getAcceptedApplication(JobPost $job): ?JobApplication
+    {
+        return JobApplication::where('job_post_id', $job->id)
             ->where('status', JobApplicationStatus::ACCEPTED)
-            ->whereHas('jobPost', function ($q) {
-                $q->whereIn('status', [
-                    JobStatus::ASSIGNED,
-                    JobStatus::IN_PROGRESS,
-                ]);
-            })
-            ->with(['jobPost.category'])
+            ->with(['worker.user'])
             ->first();
     }
 
     /**
-     * Get worker's active job (assigned or in progress).
+     * Get application by ID with relationships.
+     */
+    public function getApplicationById(int $applicationId): ?JobApplication
+    {
+        return JobApplication::with(['worker.user', 'jobPost.category', 'jobPost.poster'])
+            ->find($applicationId);
+    }
+
+    /**
+     * Get the position of an application in queue.
+     *
+     * @param JobApplication $application
+     * @return int Position (1-based)
+     */
+    public function getApplicationPosition(JobApplication $application): int
+    {
+        $earlierApplications = JobApplication::where('job_post_id', $application->job_post_id)
+            ->where('applied_at', '<', $application->applied_at)
+            ->count();
+
+        return $earlierApplications + 1;
+    }
+
+    /**
+     * Get next pending application for review (one-at-a-time viewing).
+     *
+     * @srs-ref NP-018 - Show one applicant at a time
+     */
+    public function getNextPendingApplication(JobPost $job, ?int $afterApplicationId = null): ?JobApplication
+    {
+        $query = JobApplication::where('job_post_id', $job->id)
+            ->where('status', JobApplicationStatus::PENDING)
+            ->with(['worker.user'])
+            ->orderBy('applied_at', 'asc');
+
+        if ($afterApplicationId) {
+            $currentApp = JobApplication::find($afterApplicationId);
+            if ($currentApp) {
+                $query->where('applied_at', '>', $currentApp->applied_at);
+            }
+        }
+
+        return $query->first();
+    }
+
+    /**
+     * Get first pending application (for starting review).
+     */
+    public function getFirstPendingApplication(JobPost $job): ?JobApplication
+    {
+        return JobApplication::where('job_post_id', $job->id)
+            ->where('status', JobApplicationStatus::PENDING)
+            ->with(['worker.user'])
+            ->orderBy('applied_at', 'asc')
+            ->first();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Worker Queries
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get worker's currently active job (assigned but not completed).
      */
     public function getWorkerActiveJob(JobWorker $worker): ?JobPost
     {
@@ -429,8 +574,6 @@ class JobApplicationService
     /**
      * Get worker's application history.
      *
-     * @param JobWorker $worker
-     * @param int $limit
      * @return Collection<JobApplication>
      */
     public function getWorkerApplicationHistory(JobWorker $worker, int $limit = 20): Collection
@@ -440,21 +583,6 @@ class JobApplicationService
             ->orderBy('applied_at', 'desc')
             ->limit($limit)
             ->get();
-    }
-
-    /**
-     * Get position of an application in queue.
-     *
-     * @param JobApplication $application
-     * @return int Position (1-based)
-     */
-    public function getApplicationPosition(JobApplication $application): int
-    {
-        $earlierApplications = JobApplication::where('job_post_id', $application->job_post_id)
-            ->where('applied_at', '<', $application->applied_at)
-            ->count();
-
-        return $earlierApplications + 1;
     }
 
     /*
@@ -476,7 +604,6 @@ class JobApplicationService
             'accepted' => $applications->where('status', JobApplicationStatus::ACCEPTED)->count(),
             'rejected' => $applications->where('status', JobApplicationStatus::REJECTED)->count(),
             'withdrawn' => $applications->where('status', JobApplicationStatus::WITHDRAWN)->count(),
-            'average_wait_time' => $this->calculateAverageWaitTime($applications),
         ];
     }
 
@@ -487,54 +614,32 @@ class JobApplicationService
     {
         $applications = JobApplication::where('worker_id', $worker->id)->get();
 
-        $accepted = $applications->where('status', JobApplicationStatus::ACCEPTED);
-        $rejected = $applications->where('status', JobApplicationStatus::REJECTED);
+        $accepted = $applications->where('status', JobApplicationStatus::ACCEPTED)->count();
+        $rejected = $applications->where('status', JobApplicationStatus::REJECTED)->count();
 
-        $totalResponded = $accepted->count() + $rejected->count();
+        $totalResponded = $accepted + $rejected;
         $acceptanceRate = $totalResponded > 0
-            ? round(($accepted->count() / $totalResponded) * 100, 1)
+            ? round(($accepted / $totalResponded) * 100, 1)
             : 0;
 
         return [
             'total_applications' => $applications->count(),
             'pending' => $applications->where('status', JobApplicationStatus::PENDING)->count(),
-            'accepted' => $accepted->count(),
-            'rejected' => $rejected->count(),
+            'accepted' => $accepted,
+            'rejected' => $rejected,
             'withdrawn' => $applications->where('status', JobApplicationStatus::WITHDRAWN)->count(),
             'acceptance_rate' => $acceptanceRate,
         ];
     }
 
-    /**
-     * Calculate average wait time for applications.
-     */
-    protected function calculateAverageWaitTime(Collection $applications): ?float
-    {
-        $respondedApplications = $applications->filter(function ($app) {
-            return $app->responded_at !== null;
-        });
-
-        if ($respondedApplications->isEmpty()) {
-            return null;
-        }
-
-        $totalMinutes = $respondedApplications->sum(function ($app) {
-            return $app->applied_at->diffInMinutes($app->responded_at);
-        });
-
-        return round($totalMinutes / $respondedApplications->count(), 1);
-    }
-
     /*
     |--------------------------------------------------------------------------
-    | Cleanup & Maintenance
+    | Maintenance
     |--------------------------------------------------------------------------
     */
 
     /**
      * Auto-withdraw stale pending applications.
-     *
-     * Called by scheduled command.
      *
      * @param int $hoursOld Applications older than this are withdrawn
      * @return int Number of applications withdrawn
@@ -569,34 +674,5 @@ class JobApplicationService
         ]);
 
         return $count;
-    }
-
-    /**
-     * Get applications that need poster reminder.
-     *
-     * Returns applications that have been pending for X hours
-     * and poster hasn't responded to any applications.
-     *
-     * @param int $hoursOld
-     * @return Collection<JobApplication>
-     */
-    public function getApplicationsNeedingReminder(int $hoursOld = 4): Collection
-    {
-        $cutoff = now()->subHours($hoursOld);
-
-        return JobApplication::where('status', JobApplicationStatus::PENDING)
-            ->where('applied_at', '<', $cutoff)
-            ->whereHas('jobPost', function ($q) {
-                $q->where('status', JobStatus::OPEN)
-                    ->whereDoesntHave('applications', function ($q2) {
-                        $q2->whereIn('status', [
-                            JobApplicationStatus::ACCEPTED,
-                            JobApplicationStatus::REJECTED,
-                        ]);
-                    });
-            })
-            ->with(['jobPost.poster', 'worker'])
-            ->get()
-            ->unique('job_post_id'); // One reminder per job
     }
 }

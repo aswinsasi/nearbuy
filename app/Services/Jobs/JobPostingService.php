@@ -5,13 +5,11 @@ declare(strict_types=1);
 namespace App\Services\Jobs;
 
 use App\Enums\JobStatus;
-use App\Enums\VehicleType;
 use App\Models\JobCategory;
 use App\Models\JobPost;
 use App\Models\JobWorker;
 use App\Models\User;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\JobMessages;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -22,29 +20,19 @@ use Illuminate\Support\Facades\Log;
  *
  * Handles:
  * - Creating job posts
- * - Finding matching workers
- * - Notifying workers
+ * - Finding matching workers (NP-014)
+ * - Notifying workers within 5km
  * - Job lifecycle management
  *
- * @srs-ref Section 3.3 - Job Posting
+ * @srs-ref NP-006 to NP-014: Job Posting
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobPostingService
 {
     /**
-     * Default search radius in kilometers.
+     * Default search radius in kilometers (NP-014).
      */
     protected const DEFAULT_RADIUS_KM = 5;
-
-    /**
-     * Maximum search radius in kilometers.
-     */
-    protected const MAX_RADIUS_KM = 20;
-
-    /**
-     * Default expiry hours for open jobs.
-     */
-    protected const DEFAULT_EXPIRY_HOURS = 48;
 
     /**
      * Maximum workers to notify per job.
@@ -57,104 +45,12 @@ class JobPostingService
 
     /*
     |--------------------------------------------------------------------------
-    | Job Creation
+    | Worker Matching & Notification (NP-014)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Create a new job post.
-     *
-     * @param User $poster The user posting the job
-     * @param array $data Job data
-     * @return JobPost
-     */
-    public function createJobPost(User $poster, array $data): JobPost
-    {
-        // Validate required fields
-        $this->validateJobData($data);
-
-        return DB::transaction(function () use ($poster, $data) {
-            $job = new JobPost();
-            $job->poster_user_id = $poster->id;
-            $job->job_category_id = $data['job_category_id'];
-            $job->title = trim($data['title']);
-            $job->description = isset($data['description']) ? trim($data['description']) : null;
-            $job->location_name = trim($data['location_name']);
-            $job->latitude = $data['latitude'] ?? null;
-            $job->longitude = $data['longitude'] ?? null;
-            $job->job_date = $this->parseJobDate($data['job_date']);
-            $job->job_time = $data['job_time'] ?? null;
-            $job->duration_hours = $data['duration_hours'] ?? null;
-            $job->pay_amount = $data['pay_amount'];
-            $job->special_instructions = isset($data['special_instructions']) ? trim($data['special_instructions']) : null;
-            $job->status = JobStatus::DRAFT;
-            $job->applications_count = 0;
-
-            $job->save();
-
-            Log::info('Job post created', [
-                'job_id' => $job->id,
-                'job_number' => $job->job_number,
-                'poster_id' => $poster->id,
-                'category_id' => $job->job_category_id,
-            ]);
-
-            return $job;
-        });
-    }
-
-    /**
-     * Validate job data.
-     *
-     * @throws \InvalidArgumentException
-     */
-    protected function validateJobData(array $data): void
-    {
-        if (empty($data['job_category_id'])) {
-            throw new \InvalidArgumentException('Job category is required');
-        }
-
-        if (empty($data['title'])) {
-            throw new \InvalidArgumentException('Job title is required');
-        }
-
-        if (empty($data['location_name'])) {
-            throw new \InvalidArgumentException('Location is required');
-        }
-
-        if (empty($data['job_date'])) {
-            throw new \InvalidArgumentException('Job date is required');
-        }
-
-        if (empty($data['pay_amount']) || $data['pay_amount'] < 0) {
-            throw new \InvalidArgumentException('Valid pay amount is required');
-        }
-    }
-
-    /**
-     * Parse job date from various formats.
-     */
-    protected function parseJobDate($date): Carbon
-    {
-        if ($date instanceof Carbon) {
-            return $date;
-        }
-
-        if (is_string($date)) {
-            return Carbon::parse($date);
-        }
-
-        return Carbon::today();
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Worker Matching & Notification
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Find workers matching job criteria.
+     * Find workers matching job criteria within 5km.
      *
      * @param JobPost $job The job post
      * @param int $radiusKm Search radius in kilometers
@@ -163,53 +59,45 @@ class JobPostingService
     public function findMatchingWorkers(JobPost $job, int $radiusKm = self::DEFAULT_RADIUS_KM): Collection
     {
         $query = JobWorker::query()
-            ->where('is_available', true);
+            ->where('is_available', true)
+            ->with('user');
 
-        // Filter by job category
-        $categoryId = $job->job_category_id;
-        $query->whereJsonContains('job_types', $categoryId);
-
-        // Filter by vehicle requirement
-        $category = $job->category;
-        if ($category && $category->requires_vehicle) {
-            $query->whereIn('vehicle_type', [
-                VehicleType::TWO_WHEELER->value,
-                VehicleType::FOUR_WHEELER->value,
-            ]);
+        // Filter by job type if category exists
+        if ($job->job_category_id) {
+            $query->where(function ($q) use ($job) {
+                $q->whereJsonContains('job_types', (string) $job->job_category_id)
+                    ->orWhereJsonContains('job_types', $job->job_category_id)
+                    ->orWhereJsonContains('job_types', 'all');
+            });
         }
 
         // Filter by location if coordinates available
         if ($job->latitude && $job->longitude) {
             $query->whereNotNull('latitude')
-                ->whereNotNull('longitude')
-                ->whereRaw(
-                    "ST_Distance_Sphere(
-                        POINT(longitude, latitude),
-                        POINT(?, ?)
-                    ) <= ?",
-                    [$job->longitude, $job->latitude, $radiusKm * 1000]
-                )
-                ->selectRaw(
-                    "*, ST_Distance_Sphere(
-                        POINT(longitude, latitude),
-                        POINT(?, ?)
-                    ) / 1000 as distance_km",
-                    [$job->longitude, $job->latitude]
-                )
-                ->orderBy('distance_km');
+                ->whereNotNull('longitude');
+            
+            // Use Haversine formula for distance
+            $lat = $job->latitude;
+            $lng = $job->longitude;
+            
+            $query->selectRaw("
+                job_workers.*,
+                (6371 * acos(
+                    cos(radians(?)) * 
+                    cos(radians(latitude)) * 
+                    cos(radians(longitude) - radians(?)) + 
+                    sin(radians(?)) * 
+                    sin(radians(latitude))
+                )) AS distance_km
+            ", [$lat, $lng, $lat])
+            ->having('distance_km', '<=', $radiusKm)
+            ->orderBy('distance_km');
         }
-
-        // Exclude workers who already have an active job at the same time
-        $query->whereDoesntHave('activeJobs', function ($q) use ($job) {
-            $q->whereDate('job_date', $job->job_date)
-                ->whereIn('status', [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS]);
-        });
 
         // Order by rating and completed jobs
         $query->orderByDesc('rating')
             ->orderByDesc('jobs_completed');
 
-        // Limit results
         return $query->limit(self::MAX_WORKERS_TO_NOTIFY)->get();
     }
 
@@ -234,7 +122,7 @@ class JobPostingService
         if ($workers->isEmpty()) {
             Log::info('No matching workers found for job', [
                 'job_id' => $job->id,
-                'job_number' => $job->job_number,
+                'job_number' => $job->job_number ?? 'N/A',
             ]);
             return 0;
         }
@@ -256,7 +144,7 @@ class JobPostingService
 
         Log::info('Workers notified about job', [
             'job_id' => $job->id,
-            'job_number' => $job->job_number,
+            'job_number' => $job->job_number ?? 'N/A',
             'workers_found' => $workers->count(),
             'workers_notified' => $notifiedCount,
         ]);
@@ -275,16 +163,48 @@ class JobPostingService
         }
 
         // Calculate distance
-        $distanceKm = 0;
-        if ($job->latitude && $job->longitude && $worker->latitude && $worker->longitude) {
-            $distanceKm = $job->getDistanceFrom($worker->latitude, $worker->longitude) ?? 0;
+        $distanceKm = $worker->distance_km ?? 0;
+        if (!$distanceKm && $job->latitude && $job->longitude && $worker->latitude && $worker->longitude) {
+            $distanceKm = $this->calculateDistance(
+                $job->latitude, $job->longitude,
+                $worker->latitude, $worker->longitude
+            );
+        }
+        $distanceDisplay = $distanceKm > 0 ? round($distanceKm, 1) . ' km away' : 'Nearby';
+
+        // Get category info
+        $catIcon = '📋';
+        $catName = $job->custom_category_text ?? 'Job';
+        if ($job->category) {
+            $catIcon = $job->category->icon ?? '📋';
+            $catName = $job->category->name_en ?? $job->category->name ?? $catName;
         }
 
-        // Generate notification message
-        $message = JobMessages::newJobNotification($job, $distanceKm);
+        // Format date/time
+        $dateDisplay = $job->job_date ? Carbon::parse($job->job_date)->format('d M') : 'TBD';
+        $timeDisplay = $job->job_time ? Carbon::parse($job->job_time)->format('g:i A') : 'TBD';
+        $payDisplay = '₹' . number_format($job->pay_amount ?? 0);
 
-        // Send via WhatsApp
-        $this->sendJobMessage($phone, $message);
+        // Build message
+        $message = "🔔 *New Job Alert!*\n" .
+            "*പുതിയ ജോലി!*\n\n" .
+            "{$catIcon} *{$catName}*\n" .
+            "📍 {$job->location_name}\n" .
+            "🚶 {$distanceDisplay}\n" .
+            "📅 {$dateDisplay} ⏰ {$timeDisplay}\n" .
+            "💰 *{$payDisplay}*\n\n" .
+            "Interested? Apply now! 👇";
+
+        $this->whatsApp->sendButtons(
+            $phone,
+            $message,
+            [
+                ['id' => 'apply_job_' . $job->id, 'title' => '✅ Apply'],
+                ['id' => 'view_job_' . $job->id, 'title' => '📋 Details'],
+                ['id' => 'skip_job_' . $job->id, 'title' => '❌ Not Now'],
+            ],
+            '🔔 Job Alert'
+        );
 
         Log::debug('Sent job notification to worker', [
             'worker_id' => $worker->id,
@@ -294,41 +214,22 @@ class JobPostingService
     }
 
     /**
-     * Send a JobMessages response via WhatsApp.
+     * Calculate distance between two coordinates using Haversine formula.
      */
-    protected function sendJobMessage(string $phone, array $response): void
+    protected function calculateDistance(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
-        $type = $response['type'] ?? 'text';
+        $earthRadius = 6371; // km
 
-        switch ($type) {
-            case 'text':
-                $this->whatsApp->sendText($phone, $response['text']);
-                break;
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLng = deg2rad($lng2 - $lng1);
 
-            case 'buttons':
-                $this->whatsApp->sendButtons(
-                    $phone,
-                    $response['body'] ?? $response['text'] ?? '',
-                    $response['buttons'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
+        $a = sin($dLat / 2) * sin($dLat / 2) +
+            cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
+            sin($dLng / 2) * sin($dLng / 2);
 
-            case 'list':
-                $this->whatsApp->sendList(
-                    $phone,
-                    $response['body'] ?? '',
-                    $response['button'] ?? 'Select',
-                    $response['sections'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
 
-            default:
-                $this->whatsApp->sendText($phone, $response['text'] ?? 'Message sent.');
-        }
+        return $earthRadius * $c;
     }
 
     /*
@@ -339,10 +240,6 @@ class JobPostingService
 
     /**
      * Get jobs posted by a user.
-     *
-     * @param User $user The user
-     * @param array $filters Optional filters (status, limit)
-     * @return Collection<JobPost>
      */
     public function getJobsByPoster(User $user, array $filters = []): Collection
     {
@@ -351,7 +248,6 @@ class JobPostingService
             ->with(['category', 'assignedWorker'])
             ->orderByDesc('created_at');
 
-        // Apply status filter
         if (!empty($filters['status'])) {
             if (is_array($filters['status'])) {
                 $query->whereIn('status', $filters['status']);
@@ -360,47 +256,12 @@ class JobPostingService
             }
         }
 
-        // Apply date filter
-        if (!empty($filters['from_date'])) {
-            $query->whereDate('job_date', '>=', $filters['from_date']);
-        }
-
-        if (!empty($filters['to_date'])) {
-            $query->whereDate('job_date', '<=', $filters['to_date']);
-        }
-
-        // Apply limit
         $limit = $filters['limit'] ?? 20;
         return $query->limit($limit)->get();
     }
 
     /**
-     * Get count of active jobs for a user.
-     *
-     * @param User $user The user
-     * @return int
-     */
-    public function getActiveJobsCount(User $user): int
-    {
-        return JobPost::query()
-            ->where('poster_user_id', $user->id)
-            ->whereIn('status', [
-                JobStatus::DRAFT,
-                JobStatus::OPEN,
-                JobStatus::ASSIGNED,
-                JobStatus::IN_PROGRESS,
-            ])
-            ->count();
-    }
-
-    /**
      * Get browsable jobs for workers.
-     *
-     * @param float|null $latitude Worker latitude
-     * @param float|null $longitude Worker longitude
-     * @param int $radiusKm Search radius
-     * @param array $filters Optional filters
-     * @return Collection<JobPost>
      */
     public function getBrowsableJobs(
         ?float $latitude = null,
@@ -410,186 +271,119 @@ class JobPostingService
     ): Collection {
         $query = JobPost::query()
             ->with(['category', 'poster'])
-            ->browsable()
-            ->upcoming();
+            ->where('status', 'open')
+            ->where('job_date', '>=', Carbon::today());
 
         // Filter by category
         if (!empty($filters['category_id'])) {
             $query->where('job_category_id', $filters['category_id']);
         }
 
-        // Filter by date
-        if (!empty($filters['date'])) {
-            $query->whereDate('job_date', $filters['date']);
-        }
-
         // Filter by location
         if ($latitude && $longitude) {
-            $query->nearLocation($latitude, $longitude, $radiusKm)
-                ->withDistanceFrom($latitude, $longitude);
+            $query->selectRaw("
+                job_posts.*,
+                (6371 * acos(
+                    cos(radians(?)) * 
+                    cos(radians(latitude)) * 
+                    cos(radians(longitude) - radians(?)) + 
+                    sin(radians(?)) * 
+                    sin(radians(latitude))
+                )) AS distance_km
+            ", [$latitude, $longitude, $latitude])
+            ->having('distance_km', '<=', $radiusKm)
+            ->orderBy('distance_km');
         }
 
-        // Filter by minimum pay
-        if (!empty($filters['min_pay'])) {
-            $query->where('pay_amount', '>=', $filters['min_pay']);
-        }
-
-        // Apply limit
         $limit = $filters['limit'] ?? 20;
         return $query->limit($limit)->get();
     }
 
+    /**
+     * Get count of active jobs for a user.
+     */
+    public function getActiveJobsCount(User $user): int
+    {
+        return JobPost::query()
+            ->where('poster_user_id', $user->id)
+            ->whereIn('status', ['open', 'assigned', 'in_progress'])
+            ->count();
+    }
+
     /*
     |--------------------------------------------------------------------------
-    | Job Lifecycle Management
+    | Job Lifecycle
     |--------------------------------------------------------------------------
     */
 
     /**
      * Cancel a job post.
-     *
-     * @param JobPost $job The job to cancel
-     * @param string|null $reason Cancellation reason
-     * @return bool
      */
     public function cancelJob(JobPost $job, ?string $reason = null): bool
     {
-        if (!$job->can_cancel) {
-            Log::warning('Cannot cancel job', [
-                'job_id' => $job->id,
-                'status' => $job->status->value,
-            ]);
+        if (!in_array($job->status, ['open', 'assigned'])) {
             return false;
         }
 
         DB::transaction(function () use ($job, $reason) {
-            $job->cancel();
+            $job->update([
+                'status' => 'cancelled',
+                'cancelled_at' => now(),
+                'cancellation_reason' => $reason,
+            ]);
 
             // Notify assigned worker if any
-            if ($job->assignedWorker) {
-                $this->notifyWorkerJobCancelled($job->assignedWorker, $job, $reason);
+            if ($job->assignedWorker?->user?->phone) {
+                $this->notifyJobCancelled($job->assignedWorker->user->phone, $job, $reason);
             }
-
-            // Notify pending applicants
-            $pendingApplications = $job->applications()
-                ->where('status', 'pending')
-                ->with('worker.user')
-                ->get();
-
-            foreach ($pendingApplications as $application) {
-                if ($application->worker?->user?->phone) {
-                    $this->notifyWorkerJobCancelled($application->worker, $job, $reason);
-                }
-            }
-
-            Log::info('Job cancelled', [
-                'job_id' => $job->id,
-                'job_number' => $job->job_number,
-                'reason' => $reason,
-            ]);
         });
+
+        Log::info('Job cancelled', [
+            'job_id' => $job->id,
+            'reason' => $reason,
+        ]);
 
         return true;
     }
 
     /**
-     * Notify worker that a job was cancelled.
+     * Notify about job cancellation.
      */
-    protected function notifyWorkerJobCancelled(JobWorker $worker, JobPost $job, ?string $reason): void
+    protected function notifyJobCancelled(string $phone, JobPost $job, ?string $reason): void
     {
-        $phone = $worker->user?->phone;
-        if (!$phone) {
-            return;
-        }
-
-        $reasonText = $reason ? "\n\nReason: {$reason}" : "";
+        $catIcon = $job->category?->icon ?? '📋';
+        $reasonText = $reason ? "\n\nReason: {$reason}" : '';
 
         $this->whatsApp->sendButtons(
             $phone,
             "❌ *Job Cancelled*\n\n" .
-            "{$job->category->icon} {$job->title}\n\n" .
-            "This job has been cancelled by the poster." .
-            $reasonText . "\n\n" .
+            "{$catIcon} *{$job->title}*{$reasonText}\n\n" .
             "_Browse more jobs below_",
             [
                 ['id' => 'browse_jobs', 'title' => '🔍 Browse Jobs'],
                 ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ],
-            '📋 Job Cancelled'
+            ]
         );
     }
 
     /**
-     * Expire old jobs (for scheduled command).
-     *
-     * @return int Number of jobs expired
+     * Expire old jobs.
      */
     public function expireOldJobs(): int
     {
-        $expiredCount = 0;
-
-        // Find jobs that should be expired
-        $jobsToExpire = JobPost::query()
-            ->where('status', JobStatus::OPEN)
-            ->where(function ($query) {
-                // Jobs past their expiry time
-                $query->where('expires_at', '<=', now())
-                    // Or jobs past their job date
-                    ->orWhere('job_date', '<', Carbon::today());
+        $expired = JobPost::query()
+            ->where('status', 'open')
+            ->where(function ($q) {
+                $q->where('job_date', '<', Carbon::today())
+                    ->orWhere('expires_at', '<=', now());
             })
-            ->get();
+            ->update(['status' => 'expired']);
 
-        foreach ($jobsToExpire as $job) {
-            $job->markExpired();
-            $expiredCount++;
-
-            Log::info('Job expired', [
-                'job_id' => $job->id,
-                'job_number' => $job->job_number,
-                'job_date' => $job->job_date,
-                'expires_at' => $job->expires_at,
-            ]);
+        if ($expired > 0) {
+            Log::info('Expired old jobs', ['count' => $expired]);
         }
 
-        if ($expiredCount > 0) {
-            Log::info('Expired old jobs', ['count' => $expiredCount]);
-        }
-
-        return $expiredCount;
-    }
-
-    /**
-     * Update job post.
-     *
-     * @param JobPost $job The job to update
-     * @param array $data Update data
-     * @return JobPost
-     */
-    public function updateJob(JobPost $job, array $data): JobPost
-    {
-        if (!$job->can_edit) {
-            throw new \InvalidArgumentException('Cannot edit this job');
-        }
-
-        $allowedFields = [
-            'title', 'description', 'location_name', 'latitude', 'longitude',
-            'job_date', 'job_time', 'duration_hours', 'pay_amount', 'special_instructions',
-        ];
-
-        foreach ($allowedFields as $field) {
-            if (array_key_exists($field, $data)) {
-                $job->{$field} = $data[$field];
-            }
-        }
-
-        $job->save();
-
-        Log::info('Job updated', [
-            'job_id' => $job->id,
-            'job_number' => $job->job_number,
-        ]);
-
-        return $job;
+        return $expired;
     }
 
     /*
@@ -600,89 +394,26 @@ class JobPostingService
 
     /**
      * Calculate suggested pay for a job.
-     *
-     * @param JobCategory|null $category The job category
-     * @param float $durationHours Duration in hours
-     * @return array{min: int, max: int}
      */
     public function calculateSuggestedPay(?JobCategory $category, float $durationHours): array
     {
-        // Default pay range if no category
-        if (!$category) {
-            $basePay = 200;
-            return [
-                'min' => (int) round($basePay * max(1, $durationHours), -1),
-                'max' => (int) round($basePay * 1.5 * max(1, $durationHours), -1),
-            ];
+        $basePay = 200;
+
+        if ($category) {
+            $minPay = $category->typical_pay_min ?? 100;
+            $maxPay = $category->typical_pay_max ?? 500;
+        } else {
+            $minPay = 100;
+            $maxPay = 500;
         }
 
-        $payRange = $category->getSuggestedPayRange();
-        $minPay = $payRange['min'] ?: 100;
-        $maxPay = $payRange['max'] ?: 500;
-
         // Adjust based on duration
-        $typicalDuration = $category->typical_duration_hours ?: 1;
-        $multiplier = max(1, $durationHours / $typicalDuration);
+        $multiplier = max(1, $durationHours / 2);
 
         return [
             'min' => (int) round($minPay * $multiplier, -1),
             'max' => (int) round($maxPay * $multiplier, -1),
         ];
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Validation Helpers
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Validate title.
-     *
-     * @param string $title The title to validate
-     * @return bool
-     */
-    public function isValidTitle(string $title): bool
-    {
-        $length = mb_strlen(trim($title));
-        return $length >= 5 && $length <= 100;
-    }
-
-    /**
-     * Validate coordinates.
-     *
-     * @param float $latitude Latitude
-     * @param float $longitude Longitude
-     * @return bool
-     */
-    public function isValidCoordinates(float $latitude, float $longitude): bool
-    {
-        // Basic range validation
-        if ($latitude < -90 || $latitude > 90) {
-            return false;
-        }
-        if ($longitude < -180 || $longitude > 180) {
-            return false;
-        }
-
-        // India bounding box (approximate)
-        $inIndia = (
-            $latitude >= 6 && $latitude <= 36 &&
-            $longitude >= 68 && $longitude <= 98
-        );
-
-        return $inIndia;
-    }
-
-    /**
-     * Validate pay amount.
-     *
-     * @param float $amount The amount to validate
-     * @return bool
-     */
-    public function isValidPayAmount(float $amount): bool
-    {
-        return $amount >= 50 && $amount <= 100000;
     }
 
     /*
@@ -693,21 +424,15 @@ class JobPostingService
 
     /**
      * Get poster statistics.
-     *
-     * @param User $user The user
-     * @return array
      */
     public function getPosterStats(User $user): array
     {
-        $jobs = JobPost::query()
-            ->where('poster_user_id', $user->id);
+        $jobs = JobPost::query()->where('poster_user_id', $user->id);
 
         $totalJobs = $jobs->count();
-        $completedJobs = (clone $jobs)->where('status', JobStatus::COMPLETED)->count();
-        $activeJobs = (clone $jobs)->whereIn('status', [
-            JobStatus::OPEN, JobStatus::ASSIGNED, JobStatus::IN_PROGRESS
-        ])->count();
-        $totalSpent = (clone $jobs)->where('status', JobStatus::COMPLETED)->sum('pay_amount');
+        $completedJobs = (clone $jobs)->where('status', 'completed')->count();
+        $activeJobs = (clone $jobs)->whereIn('status', ['open', 'assigned', 'in_progress'])->count();
+        $totalSpent = (clone $jobs)->where('status', 'completed')->sum('pay_amount');
 
         return [
             'total_jobs' => $totalJobs,
@@ -716,5 +441,28 @@ class JobPostingService
             'total_spent' => $totalSpent,
             'completion_rate' => $totalJobs > 0 ? round(($completedJobs / $totalJobs) * 100, 1) : 0,
         ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Validation
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Validate coordinates (India bounds).
+     */
+    public function isValidCoordinates(float $latitude, float $longitude): bool
+    {
+        return $latitude >= 6 && $latitude <= 36 &&
+               $longitude >= 68 && $longitude <= 98;
+    }
+
+    /**
+     * Validate pay amount.
+     */
+    public function isValidPayAmount(float $amount): bool
+    {
+        return $amount >= 50 && $amount <= 100000;
     }
 }

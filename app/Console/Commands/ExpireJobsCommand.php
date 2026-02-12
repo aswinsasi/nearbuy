@@ -9,21 +9,23 @@ use App\Enums\JobStatus;
 use App\Models\JobApplication;
 use App\Models\JobPost;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\JobMessages;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Expire jobs that have passed their expires_at timestamp.
+ * Expire OPEN jobs that have been open for more than 24 hours without assignment.
  *
- * This command marks open jobs as expired and notifies relevant parties.
+ * Schedule: Run every hour
  *
  * @example
  * php artisan jobs:expire
+ * php artisan jobs:expire --hours=24
  * php artisan jobs:expire --notify
  * php artisan jobs:expire --dry-run
  *
- * @srs-ref Njaanum Panikkar Module - Job Lifecycle
+ * @srs-ref Njaanum Panikkar Module - Job Lifecycle / Auto-Expiration
+ * @schedule Run hourly: $schedule->command('jobs:expire --notify')->hourly();
  */
 class ExpireJobsCommand extends Command
 {
@@ -31,30 +33,38 @@ class ExpireJobsCommand extends Command
      * The name and signature of the console command.
      */
     protected $signature = 'jobs:expire
+                            {--hours=24 : Hours after which OPEN jobs expire}
                             {--notify : Notify posters and applicants of expired jobs}
                             {--dry-run : Show what would expire without making changes}';
 
     /**
      * The console command description.
      */
-    protected $description = 'Expire open jobs that have passed their expiration time';
+    protected $description = 'Expire OPEN jobs that have been open for 24+ hours without assignment';
 
     /**
      * Execute the console command.
      */
     public function handle(WhatsAppService $whatsApp): int
     {
-        $this->info('Checking for expired jobs...');
+        $hours = (int) $this->option('hours');
 
-        // Find jobs to expire
+        $this->info("⏰ Checking for OPEN jobs older than {$hours} hours...");
+
+        // Find OPEN jobs to expire (created more than X hours ago, not assigned)
         $jobsToExpire = JobPost::query()
             ->where('status', JobStatus::OPEN)
-            ->where('expires_at', '<', now())
-            ->with(['poster', 'applications.worker.user', 'category'])
+            ->where('created_at', '<', now()->subHours($hours))
+            ->with([
+                'poster',
+                'category',
+                'applications' => fn($q) => $q->where('status', JobApplicationStatus::PENDING),
+                'applications.worker.user',
+            ])
             ->get();
 
         if ($jobsToExpire->isEmpty()) {
-            $this->info('No jobs to expire.');
+            $this->info('✓ No jobs to expire.');
             return self::SUCCESS;
         }
 
@@ -70,30 +80,35 @@ class ExpireJobsCommand extends Command
 
         foreach ($jobsToExpire as $job) {
             try {
-                // Update job status
-                $job->update(['status' => JobStatus::EXPIRED]);
-                $expired++;
+                DB::transaction(function () use ($job, $whatsApp, &$expired, &$postersNotified, &$applicantsNotified) {
+                    // Update job status to EXPIRED
+                    $job->update([
+                        'status' => JobStatus::EXPIRED,
+                        'expired_at' => now(),
+                    ]);
+                    $expired++;
 
-                // Reject all pending applications
-                $pendingApplications = $job->applications()
-                    ->where('status', JobApplicationStatus::PENDING)
-                    ->get();
+                    // Get pending applications before rejecting them
+                    $pendingApplications = $job->applications->where('status', JobApplicationStatus::PENDING);
 
-                foreach ($pendingApplications as $application) {
-                    $application->update(['status' => JobApplicationStatus::REJECTED]);
-                }
+                    // Reject all pending applications
+                    JobApplication::where('job_id', $job->id)
+                        ->where('status', JobApplicationStatus::PENDING)
+                        ->update(['status' => JobApplicationStatus::REJECTED]);
 
-                // Notify poster and applicants if requested
-                if ($this->option('notify')) {
-                    $postersNotified += $this->notifyPoster($whatsApp, $job);
-                    $applicantsNotified += $this->notifyApplicants($whatsApp, $job, $pendingApplications);
-                }
+                    // Notify if requested
+                    if ($this->option('notify')) {
+                        $postersNotified += $this->notifyPoster($whatsApp, $job);
+                        $applicantsNotified += $this->notifyApplicants($whatsApp, $job, $pendingApplications);
+                    }
 
-                Log::info('Job expired', [
-                    'job_id' => $job->id,
-                    'title' => $job->title,
-                    'applications_rejected' => $pendingApplications->count(),
-                ]);
+                    Log::info('Job expired', [
+                        'job_id' => $job->id,
+                        'title' => $job->title,
+                        'hours_open' => $job->created_at->diffInHours(now()),
+                        'applications_rejected' => $pendingApplications->count(),
+                    ]);
+                });
 
             } catch (\Exception $e) {
                 $this->error("Failed to expire job {$job->id}: {$e->getMessage()}");
@@ -104,6 +119,7 @@ class ExpireJobsCommand extends Command
             }
         }
 
+        $this->newLine();
         $this->info("✅ Expired {$expired} job(s).");
 
         if ($this->option('notify')) {
@@ -115,6 +131,8 @@ class ExpireJobsCommand extends Command
 
     /**
      * Notify poster that their job expired.
+     *
+     * Message: "⏰ Job expired (24hrs). [🔄 Repost] [❌ Cancel]"
      */
     protected function notifyPoster(WhatsAppService $whatsApp, JobPost $job): int
     {
@@ -125,27 +143,38 @@ class ExpireJobsCommand extends Command
         }
 
         try {
+            $applicationsCount = $job->applications->count();
+            $hoursOpen = $job->created_at->diffInHours(now());
+
+            // Build message based on whether there were applications
             $message = "⏰ *Job Expired*\n" .
                 "*ജോലി കാലഹരണപ്പെട്ടു*\n\n" .
                 "{$job->category->icon} *{$job->title}*\n" .
-                "💰 {$job->pay_display}\n\n";
+                "💰 {$job->pay_display}\n" .
+                "📍 {$job->location_name}\n\n";
 
-            if ($job->applications_count > 0) {
-                $message .= "👥 {$job->applications_count} worker(s) had applied.\n\n";
+            if ($applicationsCount > 0) {
+                $message .= "👷 {$applicationsCount} worker(s) had applied.\n" .
+                    "{$applicationsCount} പേർ അപേക്ഷിച്ചിരുന്നു.\n\n";
             } else {
-                $message .= "No workers applied for this job.\n\n";
+                $message .= "No workers applied for this job.\n" .
+                    "ഈ ജോലിക്ക് ആരും അപേക്ഷിച്ചില്ല.\n\n";
             }
 
-            $message .= "You can post this job again if needed.\n" .
-                "ആവശ്യമെങ്കിൽ വീണ്ടും പോസ്റ്റ് ചെയ്യാം.";
+            $message .= "Your job was open for {$hoursOpen} hours without assignment.\n" .
+                "നിങ്ങളുടെ ജോലി {$hoursOpen} മണിക്കൂർ നിയമനമില്ലാതെ തുറന്നിരുന്നു.\n\n" .
+                "_Want to try again? Repost the job._\n" .
+                "_വീണ്ടും ശ്രമിക്കണോ? ജോലി വീണ്ടും പോസ്റ്റ് ചെയ്യുക._";
 
             $whatsApp->sendButtons(
                 $poster->phone,
                 $message,
                 [
-                    ['id' => 'job_post', 'title' => '📝 Post Again'],
+                    ['id' => 'repost_job_' . $job->id, 'title' => '🔄 Repost Job'],
+                    ['id' => 'post_new_job', 'title' => '📝 New Job'],
                     ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ]
+                ],
+                '⏰ Job Expired (24hrs)'
             );
 
             return 1;
@@ -161,7 +190,7 @@ class ExpireJobsCommand extends Command
     }
 
     /**
-     * Notify applicants that the job was cancelled/expired.
+     * Notify applicants that the job expired.
      */
     protected function notifyApplicants(WhatsAppService $whatsApp, JobPost $job, $applications): int
     {
@@ -177,17 +206,22 @@ class ExpireJobsCommand extends Command
             try {
                 $message = "ℹ️ *Job No Longer Available*\n" .
                     "*ജോലി ഇപ്പോൾ ലഭ്യമല്ല*\n\n" .
-                    "{$job->category->icon} *{$job->title}*\n\n" .
-                    "This job has expired. Don't worry - there are more opportunities!\n" .
-                    "ഈ ജോലി കാലഹരണപ്പെട്ടു. വിഷമിക്കേണ്ട - കൂടുതൽ അവസരങ്ങൾ ഉണ്ട്!";
+                    "{$job->category->icon} *{$job->title}*\n" .
+                    "💰 {$job->pay_display}\n\n" .
+                    "This job has expired without selection.\n" .
+                    "ഈ ജോലി തിരഞ്ഞെടുക്കാതെ കാലഹരണപ്പെട്ടു.\n\n" .
+                    "Don't worry - more opportunities await!\n" .
+                    "വിഷമിക്കേണ്ട - കൂടുതൽ അവസരങ്ങൾ ഉണ്ട്!";
 
                 $whatsApp->sendButtons(
                     $worker->user->phone,
                     $message,
                     [
-                        ['id' => 'job_browse', 'title' => '🔍 Find Jobs'],
+                        ['id' => 'browse_jobs', 'title' => '🔍 Find Jobs'],
+                        ['id' => 'my_applications', 'title' => '📋 My Applications'],
                         ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                    ]
+                    ],
+                    'ℹ️ Job Expired'
                 );
 
                 $notified++;
@@ -209,7 +243,10 @@ class ExpireJobsCommand extends Command
      */
     protected function showJobs($jobs): int
     {
-        $headers = ['ID', 'Title', 'Poster', 'Pay', 'Applications', 'Expired At'];
+        $this->info('[DRY RUN] Would expire these jobs:');
+        $this->newLine();
+
+        $headers = ['ID', 'Title', 'Poster', 'Pay', 'Applications', 'Hours Open', 'Created At'];
         $rows = [];
 
         foreach ($jobs as $job) {
@@ -218,8 +255,9 @@ class ExpireJobsCommand extends Command
                 mb_substr($job->title, 0, 25),
                 $job->poster?->name ?? 'Unknown',
                 $job->pay_display,
-                $job->applications_count,
-                $job->expires_at->format('Y-m-d H:i'),
+                $job->applications->count(),
+                $job->created_at->diffInHours(now()),
+                $job->created_at->format('M d H:i'),
             ];
         }
 

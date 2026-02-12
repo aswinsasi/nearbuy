@@ -16,29 +16,25 @@ use App\Services\Flow\FlowRouter;
 use App\Services\Jobs\JobApplicationService;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\JobMessages;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Handler for the job application flow.
  *
- * Handles workers viewing job details and applying to jobs.
- * Also handles job browsing when no specific job is selected.
+ * Simplified conversational Manglish flow for workers applying to jobs.
  *
- * Flow Steps (from JobApplicationStep enum):
- * 1. VIEW_DETAILS - Show full job details
- * 2. ENTER_MESSAGE - Optional message to task giver
- * 3. PROPOSE_AMOUNT - Optional proposed amount (can be different from posted)
- * 4. CONFIRM_APPLICATION - Summary with Apply / Cancel buttons
- * 5. COMPLETE - Application sent confirmation
+ * Flow:
+ * 1. Worker receives job notification (from JobPostingService)
+ * 2. Taps [✅ Apply] → Instant apply → "✅ Applied! Poster-nu ariyichittund 👍"
+ * 3. OR Taps [💬 Apply + Message] → Enter message → "✅ Applied with message!"
+ * 4. OR Taps [📋 Details] → See full job → [✅ Apply] [💬 Apply + Message] [❌ Skip]
  *
  * Entry Points:
- * - Worker taps "I'm Interested" (apply_job_X) on job notification
- * - Worker taps "View Details" (view_job_detail_X) on job notification
- * - Worker selects job from browse list
- * - Worker browses jobs from menu (no job ID - shows list)
+ * - apply_job_{id} - Direct apply (instant)
+ * - apply_job_msg_{id} - Apply with message prompt
+ * - view_job_{id} - View job details first
  *
- * @srs-ref Section 3.4 - Job Applications
+ * @srs-ref NP-015, NP-016, NP-017
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobApplicationFlowHandler extends AbstractFlowHandler
@@ -62,25 +58,22 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         return JobApplicationStep::values();
     }
 
-    protected function getExpectedInputType(string $step): string
+    public function getExpectedInputType(string $step): string
     {
         $stepEnum = JobApplicationStep::tryFrom($step);
-        return $stepEnum?->expectedInput() ?? 'text';
+        return $stepEnum?->expectedInput() ?? 'button';
     }
 
     /**
-     * Start the application flow.
-     *
-     * If no job ID is set, shows available jobs nearby (browse mode).
-     * If job ID is set, starts the application flow for that job.
+     * Start the application flow (browse mode).
      */
     public function start(ConversationSession $session): void
     {
         // Check if we have a job ID in temp data
-        $jobId = $this->getTemp($session, 'apply_job_id');
+        $jobId = $this->getTempData($session, 'apply_job_id');
 
         if ($jobId) {
-            $this->startWithJob($session, $jobId);
+            $this->showJobDetails($session, (int) $jobId);
             return;
         }
 
@@ -89,14 +82,222 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
     }
 
     /**
-     * Show nearby available jobs for browsing.
+     * Start with direct apply (from notification button).
+     *
+     * @srs-ref NP-017 - Instant apply without message
      */
+    public function startDirectApply(ConversationSession $session, int $jobId): void
+    {
+        $this->logInfo('Direct apply to job', [
+            'job_id' => $jobId,
+            'phone' => $this->maskPhone($session->phone),
+        ]);
+
+        $job = JobPost::with(['category', 'poster'])->find($jobId);
+        $worker = $this->getWorker($session);
+
+        if (!$job || !$worker) {
+            $this->sendJobNotFoundError($session);
+            return;
+        }
+
+        // Validate and apply
+        $error = $this->validateCanApply($worker, $job, $session);
+        if ($error) {
+            return; // Error already sent
+        }
+
+        // Instant apply (no message)
+        $this->submitApplication($session, $job, $worker, null);
+    }
+
+    /**
+     * Start with apply + message flow (from notification button).
+     *
+     * @srs-ref NP-017 - Apply with optional message
+     */
+    public function startApplyWithMessage(ConversationSession $session, int $jobId): void
+    {
+        $this->logInfo('Apply with message flow', [
+            'job_id' => $jobId,
+            'phone' => $this->maskPhone($session->phone),
+        ]);
+
+        $job = JobPost::with(['category', 'poster'])->find($jobId);
+        $worker = $this->getWorker($session);
+
+        if (!$job || !$worker) {
+            $this->sendJobNotFoundError($session);
+            return;
+        }
+
+        // Validate
+        $error = $this->validateCanApply($worker, $job, $session);
+        if ($error) {
+            return;
+        }
+
+        // Store context and prompt for message
+        $this->clearTempData($session);
+        $this->setTempData($session, 'apply_job_id', $job->id);
+        $this->setTempData($session, 'job_title', $job->title);
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::JOB_APPLICATION,
+            JobApplicationStep::ENTER_MESSAGE->value
+        );
+
+        $this->promptEnterMessage($session);
+    }
+
+    /**
+     * Start with job details view (from notification button).
+     */
+    public function startWithJobDetails(ConversationSession $session, int $jobId): void
+    {
+        $this->logInfo('Viewing job details', [
+            'job_id' => $jobId,
+            'phone' => $this->maskPhone($session->phone),
+        ]);
+
+        $job = JobPost::with(['category', 'poster'])->find($jobId);
+
+        if (!$job) {
+            $this->sendJobNotFoundError($session);
+            return;
+        }
+
+        // Store context
+        $this->clearTempData($session);
+        $this->setTempData($session, 'apply_job_id', $job->id);
+        $this->setTempData($session, 'job_title', $job->title);
+
+        $this->sessionManager->setFlowStep(
+            $session,
+            FlowType::JOB_APPLICATION,
+            JobApplicationStep::VIEW_JOB->value
+        );
+
+        $this->showJobDetails($session, $jobId);
+    }
+
+    /**
+     * Handle incoming message.
+     */
+    public function handle(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Handle common navigation
+        if ($this->handleCommonNavigation($message, $session)) {
+            return;
+        }
+
+        // Handle job-specific button clicks
+        $selectionId = $this->getSelectionId($message);
+        if ($this->handleJobButtonClick($selectionId, $session)) {
+            return;
+        }
+
+        $step = $session->current_step;
+
+        Log::debug('JobApplicationFlowHandler', [
+            'step' => $step,
+            'message_type' => $message->type,
+            'selection_id' => $selectionId,
+        ]);
+
+        match ($step) {
+            'browse' => $this->handleBrowseSelection($message, $session),
+            JobApplicationStep::VIEW_JOB->value => $this->handleViewJob($message, $session),
+            JobApplicationStep::ENTER_MESSAGE->value => $this->handleEnterMessage($message, $session),
+            JobApplicationStep::APPLIED->value => $this->handleApplied($message, $session),
+            default => $this->start($session),
+        };
+    }
+
+    /**
+     * Re-prompt the current step.
+     */
+    public function promptCurrentStep(ConversationSession $session): void
+    {
+        $step = $session->current_step;
+
+        match ($step) {
+            'browse' => $this->showNearbyJobs($session),
+            JobApplicationStep::VIEW_JOB->value => $this->showJobDetails($session, (int) $this->getTempData($session, 'apply_job_id')),
+            JobApplicationStep::ENTER_MESSAGE->value => $this->promptEnterMessage($session),
+            JobApplicationStep::APPLIED->value => $this->promptApplied($session),
+            default => $this->start($session),
+        };
+    }
+
+    /**
+     * Handle job-related button clicks from any context.
+     */
+    protected function handleJobButtonClick(?string $selectionId, ConversationSession $session): bool
+    {
+        if (!$selectionId) {
+            return false;
+        }
+
+        // Direct apply: apply_job_{id}
+        if (preg_match('/^apply_job_(\d+)$/', $selectionId, $matches)) {
+            $jobId = (int) $matches[1];
+            $this->startDirectApply($session, $jobId);
+            return true;
+        }
+
+        // Apply with message: apply_job_msg_{id}
+        if (preg_match('/^apply_job_msg_(\d+)$/', $selectionId, $matches)) {
+            $jobId = (int) $matches[1];
+            $this->startApplyWithMessage($session, $jobId);
+            return true;
+        }
+
+        // View job details: view_job_{id} or view_job_detail_{id}
+        if (preg_match('/^view_job_(?:detail_)?(\d+)$/', $selectionId, $matches)) {
+            $jobId = (int) $matches[1];
+            $this->startWithJobDetails($session, $jobId);
+            return true;
+        }
+
+        // Skip job: skip_job_{id}
+        if (preg_match('/^skip_job_(\d+)$/', $selectionId, $matches)) {
+            $this->sendText(
+                $session->phone,
+                "✅ Job skipped. Vere jobs varunnathu nokkaam! 💪"
+            );
+            $this->goToMenu($session);
+            return true;
+        }
+
+        // Browse jobs
+        if (in_array($selectionId, ['job_browse', 'browse_jobs', 'find_jobs'])) {
+            $this->clearTempData($session);
+            $this->showNearbyJobs($session);
+            return true;
+        }
+
+        // Worker registration
+        if ($selectionId === 'start_worker_registration') {
+            $this->flowRouter->startFlow($session, FlowType::JOB_WORKER_REGISTER);
+            return true;
+        }
+
+        return false;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Browse Jobs
+    |--------------------------------------------------------------------------
+    */
+
     protected function showNearbyJobs(ConversationSession $session): void
     {
         $user = $this->getUser($session);
         $worker = $user?->jobWorker;
 
-        // Get worker's location or use default
         $latitude = $worker?->latitude ?? $user?->latitude ?? null;
         $longitude = $worker?->longitude ?? $user?->longitude ?? null;
 
@@ -110,7 +311,7 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
             ->orderBy('created_at', 'desc')
             ->limit(10);
 
-        // If we have coordinates, order by distance
+        // Add distance calculation if coordinates available
         if ($latitude && $longitude) {
             $query->selectRaw('*, (
                 6371 * acos(
@@ -127,13 +328,11 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         if ($jobs->isEmpty()) {
             $this->sendButtons(
                 $session->phone,
-                "📭 *No Jobs Available*\n" .
-                "*ഇപ്പോൾ ജോലികൾ ഇല്ല*\n\n" .
-                "There are no open tasks near you right now.\n" .
-                "നിങ്ങളുടെ അടുത്ത് ഇപ്പോൾ ജോലികൾ ഇല്ല.\n\n" .
-                "Check back later or post your own task!",
+                "📭 *Jobs Illa!*\n\n" .
+                "Ippo ningalude aduthu jobs onnum illa.\n" .
+                "Korachukoodikazhinju nokkuka! 🔄",
                 [
-                    ['id' => 'job_post', 'title' => '📝 Post a Task'],
+                    ['id' => 'job_post', 'title' => '📝 Post a Job'],
                     ['id' => 'main_menu', 'title' => '🏠 Menu'],
                 ],
                 '👷 Jobs'
@@ -152,725 +351,174 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
                 $distanceText = " • {$distanceText}";
             }
 
+            $icon = $job->category?->icon ?? '📋';
+
             $rows[] = [
                 'id' => 'view_job_' . $job->id,
-                'title' => mb_substr(($job->category?->icon ?? '📋') . ' ' . $job->title, 0, 24),
+                'title' => mb_substr("{$icon} {$job->title}", 0, 24),
                 'description' => mb_substr($job->pay_display . $distanceText . ' • ' . $job->formatted_date, 0, 72),
             ];
         }
 
         $jobCount = $jobs->count();
-        $message = "🔍 *Available Jobs Nearby*\n" .
-            "*അടുത്തുള്ള ജോലികൾ*\n\n" .
-            "Found *{$jobCount}* tasks near you.\n" .
-            "{$jobCount} ജോലികൾ കണ്ടെത്തി.\n\n" .
-            "Select a job to see details and apply.";
 
         $this->sendList(
             $session->phone,
-            $message,
+            "🔍 *Nearby Jobs*\n\n" .
+            "*{$jobCount}* jobs kandu!\n" .
+            "Select cheyyuka details kaanaan.",
             '📋 View Jobs',
             [
                 [
-                    'title' => '📋 Available Tasks',
+                    'title' => '📋 Available Jobs',
                     'rows' => $rows,
                 ],
             ],
             '👷 Jobs'
         );
+
+        $this->sessionManager->setFlowStep($session, FlowType::JOB_APPLICATION, 'browse');
     }
 
-    /**
-     * Start application flow for a specific job.
-     *
-     * Called from:
-     * - FlowRouter when worker clicks apply_job_X or view_job_detail_X
-     * - JobBrowseFlowHandler when worker selects a job
-     *
-     * @param ConversationSession $session
-     * @param int $jobId The job post ID
-     * @param bool $showDetailsFirst Whether to show details before apply prompt
-     */
-    public function startWithJob(ConversationSession $session, int $jobId, bool $showDetailsFirst = true): void
-    {
-        $this->logInfo('Starting job application flow', [
-            'job_id' => $jobId,
-            'phone' => $this->maskPhone($session->phone),
-        ]);
-
-        // Get the job
-        $job = JobPost::with(['category', 'poster'])->find($jobId);
-
-        if (!$job) {
-            $this->sendTextWithMenu(
-                $session->phone,
-                "❌ Job not found.\n\nജോലി കണ്ടെത്താനായില്ല."
-            );
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Check if job is still open
-        if (!$job->accepts_applications) {
-            $response = JobMessages::jobExpired();
-            $this->sendJobMessage($session->phone, $response);
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Get worker profile
-        $worker = $this->getWorker($session);
-
-        if (!$worker) {
-            // User is not a registered worker
-            $this->sendButtons(
-                $session->phone,
-                "👷 *Worker Registration Required*\n\n" .
-                "You need to register as a worker to apply for jobs.\n" .
-                "ജോലിക്ക് അപേക്ഷിക്കാൻ പണിക്കാരനായി രജിസ്റ്റർ ചെയ്യണം.\n\n" .
-                "_It only takes 2 minutes!_",
-                [
-                    ['id' => 'start_worker_registration', 'title' => '✅ Register'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '👷 Registration'
-            );
-            return;
-        }
-
-        // Check if worker already applied
-        if ($this->applicationService->hasWorkerApplied($worker, $job)) {
-            $response = JobMessages::alreadyApplied();
-            $this->sendJobMessage($session->phone, $response);
-            return;
-        }
-
-        // Check if worker has an active job at conflicting time
-        $activeJob = $this->applicationService->getWorkerActiveJob($worker);
-        if ($activeJob && $this->hasTimeConflict($activeJob, $job)) {
-            $response = JobMessages::workerBusy($activeJob);
-            $this->sendJobMessage($session->phone, $response);
-            return;
-        }
-
-        // Store job context
-        $this->clearTemp($session);
-        $this->setTemp($session, 'apply_job_id', $job->id);
-        $this->setTemp($session, 'job_title', $job->title);
-        $this->setTemp($session, 'job_pay', $job->pay_amount);
-
-        // Set flow
-        $this->sessionManager->setFlowStep(
-            $session,
-            FlowType::JOB_APPLICATION,
-            JobApplicationStep::VIEW_DETAILS->value
-        );
-
-        // Show job details
-        $this->showJobDetails($session, $job, $worker);
-    }
-
-    /**
-     * Handle incoming message.
-     */
-    public function handle(IncomingMessage $message, ConversationSession $session): void
-    {
-        // Handle common navigation (menu, cancel, etc.)
-        if ($this->handleCommonNavigation($message, $session)) {
-            return;
-        }
-
-        // Handle job-specific button clicks that might come from notifications
-        $selectionId = $this->getSelectionId($message);
-        if ($this->handleJobButtonClick($selectionId, $session)) {
-            return;
-        }
-
-        $step = $session->current_step;
-
-        Log::debug('JobApplicationFlowHandler', [
-            'step' => $step,
-            'message_type' => $message->type,
-            'selection_id' => $selectionId,
-        ]);
-
-        match ($step) {
-            'show_nearby' => $this->handleBrowseSelection($message, $session),
-            JobApplicationStep::VIEW_DETAILS->value => $this->handleViewDetails($message, $session),
-            JobApplicationStep::ENTER_MESSAGE->value => $this->handleEnterMessage($message, $session),
-            JobApplicationStep::PROPOSE_AMOUNT->value => $this->handleProposeAmount($message, $session),
-            JobApplicationStep::CONFIRM_APPLICATION->value => $this->handleConfirmApplication($message, $session),
-            JobApplicationStep::COMPLETE->value => $this->handleComplete($message, $session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Handle browse job selection from list.
-     */
     protected function handleBrowseSelection(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
 
-        // Handle view_job_X selection from list
         if ($selectionId && preg_match('/^view_job_(\d+)$/', $selectionId, $matches)) {
             $jobId = (int) $matches[1];
-            $this->startWithJob($session, $jobId, true);
+            $this->startWithJobDetails($session, $jobId);
             return;
         }
 
-        // Handle job_post button
-        if ($selectionId === 'job_post') {
-            $this->flowRouter->startFlow($session, FlowType::JOB_POST);
-            return;
-        }
-
-        // Re-show job list
         $this->showNearbyJobs($session);
-    }
-
-    /**
-     * Re-prompt the current step.
-     */
-    protected function promptCurrentStep(ConversationSession $session): void
-    {
-        $step = $session->current_step;
-
-        match ($step) {
-            'show_nearby' => $this->showNearbyJobs($session),
-            JobApplicationStep::VIEW_DETAILS->value => $this->promptViewDetails($session),
-            JobApplicationStep::ENTER_MESSAGE->value => $this->promptEnterMessage($session),
-            JobApplicationStep::PROPOSE_AMOUNT->value => $this->promptProposeAmount($session),
-            JobApplicationStep::CONFIRM_APPLICATION->value => $this->promptConfirmApplication($session),
-            default => $this->start($session),
-        };
-    }
-
-    /**
-     * Handle job-related button clicks from notifications.
-     */
-    protected function handleJobButtonClick(?string $selectionId, ConversationSession $session): bool
-    {
-        if (!$selectionId) {
-            return false;
-        }
-
-        // Handle Worker Menu navigation
-        if ($selectionId === 'job_worker_menu') {
-            $this->clearTemp($session);
-            $this->flowRouter->startFlow($session, FlowType::JOB_WORKER_MENU);
-            return true;
-        }
-
-        // Handle Job Browse navigation
-        if ($selectionId === 'job_browse' || $selectionId === 'browse_jobs' || $selectionId === 'find_jobs') {
-            $this->clearTemp($session);
-            $this->flowRouter->startFlow($session, FlowType::JOB_BROWSE);
-            return true;
-        }
-
-        // Handle Job Poster Menu navigation
-        if ($selectionId === 'job_poster_menu' || $selectionId === 'my_jobs') {
-            $this->clearTemp($session);
-            $this->flowRouter->startFlow($session, FlowType::JOB_POSTER_MENU);
-            return true;
-        }
-
-        // Handle "Register as Worker" button
-        if ($selectionId === 'start_worker_registration') {
-            $this->flowRouter->startFlow($session, FlowType::JOB_WORKER_REGISTER);
-            return true;
-        }
-
-        // Handle "I'm Interested" button (apply_job_X)
-        if (preg_match('/^apply_job_(\d+)$/', $selectionId, $matches)) {
-            $jobId = (int) $matches[1];
-            $this->startWithJob($session, $jobId, false);
-            return true;
-        }
-
-        // Handle "View Details" button (view_job_detail_X or view_job_X)
-        if (preg_match('/^view_job_(?:detail_)?(\d+)$/', $selectionId, $matches)) {
-            $jobId = (int) $matches[1];
-            $this->startWithJob($session, $jobId, true);
-            return true;
-        }
-
-        // Handle "Skip Job" button (skip_job_X)
-        if (preg_match('/^skip_job_(\d+)$/', $selectionId, $matches)) {
-            $this->sendTextWithMenu(
-                $session->phone,
-                "✅ Job skipped. We'll notify you of other opportunities!\n\nജോലി ഒഴിവാക്കി."
-            );
-            return true;
-        }
-
-        // Handle "View All Applications" button (view_all_apps_X) - for job posters
-        if (preg_match('/^view_all_apps_(\d+)$/', $selectionId, $matches)) {
-            $jobId = (int) $matches[1];
-            $this->showJobApplications($session, $jobId);
-            return true;
-        }
-
-        // Handle "View Applicant" selection (view_applicant_X) - for job posters
-        if (preg_match('/^view_applicant_(\d+)$/', $selectionId, $matches)) {
-            $applicationId = (int) $matches[1];
-            $this->showApplicantDetails($session, $applicationId);
-            return true;
-        }
-
-        // Handle "Accept Applicant" button (accept_app_X)
-        if (preg_match('/^accept_app_(\d+)$/', $selectionId, $matches)) {
-            $applicationId = (int) $matches[1];
-            $this->acceptApplication($session, $applicationId);
-            return true;
-        }
-
-        // Handle "Reject Applicant" button (reject_app_X)
-        if (preg_match('/^reject_app_(\d+)$/', $selectionId, $matches)) {
-            $applicationId = (int) $matches[1];
-            $this->rejectApplication($session, $applicationId);
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Show all applications for a job (for job poster).
-     */
-    protected function showJobApplications(ConversationSession $session, int $jobId): void
-    {
-        $user = $this->getUser($session);
-        $job = JobPost::with(['applications.worker', 'category'])->find($jobId);
-
-        if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            return;
-        }
-
-        // Verify user is the poster
-        if ($job->poster_user_id !== $user?->id) {
-            $this->sendTextWithMenu($session->phone, "❌ You can only view applications for your own jobs.");
-            return;
-        }
-
-        $applications = $job->applications()
-            ->with('worker')
-            ->orderBy('created_at', 'desc')
-            ->get();
-
-        if ($applications->isEmpty()) {
-            $this->sendButtons(
-                $session->phone,
-                "📭 *No Applications Yet*\n\n" .
-                "No one has applied to your job yet.\n" .
-                "ഇതുവരെ ആരും അപേക്ഷിച്ചിട്ടില്ല.\n\n" .
-                "Workers nearby will be notified!",
-                [
-                    ['id' => 'my_jobs', 'title' => '📋 My Jobs'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                "📋 {$job->title}"
-            );
-            return;
-        }
-
-        // Build list of applicants
-        $rows = [];
-        foreach ($applications as $index => $app) {
-            $worker = $app->worker;
-            $statusValue = is_object($app->status) ? $app->status->value : $app->status;
-            $amount = $app->proposed_amount 
-                ? '₹' . number_format((float) $app->proposed_amount)
-                : '₹' . number_format((float) $job->pay_amount);
-            
-            $status = match($statusValue) {
-                'pending' => '🟡',
-                'accepted' => '✅',
-                'rejected' => '❌',
-                'withdrawn' => '⬜',
-                default => '🔵',
-            };
-
-            $workerName = $worker->name ?? 'Worker';
-            $rating = $worker->rating ? "⭐{$worker->rating}" : '🆕';
-
-            $rows[] = [
-                'id' => 'view_applicant_' . $app->id,
-                'title' => mb_substr("{$status} {$workerName}", 0, 24),
-                'description' => mb_substr("{$rating} • {$amount}", 0, 72),
-            ];
-        }
-
-        $count = $applications->count();
-        $categoryIcon = $job->category?->icon ?? '📋';
-        
-        $this->sendList(
-            $session->phone,
-            "👥 *Applications for:*\n{$categoryIcon} *{$job->title}*\n\n" .
-            "You have *{$count}* application(s).\n" .
-            "{$count} അപേക്ഷകൾ ലഭിച്ചു.\n\n" .
-            "Select an applicant to view details and accept/reject.",
-            '👥 View Applicants',
-            [
-                [
-                    'title' => '👥 Applicants',
-                    'rows' => $rows,
-                ],
-            ],
-            "📋 {$job->title}"
-        );
-
-        // Store job context for follow-up actions
-        $this->setTemp($session, 'viewing_job_id', $jobId);
-    }
-
-    /**
-     * Show details of a specific applicant (for job poster).
-     */
-    protected function showApplicantDetails(ConversationSession $session, int $applicationId): void
-    {
-        $user = $this->getUser($session);
-        $application = \App\Models\JobApplication::with(['worker', 'jobPost.category'])->find($applicationId);
-
-        if (!$application) {
-            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
-            return;
-        }
-
-        // Verify user is the poster
-        if ($application->jobPost->poster_user_id !== $user?->id) {
-            $this->sendTextWithMenu($session->phone, "❌ You can only view applications for your own jobs.");
-            return;
-        }
-
-        $worker = $application->worker;
-        $job = $application->jobPost;
-        $statusValue = is_object($application->status) ? $application->status->value : $application->status;
-
-        $amount = $application->proposed_amount 
-            ? '₹' . number_format((float) $application->proposed_amount) . ' (proposed)'
-            : '₹' . number_format((float) $job->pay_amount);
-
-        $messageText = $application->message 
-            ? "\n\n✉️ *Message:*\n_{$application->message}_"
-            : "";
-
-        $rating = $worker->rating 
-            ? "⭐ {$worker->rating}/5" 
-            : "🆕 New worker";
-
-        $completedJobs = $worker->jobs_completed ?? 0;
-
-        $message = "👤 *APPLICANT DETAILS*\n\n" .
-            "👷 *{$worker->name}*\n" .
-            "{$rating}\n" .
-            "✅ {$completedJobs} jobs completed\n\n" .
-            "💰 *Amount:* {$amount}" .
-            $messageText . "\n\n" .
-            "📋 *For:* {$job->title}";
-
-        // Send worker photo if available
-        if ($worker->photo_url) {
-            $this->sendImage($session->phone, $worker->photo_url, "📸 {$worker->name}");
-        }
-
-        // Show accept/reject buttons only if pending
-        if ($statusValue === 'pending') {
-            $this->sendButtons(
-                $session->phone,
-                $message,
-                [
-                    ['id' => 'accept_app_' . $application->id, 'title' => '✅ Accept'],
-                    ['id' => 'reject_app_' . $application->id, 'title' => '❌ Reject'],
-                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 All Applicants'],
-                ],
-                '👤 Applicant'
-            );
-        } else {
-            $statusText = match($statusValue) {
-                'accepted' => '✅ ACCEPTED',
-                'rejected' => '❌ REJECTED',
-                'withdrawn' => '⬜ WITHDRAWN',
-                default => strtoupper($statusValue),
-            };
-
-            $this->sendButtons(
-                $session->phone,
-                $message . "\n\n*Status:* {$statusText}",
-                [
-                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 All Applicants'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '👤 Applicant'
-            );
-        }
-    }
-
-    /**
-     * Accept an application (for job poster).
-     */
-    protected function acceptApplication(ConversationSession $session, int $applicationId): void
-    {
-        $user = $this->getUser($session);
-        $application = \App\Models\JobApplication::with(['worker', 'jobPost'])->find($applicationId);
-
-        if (!$application) {
-            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
-            return;
-        }
-
-        // Verify user is the poster
-        if ($application->jobPost->poster_user_id !== $user?->id) {
-            $this->sendTextWithMenu($session->phone, "❌ You can only accept applications for your own jobs.");
-            return;
-        }
-
-        $statusValue = is_object($application->status) ? $application->status->value : $application->status;
-
-        if ($statusValue !== 'pending') {
-            $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
-            return;
-        }
-
-        try {
-            $this->applicationService->acceptApplication($application);
-
-            $worker = $application->worker;
-            $job = $application->jobPost;
-
-            // Notify poster
-            $this->sendButtons(
-                $session->phone,
-                "✅ *Worker Accepted!*\n*പണിക്കാരനെ സ്വീകരിച്ചു!*\n\n" .
-                "You've accepted *{$worker->name}* for:\n" .
-                "📋 {$job->title}\n\n" .
-                "The worker has been notified and will contact you soon.\n\n" .
-                "📞 Worker's phone: " . ($worker->user && $worker->user->phone ? $worker->user->phone : 'Will be shared'),
-                [
-                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 View Others'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '✅ Accepted'
-            );
-
-            // Notify worker
-            $workerUser = $worker->user;
-            if ($workerUser?->phone) {
-                $this->sendButtons(
-                    $workerUser->phone,
-                    "🎉 *Good News!*\n*നല്ല വാർത്ത!*\n\n" .
-                    "Your application for *{$job->title}* has been ACCEPTED!\n" .
-                    "നിങ്ങളുടെ അപേക്ഷ സ്വീകരിച്ചു!\n\n" .
-                    "📍 {$job->location_display}\n" .
-                    "📅 {$job->formatted_date_time}\n" .
-                    "💰 {$job->pay_display}\n\n" .
-                    "Please contact the task giver to confirm details.\n" .
-                    "📞 Poster Phone: " . ($job->poster->phone ?? 'Not available'),
-                    [
-                        ['id' => 'view_job_' . $job->id, 'title' => '📋 View Job'],
-                        ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                    ],
-                    '🎉 Accepted!'
-                );
-            }
-
-            Log::info('Application accepted', [
-                'application_id' => $applicationId,
-                'job_id' => $job->id,
-                'worker_id' => $worker->id,
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Failed to accept application', [
-                'error' => $e->getMessage(),
-                'application_id' => $applicationId,
-            ]);
-
-            $this->sendTextWithMenu($session->phone, "❌ Failed to accept application: " . $e->getMessage());
-        }
-    }
-
-    /**
-     * Reject an application (for job poster).
-     */
-    protected function rejectApplication(ConversationSession $session, int $applicationId): void
-    {
-        $user = $this->getUser($session);
-        $application = \App\Models\JobApplication::with(['worker', 'jobPost'])->find($applicationId);
-
-        if (!$application) {
-            $this->sendTextWithMenu($session->phone, "❌ Application not found.");
-            return;
-        }
-
-        // Verify user is the poster
-        if ($application->jobPost->poster_user_id !== $user?->id) {
-            $this->sendTextWithMenu($session->phone, "❌ You can only reject applications for your own jobs.");
-            return;
-        }
-
-        $statusValue = is_object($application->status) ? $application->status->value : $application->status;
-
-        if ($statusValue !== 'pending') {
-            $this->sendTextWithMenu($session->phone, "❌ This application has already been processed.");
-            return;
-        }
-
-        try {
-            $this->applicationService->rejectApplication($application);
-
-            $worker = $application->worker;
-            $job = $application->jobPost;
-
-            // Notify poster
-            $this->sendButtons(
-                $session->phone,
-                "❌ *Application Rejected*\n\n" .
-                "You've rejected {$worker->name}'s application.\n\n" .
-                "View other applicants or return to menu.",
-                [
-                    ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 View Others'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ],
-                '❌ Rejected'
-            );
-
-            // Optionally notify worker (some apps don't notify on rejection)
-            // We'll skip this for now to avoid negative notifications
-
-            Log::info('Application rejected', [
-                'application_id' => $applicationId,
-                'job_id' => $job->id,
-                'worker_id' => $worker->id,
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Failed to reject application', [
-                'error' => $e->getMessage(),
-                'application_id' => $applicationId,
-            ]);
-
-            $this->sendTextWithMenu($session->phone, "❌ Failed to reject application. Please try again.");
-        }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Step 1: View Details
+    | Step 1: View Job Details
     |--------------------------------------------------------------------------
     */
 
-    protected function handleViewDetails(IncomingMessage $message, ConversationSession $session): void
+    protected function handleViewJob(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
+        $jobId = (int) $this->getTempData($session, 'apply_job_id');
 
         // Handle apply button
-        if ($selectionId === 'apply_now' || $selectionId === 'interested') {
-            $this->nextStep($session, JobApplicationStep::ENTER_MESSAGE->value);
-            $this->promptEnterMessage($session);
+        if ($selectionId === 'apply_now') {
+            $this->startDirectApply($session, $jobId);
+            return;
+        }
+
+        // Handle apply with message
+        if ($selectionId === 'apply_msg') {
+            $this->startApplyWithMessage($session, $jobId);
+            return;
+        }
+
+        // Handle skip
+        if ($selectionId === 'skip_job' || $selectionId === 'not_interested') {
+            $this->clearTempData($session);
+            $this->sendText(
+                $session->phone,
+                "✅ Okay! Vere jobs nokkaam 💪"
+            );
+            $this->goToMenu($session);
             return;
         }
 
         // Handle get directions
         if ($selectionId && str_starts_with($selectionId, 'get_directions_')) {
-            $this->sendJobLocation($session);
+            $this->sendJobLocation($session, $jobId);
             return;
         }
 
-        // Handle skip/not interested
-        if ($selectionId === 'not_interested' || $selectionId === 'skip') {
-            $this->clearTemp($session);
-            $this->sendTextWithMenu(
-                $session->phone,
-                "✅ Okay, we'll show you other jobs!\n\nമറ്റ് ജോലികൾ കാണിക്കാം!"
-            );
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptViewDetails($session);
+        // Re-show details
+        $this->showJobDetails($session, $jobId);
     }
 
-    protected function promptViewDetails(ConversationSession $session): void
+    /**
+     * Show full job details with apply buttons.
+     *
+     * @srs-ref NP-015 - Job notification includes type, location, distance, date/time, duration, pay, poster rating
+     * @srs-ref NP-016 - Social proof "X workers already applied"
+     */
+    protected function showJobDetails(ConversationSession $session, int $jobId): void
     {
-        $jobId = $this->getTemp($session, 'apply_job_id');
         $job = JobPost::with(['category', 'poster'])->find($jobId);
-        $worker = $this->getWorker($session);
 
         if (!$job) {
-            $this->start($session);
+            $this->sendJobNotFoundError($session);
             return;
         }
 
-        $this->showJobDetails($session, $job, $worker);
-    }
+        $worker = $this->getWorker($session);
 
-    protected function showJobDetails(ConversationSession $session, JobPost $job, ?JobWorker $worker): void
-    {
-        // Calculate distance if both have coordinates
-        $distanceKm = 0;
+        // Calculate distance
+        $distanceText = 'N/A';
         if ($job->latitude && $job->longitude && $worker?->latitude && $worker?->longitude) {
-            $distanceKm = $job->distanceFrom($worker->latitude, $worker->longitude) ?? 0;
+            $distanceKm = $this->calculateDistance(
+                (float) $worker->latitude,
+                (float) $worker->longitude,
+                (float) $job->latitude,
+                (float) $job->longitude
+            );
+            $distanceText = $distanceKm < 1
+                ? round($distanceKm * 1000) . 'm'
+                : round($distanceKm, 1) . 'km';
         }
 
-        // Build detailed job view
-        $distance = $distanceKm < 1
-            ? round($distanceKm * 1000) . 'm'
-            : round($distanceKm, 1) . ' km';
+        // Build poster rating text
+        $posterRating = '🆕 New';
+        if ($job->poster?->rating) {
+            $posterRating = "⭐{$job->poster->rating}";
+        }
 
-        $applicationsText = $job->applications_count > 0
-            ? "👥 *{$job->applications_count}* others applied"
-            : "🎯 Be the first to apply!";
+        // Social proof (NP-016)
+        $applicationsText = '';
+        $appCount = $job->applications_count ?? 0;
+        if ($appCount > 0) {
+            $applicationsText = "\n👥 *{$appCount}* workers already applied";
+        } else {
+            $applicationsText = "\n🎯 Be the first to apply!";
+        }
 
-        $instructionsText = $job->special_instructions
-            ? "\n\n📌 *Instructions:*\n_{$job->special_instructions}_"
-            : "";
+        // Build message (NP-015 format)
+        $icon = $job->category?->icon ?? '📋';
+        $categoryName = $job->category?->name ?? 'Job';
 
-        $descriptionText = $job->description
-            ? "\n\n📝 *Description:*\n{$job->description}"
-            : "";
+        $message = "👷 *JOB DETAILS*\n\n" .
+            "{$icon} *{$categoryName}* — {$job->location_display} • {$distanceText}\n\n" .
+            "📅 {$job->formatted_date} ⏰ {$job->formatted_time}\n" .
+            "⏱️ {$job->duration_display}\n" .
+            "💰 *{$job->pay_display}* | Poster: {$posterRating}" .
+            $applicationsText;
 
-        $message = "📋 *JOB DETAILS*\n" .
-            "*ജോലി വിവരങ്ങൾ*\n\n" .
-            ($job->category?->icon ?? '📋') . " *{$job->title}*\n\n" .
-            "📍 *Location:* {$job->location_display}\n" .
-            "🗺️ Distance: {$distance} away\n" .
-            "📅 *Date:* {$job->formatted_date_time}\n" .
-            "⏱️ *Duration:* {$job->duration_display}\n" .
-            "💰 *Payment:* *{$job->pay_display}*\n\n" .
-            "👤 *Posted by:* {$job->poster->display_name}\n" .
-            $applicationsText .
-            $descriptionText .
-            $instructionsText;
+        if ($job->description) {
+            $message .= "\n\n📝 {$job->description}";
+        }
 
+        if ($job->special_instructions) {
+            $message .= "\n\n📌 _{$job->special_instructions}_";
+        }
+
+        // Buttons with Manglish labels
         $buttons = [
-            ['id' => 'apply_now', 'title' => '✅ താൽപ്പര്യമുണ്ട്'],
-            ['id' => 'not_interested', 'title' => '❌ താൽപ്പര്യമില്ല'],
+            ['id' => 'apply_now', 'title' => '✅ Apply'],
+            ['id' => 'apply_msg', 'title' => '💬 Apply + Message'],
+            ['id' => 'skip_job', 'title' => '❌ Skip'],
         ];
-
-        // Add directions button if coordinates available
-        if ($job->latitude && $job->longitude) {
-            $buttons = [
-                ['id' => 'apply_now', 'title' => '✅ താൽപ്പര്യമുണ്ട്'],
-                ['id' => 'get_directions_' . $job->id, 'title' => '📍 ദിശ കാണുക'],
-                ['id' => 'not_interested', 'title' => '❌ ഒഴിവാക്കുക'],
-            ];
-        }
 
         $this->sendButtons(
             $session->phone,
             $message,
             $buttons,
-            '📋 Job Details'
+            '👷 Job'
         );
     }
 
-    protected function sendJobLocation(ConversationSession $session): void
+    protected function sendJobLocation(ConversationSession $session, int $jobId): void
     {
-        $jobId = $this->getTemp($session, 'apply_job_id');
         $job = JobPost::find($jobId);
 
         if ($job && $job->latitude && $job->longitude) {
@@ -882,14 +530,15 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
                 $job->location_name
             );
 
-            // Follow up with apply button
+            // Follow up with apply buttons
             $this->sendButtons(
                 $session->phone,
-                "📍 *Job Location*\n\nReady to apply?",
+                "📍 *Job Location*\n\nApply cheyyaan ready?",
                 [
-                    ['id' => 'apply_now', 'title' => '✅ Apply Now'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ]
+                    ['id' => 'apply_now', 'title' => '✅ Apply'],
+                    ['id' => 'apply_msg', 'title' => '💬 Apply + Message'],
+                ],
+                '📍 Location'
             );
         }
     }
@@ -907,22 +556,34 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
         // Handle skip
         if ($selectionId === 'skip_message' || $this->isSkip($message)) {
-            $this->setTemp($session, 'application_message', null);
-            $this->nextStep($session, JobApplicationStep::PROPOSE_AMOUNT->value);
-            $this->promptProposeAmount($session);
+            $jobId = (int) $this->getTempData($session, 'apply_job_id');
+            $this->startDirectApply($session, $jobId);
+            return;
+        }
+
+        // Handle cancel
+        if ($selectionId === 'cancel') {
+            $this->clearTempData($session);
+            $this->sendText($session->phone, "❌ Cancelled.");
+            $this->goToMenu($session);
             return;
         }
 
         // Handle text message
-        if ($text) {
-            $messageText = trim($text);
-            if (mb_strlen($messageText) > 300) {
-                $messageText = mb_substr($messageText, 0, 300);
-            }
-            $this->setTemp($session, 'application_message', $messageText);
+        if ($text && strlen(trim($text)) > 0) {
+            $messageText = mb_substr(trim($text), 0, 300);
 
-            $this->nextStep($session, JobApplicationStep::PROPOSE_AMOUNT->value);
-            $this->promptProposeAmount($session);
+            $jobId = (int) $this->getTempData($session, 'apply_job_id');
+            $job = JobPost::with(['category', 'poster'])->find($jobId);
+            $worker = $this->getWorker($session);
+
+            if (!$job || !$worker) {
+                $this->sendJobNotFoundError($session);
+                return;
+            }
+
+            // Apply with message
+            $this->submitApplication($session, $job, $worker, $messageText);
             return;
         }
 
@@ -932,171 +593,20 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
     protected function promptEnterMessage(ConversationSession $session): void
     {
-        $this->sendButtons(
-            $session->phone,
-            "✉️ *Add a Message (Optional)*\n\n" .
-            "Want to add a message to the task giver?\n" .
-            "ടാസ്ക് ഗൈവർക്ക് ഒരു സന്ദേശം ചേർക്കണോ?\n\n" .
-            "_ഉദാ: \"I have experience with this type of work\"_\n" .
-            "_ഉദാ: \"ഞാൻ ഈ ടൈപ്പ് ജോലിയിൽ പരിചയമുണ്ട്\"_\n\n" .
-            "Send your message or tap Skip.",
-            [
-                ['id' => 'skip_message', 'title' => '⏭️ Skip'],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
-            ],
-            '✉️ Message'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 3: Propose Amount (Optional)
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleProposeAmount(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-        $text = $this->getTextContent($message);
-
-        // Handle skip / accept posted amount
-        if ($selectionId === 'skip_amount' || $selectionId === 'accept_posted' || $this->isSkip($message)) {
-            $this->setTemp($session, 'proposed_amount', null);
-            $this->nextStep($session, JobApplicationStep::CONFIRM_APPLICATION->value);
-            $this->promptConfirmApplication($session);
-            return;
-        }
-
-        // Handle text amount
-        if ($text) {
-            $amount = $this->parseAmount($text);
-            if ($amount && $amount >= 50 && $amount <= 50000) {
-                $this->setTemp($session, 'proposed_amount', $amount);
-                $this->nextStep($session, JobApplicationStep::CONFIRM_APPLICATION->value);
-                $this->promptConfirmApplication($session);
-                return;
-            }
-
-            // Invalid amount
-            $this->sendButtons(
-                $session->phone,
-                "❌ *Invalid amount*\n\nPlease enter a valid amount between ₹50 and ₹50,000.\n\nഅല്ലെങ്കിൽ Skip ചെയ്യുക.",
-                [
-                    ['id' => 'skip_amount', 'title' => '⏭️ Skip'],
-                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
-                ]
-            );
-            return;
-        }
-
-        // Re-prompt
-        $this->promptProposeAmount($session);
-    }
-
-    protected function promptProposeAmount(ConversationSession $session): void
-    {
-        $postedPay = (float) $this->getTemp($session, 'job_pay', 0);
-        $payDisplay = '₹' . number_format($postedPay);
+        $jobTitle = $this->getTempData($session, 'job_title', 'Job');
 
         $this->sendButtons(
             $session->phone,
-            "💰 *Propose Different Amount? (Optional)*\n\n" .
-            "Posted pay: *{$payDisplay}*\n\n" .
-            "Want to propose a different amount?\n" .
-            "വേറെ തുക നിർദ്ദേശിക്കണോ?\n\n" .
-            "_ഉദാ: 350, ₹400_\n\n" .
-            "Or tap 'Accept Posted' to continue with {$payDisplay}.",
+            "💬 *Message Type Cheyyuka*\n\n" .
+            "Poster-nu oru message ayakkaam.\n" .
+            "Eg: \"I have experience\" / \"Available anytime\"\n\n" .
+            "📋 For: *{$jobTitle}*\n\n" .
+            "_Message type cheyyuka or Skip press cheyyuka_",
             [
-                ['id' => 'accept_posted', 'title' => "✅ Accept {$payDisplay}"],
-                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ['id' => 'skip_message', 'title' => '⏭️ Skip Message'],
+                ['id' => 'cancel', 'title' => '❌ Cancel'],
             ],
-            '💰 Payment'
-        );
-    }
-
-    /**
-     * Parse amount from text.
-     */
-    protected function parseAmount(string $text): ?float
-    {
-        $cleaned = preg_replace('/[₹,Rs\.INR\s]/i', '', $text);
-
-        if (is_numeric($cleaned)) {
-            return round((float) $cleaned, 2);
-        }
-
-        return null;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Step 4: Confirm Application
-    |--------------------------------------------------------------------------
-    */
-
-    protected function handleConfirmApplication(IncomingMessage $message, ConversationSession $session): void
-    {
-        $selectionId = $this->getSelectionId($message);
-
-        // Handle confirm
-        if ($selectionId === 'confirm_apply' || $selectionId === 'send') {
-            $this->submitApplication($session);
-            return;
-        }
-
-        // Handle edit
-        if ($selectionId === 'edit_application') {
-            // Go back to message step
-            $this->nextStep($session, JobApplicationStep::ENTER_MESSAGE->value);
-            $this->promptEnterMessage($session);
-            return;
-        }
-
-        // Handle cancel
-        if ($selectionId === 'cancel_apply' || $selectionId === 'cancel') {
-            $this->clearTemp($session);
-            $this->sendTextWithMenu(
-                $session->phone,
-                "❌ *Application cancelled*\n\nഅപേക്ഷ റദ്ദാക്കി."
-            );
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptConfirmApplication($session);
-    }
-
-    protected function promptConfirmApplication(ConversationSession $session): void
-    {
-        $jobTitle = $this->getTemp($session, 'job_title', 'Job');
-        $postedPay = (float) $this->getTemp($session, 'job_pay', 0);
-        $applicationMessage = $this->getTemp($session, 'application_message');
-        $proposedAmount = $this->getTemp($session, 'proposed_amount');
-
-        $payDisplay = $proposedAmount
-            ? '₹' . number_format((float) $proposedAmount) . ' (proposed)'
-            : '₹' . number_format($postedPay);
-
-        $messageDisplay = $applicationMessage ?: '(No message)';
-
-        $message = "✅ *Confirm Application*\n" .
-            "*അപേക്ഷ സ്ഥിരീകരിക്കുക*\n\n" .
-            "📋 *Job:* {$jobTitle}\n" .
-            "💰 *Amount:* {$payDisplay}\n" .
-            "✉️ *Message:* {$messageDisplay}\n\n" .
-            "Ready to apply?\n" .
-            "അപേക്ഷിക്കാൻ തയ്യാറാണോ?";
-
-        $this->sendButtons(
-            $session->phone,
-            $message,
-            [
-                ['id' => 'confirm_apply', 'title' => '✅ Apply Now'],
-                ['id' => 'edit_application', 'title' => '✏️ Edit'],
-                ['id' => 'cancel_apply', 'title' => '❌ Cancel'],
-            ],
-            '✅ Confirm'
+            '💬 Message'
         );
     }
 
@@ -1106,52 +616,48 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
     |--------------------------------------------------------------------------
     */
 
-    protected function submitApplication(ConversationSession $session): void
-    {
-        $worker = $this->getWorker($session);
-        $jobId = $this->getTemp($session, 'apply_job_id');
-        $job = JobPost::with(['category', 'poster'])->find($jobId);
-
-        if (!$worker || !$job) {
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ Error submitting application. Please try again.",
-                [
-                    ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
-                ]
-            );
-            return;
-        }
-
+    /**
+     * Submit the application.
+     *
+     * @srs-ref NP-017 - Worker can apply with optional message
+     */
+    protected function submitApplication(
+        ConversationSession $session,
+        JobPost $job,
+        JobWorker $worker,
+        ?string $message
+    ): void {
         try {
             // Create application
-            $application = $this->applicationService->applyToJob(
+            $application = $this->applicationService->applyToJobWithMessage(
                 $worker,
                 $job,
-                $this->getTemp($session, 'application_message'),
-                $this->getTemp($session, 'proposed_amount')
+                $message
             );
 
-            // Get position
+            // Get position for social proof
             $position = $this->applicationService->getApplicationPosition($application);
 
             $this->logInfo('Application submitted', [
                 'application_id' => $application->id,
                 'job_id' => $job->id,
                 'worker_id' => $worker->id,
+                'has_message' => !empty($message),
                 'position' => $position,
             ]);
 
-            // Clear temp data
-            $this->clearTemp($session);
+            // Clear temp
+            $this->clearTempData($session);
 
-            // Move to complete step
-            $this->nextStep($session, JobApplicationStep::COMPLETE->value);
+            // Set step to applied
+            $this->sessionManager->setFlowStep(
+                $session,
+                FlowType::JOB_APPLICATION,
+                JobApplicationStep::APPLIED->value
+            );
 
             // Send confirmation to worker
-            $response = JobMessages::applicationConfirmed($job, $position);
-            $this->sendJobMessage($session->phone, $response);
+            $this->sendApplicationConfirmation($session, $job, $position, !empty($message));
 
             // Notify task giver
             $this->notifyPosterOfApplication($application);
@@ -1159,47 +665,118 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
         } catch (\Exception $e) {
             $this->logError('Failed to submit application', [
                 'error' => $e->getMessage(),
-                'job_id' => $jobId,
+                'job_id' => $job->id,
                 'worker_id' => $worker->id,
             ]);
 
-            $this->sendErrorWithOptions(
+            $this->sendButtons(
                 $session->phone,
-                "❌ *Application failed*\n\n" . $e->getMessage(),
+                "❌ *Apply cheyyan pattiyilla*\n\n" . $e->getMessage(),
                 [
-                    ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    self::MENU_BUTTON,
-                ]
+                    ['id' => 'view_job_' . $job->id, 'title' => '🔄 Try Again'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '❌ Error'
             );
         }
     }
 
     /**
-     * Notify task giver about new application.
+     * Send application confirmation to worker.
+     */
+    protected function sendApplicationConfirmation(
+        ConversationSession $session,
+        JobPost $job,
+        int $position,
+        bool $hasMessage
+    ): void {
+        $icon = $job->category?->icon ?? '📋';
+
+        if ($hasMessage) {
+            $text = "✅ *Applied with message!*\n" .
+                "*Message-um kootti apply aayii!*\n\n" .
+                "{$icon} {$job->title}\n" .
+                "📍 {$job->location_display}\n\n" .
+                "Poster-nu ariyichittund 👍\n" .
+                "Response varunnathu nokkuka!";
+        } else {
+            $text = "✅ *Applied!*\n" .
+                "*Apply cheythu!*\n\n" .
+                "{$icon} {$job->title}\n" .
+                "📍 {$job->location_display}\n\n" .
+                "Poster-nu ariyichittund 👍\n" .
+                "Response varunnathu nokkuka!";
+        }
+
+        if ($position <= 3) {
+            $text .= "\n\n🏃 You're #{$position} in line!";
+        }
+
+        $this->sendButtons(
+            $session->phone,
+            $text,
+            [
+                ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ],
+            '✅ Applied!'
+        );
+    }
+
+    /**
+     * Notify task giver of new application.
+     *
+     * @srs-ref NP-018 - Show task giver application details
      */
     protected function notifyPosterOfApplication(\App\Models\JobApplication $application): void
     {
-        $poster = $application->jobPost->poster;
+        $poster = $application->jobPost?->poster;
 
         if (!$poster || !$poster->phone) {
             return;
         }
 
-        // Send notification
-        $response = JobMessages::newApplicationNotification($application);
-        $this->sendJobMessage($poster->phone, $response);
+        $worker = $application->worker;
+        $job = $application->jobPost;
+
+        // Build notification (NP-018 format)
+        $rating = $worker->rating ? "⭐{$worker->rating}" : '🆕 New';
+        $jobsCompleted = $worker->jobs_completed ?? 0;
+        $distanceText = $application->distance_display;
+
+        $messageText = $application->message
+            ? "\n💬 \"{$application->message}\""
+            : "";
+
+        $appCount = $this->applicationService->getPendingApplicationsCount($job);
+
+        $text = "👤 *{$worker->name}* wants your job!\n\n" .
+            "{$rating} | {$jobsCompleted} jobs done | {$distanceText} away" .
+            $messageText . "\n\n" .
+            "📋 *{$job->title}*\n" .
+            "👥 {$appCount} total applications";
 
         // Send worker photo if available
-        $worker = $application->worker;
         if ($worker->photo_url) {
             $this->sendImage(
                 $poster->phone,
                 $worker->photo_url,
-                "📸 {$worker->name}'s profile photo"
+                "📸 {$worker->name}"
             );
         }
 
-        $this->logInfo('Poster notified of new application', [
+        $this->sendButtons(
+            $poster->phone,
+            $text,
+            [
+                ['id' => 'select_worker_' . $application->id, 'title' => '✅ Select'],
+                ['id' => 'next_applicant_' . $job->id, 'title' => '➡️ Next'],
+                ['id' => 'view_all_apps_' . $job->id, 'title' => '👥 View All'],
+            ],
+            '👤 New Applicant'
+        );
+
+        $this->logInfo('Poster notified of application', [
             'application_id' => $application->id,
             'poster_phone' => $this->maskPhone($poster->phone),
         ]);
@@ -1207,102 +784,149 @@ class JobApplicationFlowHandler extends AbstractFlowHandler
 
     /*
     |--------------------------------------------------------------------------
-    | Step 5: Complete
+    | Step 3: Applied (Complete)
     |--------------------------------------------------------------------------
     */
 
-    protected function handleComplete(IncomingMessage $message, ConversationSession $session): void
+    protected function handleApplied(IncomingMessage $message, ConversationSession $session): void
     {
         $selectionId = $this->getSelectionId($message);
 
-        // Handle browse more jobs
-        if ($selectionId === 'job_browse' || $selectionId === 'browse_jobs') {
-            $this->clearTemp($session);
-            $this->flowRouter->startFlow($session, FlowType::JOB_BROWSE);
+        if ($selectionId === 'browse_jobs') {
+            $this->clearTempData($session);
+            $this->showNearbyJobs($session);
             return;
         }
 
-        // Handle view applications
-        if ($selectionId === 'my_applications') {
-            // TODO: Go to my applications flow
-            $this->flowRouter->goToMainMenu($session);
-            return;
-        }
+        $this->goToMenu($session);
+    }
 
-        // Default - go to main menu
-        $this->flowRouter->goToMainMenu($session);
+    protected function promptApplied(ConversationSession $session): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            "✅ *Application submitted!*\n\n" .
+            "Response varumbol ariyikkaam.",
+            [
+                ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ],
+            '✅ Done'
+        );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Helper Methods
+    | Helpers
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Get worker profile for this session.
-     */
     protected function getWorker(ConversationSession $session): ?JobWorker
     {
         $user = $this->getUser($session);
         return $user?->jobWorker;
     }
 
-    /**
-     * Check if two jobs have a time conflict.
-     */
-    protected function hasTimeConflict(JobPost $existingJob, JobPost $newJob): bool
-    {
-        // Same day check
-        if (!$existingJob->job_date->isSameDay($newJob->job_date)) {
-            return false;
+    protected function validateCanApply(
+        JobWorker $worker,
+        JobPost $job,
+        ConversationSession $session
+    ): ?string {
+        // Check job is open
+        if ($job->status !== JobStatus::OPEN) {
+            $this->sendButtons(
+                $session->phone,
+                "❌ *Job Closed*\n\nEe job ippo available alla.",
+                [
+                    ['id' => 'browse_jobs', 'title' => '🔍 Other Jobs'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '❌ Closed'
+            );
+            return 'closed';
         }
 
-        // If we don't have specific times, assume conflict on same day
-        if (!$existingJob->job_time || !$newJob->job_time) {
-            return true;
+        // Check not own job
+        if ($worker->user_id === $job->poster_user_id) {
+            $this->sendButtons(
+                $session->phone,
+                "❌ Swantham job-inu apply cheyyan pattilla!",
+                [
+                    ['id' => 'browse_jobs', 'title' => '🔍 Other Jobs'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '❌ Error'
+            );
+            return 'own_job';
         }
 
-        // TODO: Implement proper time overlap check
-        // For now, flag same day as potential conflict
-        return true;
+        // Check already applied
+        if ($this->applicationService->hasWorkerApplied($worker, $job)) {
+            $this->sendButtons(
+                $session->phone,
+                "✅ *Already Applied!*\n\nNingal ee job-inu already apply cheythittund.",
+                [
+                    ['id' => 'browse_jobs', 'title' => '🔍 Other Jobs'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '✅ Applied'
+            );
+            return 'already_applied';
+        }
+
+        // Check worker not registered
+        if (!$worker) {
+            $this->sendButtons(
+                $session->phone,
+                "👷 *Register First!*\n\n" .
+                "Jobs-inu apply cheyyaan worker aayittu register cheyyuka.\n" .
+                "_2 minutes mathram!_",
+                [
+                    ['id' => 'start_worker_registration', 'title' => '✅ Register'],
+                    ['id' => 'main_menu', 'title' => '🏠 Menu'],
+                ],
+                '👷 Register'
+            );
+            return 'not_registered';
+        }
+
+        return null;
     }
 
-    /**
-     * Send a JobMessages response via WhatsApp.
-     */
-    protected function sendJobMessage(string $phone, array $response): void
+    protected function sendJobNotFoundError(ConversationSession $session): void
     {
-        $type = $response['type'] ?? 'text';
+        $this->sendButtons(
+            $session->phone,
+            "❌ *Job Not Found*\n\nEe job kandethaan pattiyilla.",
+            [
+                ['id' => 'browse_jobs', 'title' => '🔍 Browse Jobs'],
+                ['id' => 'main_menu', 'title' => '🏠 Menu'],
+            ],
+            '❌ Error'
+        );
+    }
 
-        switch ($type) {
-            case 'text':
-                $this->sendText($phone, $response['text']);
-                break;
+    protected function calculateDistance(
+        float $lat1,
+        float $lon1,
+        float $lat2,
+        float $lon2
+    ): float {
+        $earthRadius = 6371; // km
 
-            case 'buttons':
-                $this->sendButtons(
-                    $phone,
-                    $response['body'] ?? $response['text'] ?? '',
-                    $response['buttons'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
+        $latFrom = deg2rad($lat1);
+        $lonFrom = deg2rad($lon1);
+        $latTo = deg2rad($lat2);
+        $lonTo = deg2rad($lon2);
 
-            case 'list':
-                $this->sendList(
-                    $phone,
-                    $response['body'] ?? '',
-                    $response['button'] ?? 'Select',
-                    $response['sections'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
+        $latDelta = $latTo - $latFrom;
+        $lonDelta = $lonTo - $lonFrom;
 
-            default:
-                $this->sendText($phone, $response['text'] ?? 'Message sent.');
-        }
+        $a = sin($latDelta / 2) ** 2 +
+            cos($latFrom) * cos($latTo) * sin($lonDelta / 2) ** 2;
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return $earthRadius * $c;
     }
 }

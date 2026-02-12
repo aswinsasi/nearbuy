@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use App\Enums\JobStatus;
@@ -13,11 +15,24 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 /**
  * Job Post model for the Njaanum Panikkar (Jobs Marketplace) module.
  *
+ * SRS 5.2.2 job_posts Table Fields:
+ * - id: INT PK
+ * - poster_user_id: INT FK → Task giver reference
+ * - job_type: VARCHAR(50) → Category of job
+ * - title, description: VARCHAR/TEXT → Job details
+ * - location_name: VARCHAR(200) → Human-readable location
+ * - latitude, longitude: DECIMAL → Job location coordinates
+ * - job_date, job_time: DATE/TIME → When job should be done
+ * - duration_hours: DECIMAL(3,1) → Estimated duration
+ * - pay_amount: DECIMAL(8,2) → Payment offered
+ * - status: ENUM → open, assigned, in_progress, completed, cancelled
+ * - assigned_worker_id: INT FK → Selected worker reference
+ *
  * @property int $id
  * @property string $job_number
  * @property int $poster_user_id
- * @property int $job_category_id
- * @property string|null $custom_category_text Custom job type when "Other" category is selected
+ * @property int|null $job_category_id
+ * @property string|null $custom_category_text
  * @property string $title
  * @property string|null $description
  * @property string|null $special_instructions
@@ -28,7 +43,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property string|null $job_time
  * @property float|null $duration_hours
  * @property float $pay_amount
- * @property string $status
+ * @property JobStatus $status
  * @property int|null $assigned_worker_id
  * @property int $applications_count
  * @property \Carbon\Carbon|null $posted_at
@@ -45,8 +60,9 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property-read JobCategory|null $category
  * @property-read JobWorker|null $assignedWorker
  * @property-read \Illuminate\Database\Eloquent\Collection|JobApplication[] $applications
+ * @property-read JobVerification|null $verification
  *
- * @srs-ref Section 3.3 - Job Posting
+ * @srs-ref SRS 5.2.2 job_posts Table
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobPost extends Model
@@ -119,13 +135,16 @@ class JobPost extends Model
                 $job->job_number = self::generateJobNumber();
             }
             if (empty($job->status)) {
-                $job->status = 'open';
+                $job->status = JobStatus::OPEN;
             }
             if (empty($job->expires_at)) {
                 $job->expires_at = now()->addDays(7);
             }
-            if (empty($job->posted_at) && $job->status === 'open') {
+            if (empty($job->posted_at)) {
                 $job->posted_at = now();
+            }
+            if (!isset($job->applications_count)) {
+                $job->applications_count = 0;
             }
         });
     }
@@ -194,34 +213,33 @@ class JobPost extends Model
      */
     public function verification(): HasOne
     {
-        return $this->hasOne(\App\Models\JobVerification::class, 'job_post_id');
+        return $this->hasOne(JobVerification::class, 'job_post_id');
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Accessors & Mutators
+    | Accessors
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Get the display name for the job category.
-     * Uses custom_category_text if set, otherwise falls back to category name.
+     * Get the category display name.
      */
-    public function getCategoryDisplayNameAttribute(): string
+    public function getCategoryDisplayAttribute(): string
     {
-        if (!empty($this->custom_category_text)) {
+        if ($this->custom_category_text) {
             return $this->custom_category_text;
         }
-
-        return $this->category?->name ?? 'Unknown';
+        
+        return $this->category?->name_en ?? $this->category?->name_ml ?? 'Other';
     }
 
     /**
-     * Check if this job uses a custom category.
+     * Get the category icon.
      */
-    public function getIsCustomCategoryAttribute(): bool
+    public function getCategoryIconAttribute(): string
     {
-        return !empty($this->custom_category_text);
+        return $this->category?->icon ?? '📋';
     }
 
     /**
@@ -229,7 +247,15 @@ class JobPost extends Model
      */
     public function getFormattedPayAttribute(): string
     {
-        return '₹' . number_format($this->pay_amount, 0);
+        return '₹' . number_format((float) $this->pay_amount, 0);
+    }
+
+    /**
+     * Alias for formatted_pay.
+     */
+    public function getPayDisplayAttribute(): string
+    {
+        return $this->formatted_pay;
     }
 
     /**
@@ -237,27 +263,88 @@ class JobPost extends Model
      */
     public function getFormattedDateAttribute(): string
     {
-        return $this->job_date?->format('d M Y') ?? 'TBD';
+        if (!$this->job_date) {
+            return 'TBD';
+        }
+
+        if ($this->job_date->isToday()) {
+            return 'Innu';
+        }
+
+        if ($this->job_date->isTomorrow()) {
+            return 'Nale';
+        }
+
+        return $this->job_date->format('d M');
     }
-    
+
+    /**
+     * Get formatted time.
+     */
+    public function getFormattedTimeAttribute(): ?string
+    {
+        if (!$this->job_time) {
+            return null;
+        }
+
+        try {
+            return \Carbon\Carbon::createFromFormat('H:i:s', $this->job_time)->format('g:i A');
+        } catch (\Exception $e) {
+            return $this->job_time;
+        }
+    }
+
+    /**
+     * Get formatted date and time.
+     */
+    public function getFormattedDateTimeAttribute(): string
+    {
+        $date = $this->formatted_date;
+        $time = $this->formatted_time;
+
+        if ($time) {
+            return "{$date} {$time}";
+        }
+
+        return $date;
+    }
+
     /**
      * Get formatted duration.
      */
     public function getFormattedDurationAttribute(): string
     {
         if (!$this->duration_hours) {
-            return 'Not specified';
+            return 'Flexible';
         }
-        
-        if ($this->duration_hours < 1) {
-            return (int)($this->duration_hours * 60) . ' minutes';
+
+        $hours = (float) $this->duration_hours;
+
+        if ($hours < 1) {
+            return (int)($hours * 60) . ' mins';
         }
-        
-        if ($this->duration_hours == 1) {
-            return '1 hour';
+
+        if ($hours == 1) {
+            return '1 hr';
         }
-        
-        return $this->duration_hours . ' hours';
+
+        return $hours . ' hrs';
+    }
+
+    /**
+     * Alias for formatted_duration.
+     */
+    public function getDurationDisplayAttribute(): string
+    {
+        return $this->formatted_duration;
+    }
+
+    /**
+     * Get location display string.
+     */
+    public function getLocationDisplayAttribute(): string
+    {
+        return $this->location_name ?? 'Location not specified';
     }
 
     /**
@@ -265,16 +352,28 @@ class JobPost extends Model
      */
     public function getIsOpenAttribute(): bool
     {
-        return $this->status === 'open' && 
-            ($this->expires_at === null || $this->expires_at > now());
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        return $status === JobStatus::OPEN && 
+            ($this->expires_at === null || $this->expires_at->isFuture());
     }
 
     /**
-     * Check if job is active (open or assigned).
+     * Check if job is active (open, assigned, or in_progress).
      */
     public function getIsActiveAttribute(): bool
     {
-        return in_array($this->status, ['open', 'assigned', 'in_progress']);
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        return in_array($status, [
+            JobStatus::OPEN,
+            JobStatus::ASSIGNED,
+            JobStatus::IN_PROGRESS,
+        ]);
     }
 
     /**
@@ -282,8 +381,29 @@ class JobPost extends Model
      */
     public function getIsExpiredAttribute(): bool
     {
-        return $this->status === 'expired' || 
-            ($this->status === 'open' && $this->expires_at && $this->expires_at <= now());
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        return $status === JobStatus::EXPIRED || 
+            ($status === JobStatus::OPEN && $this->expires_at && $this->expires_at->isPast());
+    }
+
+    /**
+     * Check if job accepts applications.
+     */
+    public function getAcceptsApplicationsAttribute(): bool
+    {
+        if (!$this->is_open) {
+            return false;
+        }
+
+        // Job date must be today or future
+        if ($this->job_date && $this->job_date->lt(now()->startOfDay())) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -295,31 +415,52 @@ class JobPost extends Model
     }
 
     /**
-     * Check if job accepts applications.
-     * 
-     * Job accepts applications when:
-     * - Status is 'open'
-     * - Job date is today or in the future
-     * - Not expired (expires_at is null or in the future)
+     * Check if this is a handover job (queue standing).
      */
-    public function getAcceptsApplicationsAttribute(): bool
+    public function getIsHandoverJobAttribute(): bool
     {
-        // Must be open status
-       if ($this->status !== JobStatus::OPEN) {
+        $category = $this->category;
+        
+        if (!$category) {
             return false;
         }
 
-        // Job date must be today or future
-        if ($this->job_date && $this->job_date->lt(now()->startOfDay())) {
-            return false;
-        }
+        $handoverCategories = ['queue_standing', 'queue'];
+        
+        return in_array($category->slug ?? '', $handoverCategories) ||
+            str_contains(strtolower($category->name_en ?? ''), 'queue');
+    }
 
-        // Check expires_at if set
-        if ($this->expires_at && $this->expires_at->lte(now())) {
-            return false;
-        }
+    /**
+     * Get status display name.
+     */
+    public function getStatusDisplayAttribute(): string
+    {
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
 
-        return true;
+        return $status?->label() ?? 'Unknown';
+    }
+
+    /**
+     * Get status icon.
+     */
+    public function getStatusIconAttribute(): string
+    {
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        return match ($status) {
+            JobStatus::OPEN => '🟢',
+            JobStatus::ASSIGNED => '🟡',
+            JobStatus::IN_PROGRESS => '🔵',
+            JobStatus::COMPLETED => '✅',
+            JobStatus::CANCELLED => '❌',
+            JobStatus::EXPIRED => '⏰',
+            default => '⚪',
+        };
     }
 
     /*
@@ -333,7 +474,7 @@ class JobPost extends Model
      */
     public function scopeOpen($query)
     {
-        return $query->where('status', 'open')
+        return $query->where('status', JobStatus::OPEN)
             ->where(function ($q) {
                 $q->whereNull('expires_at')
                   ->orWhere('expires_at', '>', now());
@@ -345,7 +486,11 @@ class JobPost extends Model
      */
     public function scopeActive($query)
     {
-        return $query->whereIn('status', ['open', 'assigned', 'in_progress']);
+        return $query->whereIn('status', [
+            JobStatus::OPEN,
+            JobStatus::ASSIGNED,
+            JobStatus::IN_PROGRESS,
+        ]);
     }
 
     /**
@@ -365,19 +510,10 @@ class JobPost extends Model
     }
 
     /**
-     * Scope for jobs with custom category.
-     */
-    public function scopeWithCustomCategory($query)
-    {
-        return $query->whereNotNull('custom_category_text');
-    }
-
-    /**
-     * Scope for nearby jobs.
+     * Scope for nearby jobs using Haversine formula.
      */
     public function scopeNearby($query, float $latitude, float $longitude, int $radiusKm = 10)
     {
-        // Haversine formula for distance calculation
         $haversine = "(6371 * acos(cos(radians(?)) 
                      * cos(radians(latitude)) 
                      * cos(radians(longitude) - radians(?)) 
@@ -393,14 +529,19 @@ class JobPost extends Model
     }
 
     /**
-     * Scope for jobs expiring soon.
+     * Scope for today's jobs.
      */
-    public function scopeExpiringSoon($query, int $hours = 24)
+    public function scopeToday($query)
     {
-        return $query->where('status', 'open')
-            ->whereNotNull('expires_at')
-            ->where('expires_at', '<=', now()->addHours($hours))
-            ->where('expires_at', '>', now());
+        return $query->whereDate('job_date', today());
+    }
+
+    /**
+     * Scope for assigned to worker.
+     */
+    public function scopeAssignedTo($query, int $workerId)
+    {
+        return $query->where('assigned_worker_id', $workerId);
     }
 
     /*
@@ -414,12 +555,12 @@ class JobPost extends Model
      */
     public function assignWorker(JobWorker $worker): bool
     {
-        if ($this->status !== 'open') {
+        if (!$this->is_open) {
             return false;
         }
 
         $this->update([
-            'status' => 'assigned',
+            'status' => JobStatus::ASSIGNED,
             'assigned_worker_id' => $worker->id,
             'assigned_at' => now(),
         ]);
@@ -428,16 +569,34 @@ class JobPost extends Model
     }
 
     /**
+     * Alias for assignWorker.
+     */
+    public function assign(int|JobWorker $worker): void
+    {
+        $workerId = $worker instanceof JobWorker ? $worker->id : $worker;
+        
+        $this->update([
+            'assigned_worker_id' => $workerId,
+            'status' => JobStatus::ASSIGNED,
+            'assigned_at' => now(),
+        ]);
+    }
+
+    /**
      * Start the job execution.
      */
     public function start(): bool
     {
-        if ($this->status !== 'assigned') {
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        if ($status !== JobStatus::ASSIGNED) {
             return false;
         }
 
         $this->update([
-            'status' => 'in_progress',
+            'status' => JobStatus::IN_PROGRESS,
             'started_at' => now(),
         ]);
 
@@ -449,12 +608,16 @@ class JobPost extends Model
      */
     public function complete(): bool
     {
-        if ($this->status !== 'in_progress') {
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        if ($status !== JobStatus::IN_PROGRESS) {
             return false;
         }
 
         $this->update([
-            'status' => 'completed',
+            'status' => JobStatus::COMPLETED,
             'completed_at' => now(),
         ]);
 
@@ -464,14 +627,18 @@ class JobPost extends Model
     /**
      * Cancel the job.
      */
-    public function cancel(string $reason = null): bool
+    public function cancel(?string $reason = null): bool
     {
-        if (in_array($this->status, ['completed', 'cancelled'])) {
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        if (in_array($status, [JobStatus::COMPLETED, JobStatus::CANCELLED])) {
             return false;
         }
 
         $this->update([
-            'status' => 'cancelled',
+            'status' => JobStatus::CANCELLED,
             'cancelled_at' => now(),
             'cancellation_reason' => $reason,
         ]);
@@ -484,134 +651,19 @@ class JobPost extends Model
      */
     public function markExpired(): bool
     {
-        if ($this->status !== 'open') {
+        $status = $this->status instanceof JobStatus 
+            ? $this->status 
+            : JobStatus::tryFrom($this->status);
+
+        if ($status !== JobStatus::OPEN) {
             return false;
         }
 
         $this->update([
-            'status' => 'expired',
+            'status' => JobStatus::EXPIRED,
         ]);
 
         return true;
-    }
-
-    /**
-     * Repost the job (create a copy with new dates).
-     */
-    public function repost(): JobPost
-    {
-        return self::create([
-            'poster_user_id' => $this->poster_user_id,
-            'job_category_id' => $this->job_category_id,
-            'custom_category_text' => $this->custom_category_text,
-            'title' => $this->title,
-            'description' => $this->description,
-            'special_instructions' => $this->special_instructions,
-            'location_name' => $this->location_name,
-            'latitude' => $this->latitude,
-            'longitude' => $this->longitude,
-            'job_date' => now()->addDay(),
-            'job_time' => $this->job_time,
-            'duration_hours' => $this->duration_hours,
-            'pay_amount' => $this->pay_amount,
-            'status' => 'open',
-            'posted_at' => now(),
-            'expires_at' => now()->addDays(7),
-        ]);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Helpers
-    |--------------------------------------------------------------------------
-    */
-
-   /**
-     * Get the distance from a location in kilometers.
-     */
-    public function distanceFrom(float|string $latitude, float|string $longitude): ?float
-    {
-        if (!$this->latitude || !$this->longitude) {
-            return null;
-        }
-
-        // Cast to float to handle string values from database
-        $latitude = (float) $latitude;
-        $longitude = (float) $longitude;
-
-        $earthRadius = 6371; // km
-
-        $latDelta = deg2rad($latitude - $this->latitude);
-        $lonDelta = deg2rad($longitude - $this->longitude);
-
-        $a = sin($latDelta / 2) * sin($latDelta / 2) +
-            cos(deg2rad($this->latitude)) * cos(deg2rad($latitude)) *
-            sin($lonDelta / 2) * sin($lonDelta / 2);
-
-        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
-
-        return round($earthRadius * $c, 2);
-    }
-
-    /**
-     * Get formatted distance string.
-     */
-    public function formattedDistanceFrom(float $latitude, float $longitude): string
-    {
-        $distance = $this->distanceFrom($latitude, $longitude);
-
-        if ($distance === null) {
-            return 'Unknown distance';
-        }
-
-        if ($distance < 1) {
-            return round($distance * 1000) . ' m';
-        }
-
-        return round($distance, 1) . ' km';
-    }
-
-    /**
-     * Get location display string.
-     */
-    public function getLocationDisplayAttribute(): string
-    {
-        return $this->location_name ?? 'Location not specified';
-    }
-
-    /**
-     * Get formatted date and time display.
-     */
-    public function getFormattedDateTimeAttribute(): string
-    {
-        $date = $this->job_date?->format('d M Y') ?? 'TBD';
-        
-        if ($this->job_time) {
-            try {
-                $time = \Carbon\Carbon::createFromFormat('H:i:s', $this->job_time)->format('g:i A');
-                return "{$date} at {$time}";
-            } catch (\Exception $e) {
-                return "{$date} at {$this->job_time}";
-            }
-        }
-        
-        return $date;
-    }
-
-    /**
-     * Get duration display (alias for formatted_duration).
-     */
-    public function getDurationDisplayAttribute(): string
-    {
-        return $this->formatted_duration;
-    }
-
-    /**
-     * Get pay display (alias for formatted_pay).
-     */
-    public function getPayDisplayAttribute(): string
-    {
-        return $this->formatted_pay;
     }
 
     /**
@@ -632,40 +684,99 @@ class JobPost extends Model
         }
     }
 
-    /**
-     * Assign this job to a worker.
-     *
-     * @param int|JobWorker $worker Worker ID or JobWorker model
-     * @return void
-     */
-    public function assign(int|JobWorker $worker): void
-    {
-        $workerId = $worker instanceof JobWorker ? $worker->id : $worker;
-        
-        $this->update([
-            'assigned_worker_id' => $workerId,
-            'status' => \App\Enums\JobStatus::ASSIGNED,
-            'assigned_at' => now(),
-        ]);
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Helper Methods
+    |--------------------------------------------------------------------------
+    */
 
     /**
-     * Get the category display name (handles custom categories).
+     * Calculate distance from a location in kilometers.
      */
-    public function getCategoryDisplayAttribute(): string
+    public function distanceFrom(float|string $latitude, float|string $longitude): ?float
     {
-        if ($this->custom_category_text) {
-            return $this->custom_category_text;
+        if (!$this->latitude || !$this->longitude) {
+            return null;
         }
-        
-        return $this->category?->name_en ?? $this->category?->name_ml ?? 'Other';
+
+        $latitude = (float) $latitude;
+        $longitude = (float) $longitude;
+
+        $earthRadius = 6371; // km
+
+        $latDelta = deg2rad($latitude - (float) $this->latitude);
+        $lonDelta = deg2rad($longitude - (float) $this->longitude);
+
+        $a = sin($latDelta / 2) * sin($latDelta / 2) +
+            cos(deg2rad((float) $this->latitude)) * cos(deg2rad($latitude)) *
+            sin($lonDelta / 2) * sin($lonDelta / 2);
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return round($earthRadius * $c, 2);
     }
 
     /**
-     * Get the category icon.
+     * Get formatted distance string.
      */
-    public function getCategoryIconAttribute(): string
+    public function formattedDistanceFrom(float $latitude, float $longitude): string
     {
-        return $this->category?->icon ?? '📋';
+        $distance = $this->distanceFrom($latitude, $longitude);
+
+        if ($distance === null) {
+            return '?';
+        }
+
+        if ($distance < 1) {
+            return round($distance * 1000) . 'm';
+        }
+
+        return round($distance, 1) . 'km';
+    }
+
+    /**
+     * Get summary for list display.
+     */
+    public function toListSummary(): string
+    {
+        $icon = $this->category_icon;
+        $title = $this->title;
+        $pay = $this->pay_display;
+        $date = $this->formatted_date;
+        $duration = $this->formatted_duration;
+
+        return "{$icon} {$title}\n💰 {$pay} • {$date} • {$duration}";
+    }
+
+    /**
+     * Get full job card for WhatsApp message.
+     */
+    public function toJobCard(?float $workerLat = null, ?float $workerLon = null): string
+    {
+        $lines = [
+            "{$this->category_icon} *{$this->title}*",
+            "",
+            "📍 {$this->location_display}",
+            "📅 {$this->formatted_date_time}",
+            "⏱️ {$this->duration_display}",
+            "💰 {$this->pay_display}",
+        ];
+
+        if ($workerLat && $workerLon) {
+            $distance = $this->formattedDistanceFrom($workerLat, $workerLon);
+            $lines[] = "📏 {$distance} away";
+        }
+
+        if ($this->description) {
+            $lines[] = "";
+            $lines[] = $this->description;
+        }
+
+        if ($this->special_instructions) {
+            $lines[] = "";
+            $lines[] = "📝 {$this->special_instructions}";
+        }
+
+        return implode("\n", $lines);
     }
 }

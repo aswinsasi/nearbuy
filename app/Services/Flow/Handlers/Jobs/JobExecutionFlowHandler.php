@@ -19,57 +19,30 @@ use App\Services\Jobs\JobExecutionService;
 use App\Services\Media\MediaService;
 use App\Services\Session\SessionManager;
 use App\Services\WhatsApp\WhatsAppService;
-use App\Services\WhatsApp\Messages\JobMessages;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Handler for job execution flow.
+ * Handler for job execution flow with Manglish messages.
  *
- * Manages the entire job execution lifecycle from worker arrival to completion,
- * payment confirmation, and ratings.
- *
- * Flow Steps (from JobExecutionStep enum):
- *
- * Worker Side:
- * 1. ARRIVAL_PHOTO → Worker uploads photo when arriving at location
- * 2. WORK_IN_PROGRESS → Job is being executed
- * 3. COMPLETION_PHOTO → Worker uploads completion photo (optional)
- * 4. COMPLETION_CONFIRM_WORKER → Worker marks task as done
- * 5. CONFIRM_PAYMENT → Worker confirms payment received
- * 6. RATE_POSTER → Worker rates the task giver
- *
- * Task Giver Side:
- * 1. NOTIFY_POSTER_ARRIVAL → System notifies task giver worker has arrived
- * 2. COMPLETION_CONFIRM_POSTER → Task giver confirms task completed
- * 3. SELECT_PAYMENT_METHOD → Task giver selects payment method
- * 4. CONFIRM_PAYMENT → Task giver confirms payment made
- * 5. RATE_WORKER → Task giver rates worker 1-5 stars
+ * Manages the entire job execution lifecycle:
+ * - NP-022: Worker sends arrival photo
+ * - NP-023: Notify task giver with photo and timestamp
+ * - NP-024: Handover confirmation for queue jobs
+ * - NP-025: Mutual completion confirmation
+ * - NP-026: Rating (1-5 stars) + optional review
+ * - NP-027: Payment method selection (Cash/UPI)
+ * - NP-028: Update worker stats
  *
  * Entry Points:
- * - System triggers when job time approaches (scheduled job)
- * - Worker taps "Start Job" button
- * - Task giver receives arrival notification
+ * - start_job_{id}: Start job execution
+ * - job_arrived_{id}: Worker arrived at location
+ * - confirm_arrival_{id}: Poster confirms arrival
  *
- * @srs-ref Section 3.5 - Job Verification & Completion
+ * @srs-ref NP-022 to NP-028
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 class JobExecutionFlowHandler extends AbstractFlowHandler
 {
-    /**
-     * Flow step constants (using enum values).
-     */
-    protected const STEP_ARRIVAL_PHOTO = 'arrival_photo';
-    protected const STEP_NOTIFY_POSTER_ARRIVAL = 'notify_poster_arrival';
-    protected const STEP_WORK_IN_PROGRESS = 'work_in_progress';
-    protected const STEP_COMPLETION_PHOTO = 'completion_photo';
-    protected const STEP_COMPLETION_CONFIRM_WORKER = 'completion_confirm_worker';
-    protected const STEP_COMPLETION_CONFIRM_POSTER = 'completion_confirm_poster';
-    protected const STEP_SELECT_PAYMENT_METHOD = 'select_payment_method';
-    protected const STEP_CONFIRM_PAYMENT = 'confirm_payment';
-    protected const STEP_RATE_WORKER = 'rate_worker';
-    protected const STEP_RATE_POSTER = 'rate_poster';
-    protected const STEP_COMPLETE = 'complete';
-
     public function __construct(
         SessionManager $sessionManager,
         WhatsAppService $whatsApp,
@@ -89,89 +62,74 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
         return JobExecutionStep::values();
     }
 
-    protected function getExpectedInputType(string $step): string
+    public function getExpectedInputType(string $step): string
     {
         $enumStep = JobExecutionStep::tryFrom($step);
         return $enumStep?->expectedInput() ?? 'button';
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Entry Points
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Start the execution flow.
      */
     public function start(ConversationSession $session): void
     {
-        $jobId = $this->getTemp($session, 'execution_job_id');
+        $jobId = $this->getTempData($session, 'job_id');
 
-        if (!$jobId) {
-            $this->showActiveJobOrError($session);
+        if ($jobId) {
+            $this->startWithJob($session, (int) $jobId);
             return;
         }
 
-        $job = JobPost::with(['assignedWorker', 'poster', 'category', 'verification'])->find($jobId);
-
-        if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.");
-            $this->goToMainMenu($session);
-            return;
-        }
-
-        // Determine if user is worker or poster
-        $user = $this->getUser($session);
-        $isWorker = $this->isUserWorker($user, $job);
-
-        if ($isWorker) {
-            $this->startWorkerFlow($session, $job);
-        } else {
-            $this->startPosterFlow($session, $job);
-        }
+        // Try to find active job
+        $this->showActiveJobOrError($session);
     }
 
     /**
      * Start execution flow for a specific job.
-     *
-     * @param ConversationSession $session
-     * @param int $jobId The job post ID
      */
     public function startWithJob(ConversationSession $session, int $jobId): void
     {
-        $this->logInfo('Starting job execution flow', [
-            'job_id' => $jobId,
-            'phone' => $this->maskPhone($session->phone),
-        ]);
-
-        $job = JobPost::with(['assignedWorker.user', 'poster', 'category', 'verification'])->find($jobId);
+        $job = JobPost::with(['assignedWorker.user', 'poster', 'category', 'verification'])
+            ->find($jobId);
 
         if (!$job) {
-            $this->sendTextWithMenu($session->phone, "❌ Job not found.\n\nജോലി കണ്ടെത്താനായില്ല.");
-            $this->goToMainMenu($session);
+            $this->sendText($session->phone, "❌ Job kandilla.");
+            $this->goToMenu($session);
             return;
         }
 
-        // Verify job is in correct status
-        if (!in_array($job->status, [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])) {
-            $this->sendTextWithMenu(
+        // Verify job can be started
+        if (!$this->executionService->canStartJob($job)) {
+            $this->sendText(
                 $session->phone,
-                "❌ This job cannot be started.\n\nStatus: *{$job->status_display}*"
+                "❌ Ee job start cheyan pattilla.\nStatus: *{$job->status_display}*"
             );
-            $this->goToMainMenu($session);
+            $this->goToMenu($session);
             return;
         }
 
         // Store context
-        $this->clearTemp($session);
-        $this->setTemp($session, 'execution_job_id', $job->id);
-        $this->setTemp($session, 'job_title', $job->title);
+        $this->clearTempData($session);
+        $this->setTempData($session, 'job_id', $job->id);
+        $this->setTempData($session, 'job_title', $job->title);
 
         // Determine user role
         $user = $this->getUser($session);
         $isWorker = $this->isUserWorker($user, $job);
-        $this->setTemp($session, 'is_worker', $isWorker);
+        $this->setTempData($session, 'is_worker', $isWorker);
+        $this->setTempData($session, 'is_handover_job', $job->is_handover_job);
 
         // Set flow
         $this->sessionManager->setFlowStep(
             $session,
             FlowType::JOB_EXECUTION,
-            self::STEP_ARRIVAL_PHOTO
+            JobExecutionStep::ARRIVAL_PHOTO->value
         );
 
         if ($isWorker) {
@@ -186,42 +144,29 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
      */
     public function handle(IncomingMessage $message, ConversationSession $session): void
     {
-        // Handle common navigation
-        if ($this->handleCommonNavigation($message, $session)) {
-            return;
-        }
-
-        // Handle execution-specific button clicks
-        if ($this->handleExecutionButtonClick($message, $session)) {
+        // Handle button clicks first
+        if ($this->handleButtonClick($message, $session)) {
             return;
         }
 
         $step = $session->current_step;
-        $isWorker = $this->getTemp($session, 'is_worker', true);
-
-        Log::debug('JobExecutionFlowHandler', [
-            'step' => $step,
-            'message_type' => $message->type,
-            'is_worker' => $isWorker,
-        ]);
 
         match ($step) {
             // Worker steps
-            self::STEP_ARRIVAL_PHOTO => $this->handleArrivalPhoto($message, $session),
-            self::STEP_WORK_IN_PROGRESS => $this->handleWorkInProgress($message, $session),
-            self::STEP_COMPLETION_PHOTO => $this->handleCompletionPhoto($message, $session),
-            self::STEP_COMPLETION_CONFIRM_WORKER => $this->handleWorkerCompletion($message, $session),
-            self::STEP_RATE_POSTER => $this->handleRatePoster($message, $session),
+            JobExecutionStep::ARRIVAL_PHOTO->value => $this->handleArrivalPhoto($message, $session),
+            JobExecutionStep::HANDOVER_WORKER->value => $this->handleHandoverWorker($message, $session),
+            JobExecutionStep::COMPLETION_WORKER->value => $this->handleCompletionWorker($message, $session),
 
             // Poster steps
-            self::STEP_NOTIFY_POSTER_ARRIVAL => $this->handlePosterArrivalNotification($message, $session),
-            self::STEP_COMPLETION_CONFIRM_POSTER => $this->handlePosterCompletion($message, $session),
-            self::STEP_SELECT_PAYMENT_METHOD => $this->handleSelectPaymentMethod($message, $session),
-            self::STEP_RATE_WORKER => $this->handleRateWorker($message, $session),
+            JobExecutionStep::ARRIVAL_CONFIRMED->value => $this->handleArrivalConfirmed($message, $session),
+            JobExecutionStep::HANDOVER_POSTER->value => $this->handleHandoverPoster($message, $session),
+            JobExecutionStep::COMPLETION_POSTER->value => $this->handleCompletionPoster($message, $session),
+            JobExecutionStep::PAYMENT->value => $this->handlePayment($message, $session),
+            JobExecutionStep::RATING->value => $this->handleRating($message, $session),
+            JobExecutionStep::RATING_COMMENT->value => $this->handleRatingComment($message, $session),
 
-            // Shared steps
-            self::STEP_CONFIRM_PAYMENT => $this->handleConfirmPayment($message, $session),
-            self::STEP_COMPLETE => $this->handleComplete($message, $session),
+            // Done
+            JobExecutionStep::DONE->value => $this->handleDone($message, $session),
 
             default => $this->start($session),
         };
@@ -230,11 +175,10 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
     /**
      * Re-prompt the current step.
      */
-    protected function promptCurrentStep(ConversationSession $session): void
+    public function promptCurrentStep(ConversationSession $session): void
     {
         $step = $session->current_step;
-        $jobId = $this->getTemp($session, 'execution_job_id');
-        $job = JobPost::with(['assignedWorker', 'poster', 'category', 'verification'])->find($jobId);
+        $job = $this->getCurrentJob($session);
 
         if (!$job) {
             $this->start($session);
@@ -242,82 +186,91 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
         }
 
         match ($step) {
-            self::STEP_ARRIVAL_PHOTO => $this->promptArrivalPhoto($session, $job),
-            self::STEP_WORK_IN_PROGRESS => $this->promptWorkInProgress($session, $job),
-            self::STEP_COMPLETION_PHOTO => $this->promptCompletionPhoto($session, $job),
-            self::STEP_COMPLETION_CONFIRM_WORKER => $this->promptWorkerCompletion($session, $job),
-            self::STEP_COMPLETION_CONFIRM_POSTER => $this->promptPosterCompletion($session, $job),
-            self::STEP_SELECT_PAYMENT_METHOD => $this->promptSelectPaymentMethod($session, $job),
-            self::STEP_CONFIRM_PAYMENT => $this->promptConfirmPayment($session, $job),
-            self::STEP_RATE_WORKER => $this->promptRateWorker($session, $job),
-            self::STEP_RATE_POSTER => $this->promptRatePoster($session, $job),
+            JobExecutionStep::ARRIVAL_PHOTO->value => $this->promptArrivalPhoto($session, $job),
+            JobExecutionStep::ARRIVAL_CONFIRMED->value => $this->promptArrivalConfirmed($session, $job),
+            JobExecutionStep::HANDOVER_WORKER->value => $this->promptHandoverWorker($session, $job),
+            JobExecutionStep::HANDOVER_POSTER->value => $this->promptHandoverPoster($session, $job),
+            JobExecutionStep::COMPLETION_WORKER->value => $this->promptCompletionWorker($session, $job),
+            JobExecutionStep::COMPLETION_POSTER->value => $this->promptCompletionPoster($session, $job),
+            JobExecutionStep::PAYMENT->value => $this->promptPayment($session, $job),
+            JobExecutionStep::RATING->value => $this->promptRating($session, $job),
+            JobExecutionStep::RATING_COMMENT->value => $this->promptRatingComment($session, $job),
             default => $this->start($session),
         };
     }
 
     /**
-     * Handle execution-specific button clicks.
+     * Handle button clicks.
      */
-    protected function handleExecutionButtonClick(IncomingMessage $message, ConversationSession $session): bool
+    protected function handleButtonClick(IncomingMessage $message, ConversationSession $session): bool
     {
-        $selectionId = $this->getSelectionId($message);
+        $buttonId = $this->getSelectionId($message);
 
-        if (!$selectionId) {
+        if (!$buttonId) {
             return false;
         }
 
-        // Start job execution
-        if (preg_match('/^start_job_(\d+)$/', $selectionId, $matches)) {
-            $jobId = (int) $matches[1];
-            $this->startWithJob($session, $jobId);
+        // Start job
+        if (preg_match('/^start_job_(\d+)$/', $buttonId, $matches)) {
+            $this->startWithJob($session, (int) $matches[1]);
             return true;
         }
 
         // Skip arrival photo
-        if (preg_match('/^skip_arrival_photo_(\d+)$/', $selectionId, $matches)) {
+        if (preg_match('/^skip_photo_(\d+)$/', $buttonId, $matches)) {
             $this->skipArrivalPhoto($session);
             return true;
         }
 
-        // Confirm complete
-        if (preg_match('/^confirm_complete_(\d+)$/', $selectionId, $matches)) {
-            $this->confirmWorkerCompletion($session);
+        // Poster confirms arrival
+        if (preg_match('/^arrival_ok_(\d+)$/', $buttonId, $matches)) {
+            $this->processArrivalConfirmed($session);
             return true;
         }
 
-        // Send completion photo
-        if (preg_match('/^send_completion_photo_(\d+)$/', $selectionId, $matches)) {
-            $this->nextStep($session, self::STEP_COMPLETION_PHOTO);
-            $this->promptCompletionPhoto($session, $this->getCurrentJob($session));
+        // Handover buttons
+        if (preg_match('/^handover_done_(\d+)$/', $buttonId, $matches)) {
+            $this->processHandoverWorker($session);
+            return true;
+        }
+
+        if (preg_match('/^handover_ok_(\d+)$/', $buttonId, $matches)) {
+            $this->processHandoverPoster($session);
+            return true;
+        }
+
+        // Completion buttons
+        if (preg_match('/^work_done_(\d+)$/', $buttonId, $matches)) {
+            $this->processCompletionWorker($session);
+            return true;
+        }
+
+        if (preg_match('/^work_ok_(\d+)$/', $buttonId, $matches)) {
+            $this->processCompletionPoster($session);
+            return true;
+        }
+
+        // Payment buttons
+        if (preg_match('/^pay_(cash|upi)_(\d+)$/', $buttonId, $matches)) {
+            $this->processPayment($session, $matches[1]);
             return true;
         }
 
         // Rating buttons
-        if (preg_match('/^rate_(\d)_(\d+)$/', $selectionId, $matches)) {
-            $rating = (int) $matches[1];
-            $jobId = (int) $matches[2];
-            $this->processRating($session, $rating);
+        if (preg_match('/^rate_(\d)_(\d+)$/', $buttonId, $matches)) {
+            $this->processRating($session, (int) $matches[1]);
             return true;
         }
 
-        // Payment method buttons
-        if (preg_match('/^paid_(cash|upi|other)_(\d+)$/', $selectionId, $matches)) {
-            $method = $matches[1];
-            $this->processPaymentMethod($session, $method);
+        // Skip review
+        if (preg_match('/^skip_review_(\d+)$/', $buttonId, $matches)) {
+            $this->completeJobFlow($session);
             return true;
         }
 
-        // View active job
-        if (preg_match('/^view_active_job_(\d+)$/', $selectionId, $matches)) {
-            $jobId = (int) $matches[1];
-            $this->startWithJob($session, $jobId);
-            return true;
-        }
-
-        // Complete job button
-        if (preg_match('/^complete_job_(\d+)$/', $selectionId, $matches)) {
-            $this->nextStep($session, self::STEP_COMPLETION_CONFIRM_WORKER);
-            $this->promptWorkerCompletion($session, $this->getCurrentJob($session));
+        // Menu
+        if ($buttonId === 'menu' || $buttonId === 'main_menu') {
+            $this->goToMenu($session);
             return true;
         }
 
@@ -335,29 +288,21 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
      */
     protected function startWorkerFlow(ConversationSession $session, JobPost $job): void
     {
-        $this->setTemp($session, 'is_worker', true);
-
-        // Check if job already has verification (resuming)
         $verification = $job->verification;
 
-        if ($verification && $verification->is_arrival_verified) {
-            // Already arrived, check current state
+        if ($verification && $verification->has_arrived) {
+            // Already arrived, check state
             if ($verification->is_worker_confirmed) {
-                // Worker already confirmed, waiting for poster or payment
-                $this->nextStep($session, self::STEP_CONFIRM_PAYMENT);
-                $this->sendTextWithMenu(
-                    $session->phone,
-                    "⏳ *Waiting for confirmation*\n\n" .
-                    "You've marked the job as complete. Waiting for task giver to confirm and pay."
-                );
+                // Waiting for poster/payment
+                $this->showWaitingForPoster($session, $job);
             } else {
-                // Work in progress
-                $this->nextStep($session, self::STEP_WORK_IN_PROGRESS);
-                $this->promptWorkInProgress($session, $job);
+                // Show completion prompt
+                $this->setStep($session, JobExecutionStep::COMPLETION_WORKER->value);
+                $this->promptCompletionWorker($session, $job);
             }
         } else {
-            // Start fresh - request arrival photo
-            $this->nextStep($session, self::STEP_ARRIVAL_PHOTO);
+            // Request arrival photo (NP-022)
+            $this->setStep($session, JobExecutionStep::ARRIVAL_PHOTO->value);
             $this->promptArrivalPhoto($session, $job);
         }
     }
@@ -367,68 +312,64 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
      */
     protected function startPosterFlow(ConversationSession $session, JobPost $job): void
     {
-        $this->setTemp($session, 'is_worker', false);
-
         $verification = $job->verification;
 
-        if (!$verification) {
-            // Job not started yet
-            $this->sendTextWithMenu(
+        if (!$verification || !$verification->has_arrived) {
+            // Worker hasn't arrived yet
+            $this->sendText(
                 $session->phone,
-                "⏳ *Waiting for worker*\n\n" .
-                ($job->category?->icon ?? '📋') . " {$job->title}\n\n" .
-                "Worker hasn't started the job yet.\n" .
-                "You'll be notified when they arrive."
+                "⏳ *Worker varunnund...*\n\n" .
+                "{$job->category_icon} {$job->title}\n" .
+                "👤 {$job->assignedWorker->name}\n\n" .
+                "Worker ethumbol ariyikkam."
             );
-            $this->goToMainMenu($session);
+            $this->goToMenu($session);
             return;
         }
 
-        // Check current state
-        if ($verification->is_poster_confirmed && $verification->is_payment_confirmed) {
-            // Already completed, show summary or rate
-            if (!$verification->rating) {
-                $this->nextStep($session, self::STEP_RATE_WORKER);
-                $this->promptRateWorker($session, $job);
+        // Check state and show appropriate step
+        if ($verification->is_payment_confirmed) {
+            // Already paid, show rating or summary
+            if (!$verification->is_rated) {
+                $this->setStep($session, JobExecutionStep::RATING->value);
+                $this->promptRating($session, $job);
             } else {
                 $this->showCompletionSummary($session, $job, false);
             }
+        } elseif ($verification->is_poster_confirmed) {
+            // Waiting for payment
+            $this->setStep($session, JobExecutionStep::PAYMENT->value);
+            $this->promptPayment($session, $job);
         } elseif ($verification->is_worker_confirmed) {
-            // Worker confirmed, poster needs to confirm and pay
-            $this->nextStep($session, self::STEP_COMPLETION_CONFIRM_POSTER);
-            $this->promptPosterCompletion($session, $job);
-        } elseif ($verification->is_arrival_verified) {
-            // Worker arrived, waiting for completion
-            $this->sendTextWithMenu(
-                $session->phone,
-                "⏳ *Work in Progress*\n\n" .
-                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-                "👤 {$job->assignedWorker->name}\n\n" .
-                "Worker is currently working on the task.\n" .
-                "You'll be notified when they mark it complete."
-            );
+            // Worker confirmed, poster needs to confirm
+            $this->setStep($session, JobExecutionStep::COMPLETION_POSTER->value);
+            $this->promptCompletionPoster($session, $job);
+        } elseif (!$verification->is_arrival_confirmed) {
+            // Arrival not confirmed
+            $this->setStep($session, JobExecutionStep::ARRIVAL_CONFIRMED->value);
+            $this->promptArrivalConfirmed($session, $job);
         } else {
-            // Waiting for arrival
-            $this->sendTextWithMenu(
+            // Waiting for worker to complete
+            $this->sendText(
                 $session->phone,
-                "⏳ *Waiting for worker arrival*\n\n" .
-                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
+                "⏳ *Pani nadakkunnu...*\n\n" .
+                "{$job->category_icon} {$job->title}\n" .
                 "👤 {$job->assignedWorker->name}\n\n" .
-                "You'll be notified when the worker arrives."
+                "Worker pani kazhiyumbol ariyikkam."
             );
         }
     }
 
     /**
-     * Show active job or error if none.
+     * Show active job or error.
      */
     protected function showActiveJobOrError(ConversationSession $session): void
     {
         $user = $this->getUser($session);
 
         if (!$user) {
-            $this->sendTextWithMenu($session->phone, "❌ Please register first.");
-            $this->goToMainMenu($session);
+            $this->sendText($session->phone, "❌ Please register first.");
+            $this->goToMenu($session);
             return;
         }
 
@@ -437,14 +378,13 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
 
         if ($worker) {
             $activeJob = $this->executionService->getActiveJobForWorker($worker);
-
             if ($activeJob) {
                 $this->startWithJob($session, $activeJob->id);
                 return;
             }
         }
 
-        // Check if user has active posted jobs
+        // Check for active posted jobs
         $activePostedJob = JobPost::where('poster_user_id', $user->id)
             ->whereIn('status', [JobStatus::ASSIGNED, JobStatus::IN_PROGRESS])
             ->first();
@@ -454,22 +394,40 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $this->sendTextWithMenu(
+        $this->sendText(
             $session->phone,
-            "ℹ️ *No active jobs*\n\n" .
-            "You don't have any jobs in progress."
+            "ℹ️ Active jobs onnum illa."
         );
-        $this->goToMainMenu($session);
+        $this->goToMenu($session);
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Worker Flow Steps
+    | Worker Flow: Arrival Photo (NP-022)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Step 1: Handle arrival photo.
+     * Prompt for arrival photo.
+     */
+    protected function promptArrivalPhoto(ConversationSession $session, JobPost $job): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            "⏰ *Job time!*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "📍 {$job->location_display}\n\n" .
+            "*{$job->location_display}-il ethi?*\n" .
+            "📸 Arrival photo ayakkuka:",
+            [
+                ['id' => "skip_photo_{$job->id}", 'title' => '⏭️ Skip Photo'],
+                ['id' => 'menu', 'title' => '📋 Menu'],
+            ]
+        );
+    }
+
+    /**
+     * Handle arrival photo upload.
      */
     protected function handleArrivalPhoto(IncomingMessage $message, ConversationSession $session): void
     {
@@ -480,104 +438,82 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        // Check for skip
-        $selectionId = $this->getSelectionId($message);
-        if ($selectionId && str_starts_with($selectionId, 'skip_arrival')) {
-            $this->skipArrivalPhoto($session);
-            return;
-        }
-
-        // Check for image
         if ($message->isImage()) {
             $this->processArrivalPhoto($session, $message, $job);
             return;
         }
 
-        // Invalid input
-        $this->sendErrorWithOptions(
-            $session->phone,
-            "📸 Please send a photo to confirm arrival.\n\nഅല്ലെങ്കിൽ Skip ചെയ്യാം.",
-            [
-                ['id' => 'skip_arrival_photo_' . $job->id, 'title' => '⏭️ Skip'],
-                self::MENU_BUTTON,
-            ]
-        );
+        // Re-prompt
+        $this->promptArrivalPhoto($session, $job);
     }
 
-    protected function promptArrivalPhoto(ConversationSession $session, JobPost $job): void
-    {
-        $response = JobMessages::requestArrivalPhoto($job);
-        $this->sendJobMessage($session->phone, $response);
-    }
-
-    protected function processArrivalPhoto(ConversationSession $session, IncomingMessage $message, JobPost $job): void
-    {
+    /**
+     * Process arrival photo.
+     */
+    protected function processArrivalPhoto(
+        ConversationSession $session,
+        IncomingMessage $message,
+        JobPost $job
+    ): void {
         try {
             // Download and store photo
             $mediaId = $message->getMediaId();
             $result = $this->mediaService->downloadAndStore($mediaId, 'job-arrivals');
-
-            // Extract URL from result array
-            $photoUrl = $result['url'] ?? null;
-
-            if (!$photoUrl && isset($result['path'])) {
-                // Fallback to path if URL not provided
-                $photoUrl = $result['path'];
-            }
+            $photoUrl = $result['url'] ?? $result['path'] ?? null;
 
             // Get location if available
-            $location = $this->getLocation($message);
-            $latitude = $location['latitude'] ?? null;
-            $longitude = $location['longitude'] ?? null;
+            $latitude = null;
+            $longitude = null;
 
-            // Record arrival
+            // Start execution and record arrival
             $verification = $this->executionService->startJobExecution($job);
             $this->executionService->recordArrival($verification, $photoUrl, $latitude, $longitude);
 
-            $this->logInfo('Arrival photo recorded', [
-                'job_id' => $job->id,
-                'verification_id' => $verification->id,
-            ]);
-
-            // Notify poster
+            // Notify poster (NP-023)
             $this->notifyPosterOfArrival($job, $verification);
 
-            // Move to work in progress
-            $this->nextStep($session, self::STEP_WORK_IN_PROGRESS);
+            // Determine next step
+            $isHandoverJob = $this->getTempData($session, 'is_handover_job', false);
 
-            $this->sendButtons(
-                $session->phone,
-                "✅ *Arrival confirmed!*\n" .
-                "*എത്തിയതായി സ്ഥിരീകരിച്ചു!*\n\n" .
-                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-                "📍 {$job->location_display}\n\n" .
-                "Task giver has been notified.\n" .
-                "ടാസ്ക് ഗിവറിനെ അറിയിച്ചു.\n\n" .
-                "_ജോലി കഴിഞ്ഞാൽ Complete അമർത്തുക_",
-                [
-                    ['id' => 'confirm_complete_' . $job->id, 'title' => '✅ ജോലി കഴിഞ്ഞു'],
-                    ['id' => 'send_completion_photo_' . $job->id, 'title' => '📸 ഫോട്ടോ അയക്കുക'],
-                    self::MENU_BUTTON,
-                ]
-            );
+            if ($isHandoverJob) {
+                $this->setStep($session, JobExecutionStep::HANDOVER_WORKER->value);
+                $this->promptHandoverWorker($session, $job);
+            } else {
+                $this->setStep($session, JobExecutionStep::COMPLETION_WORKER->value);
+                $this->sendButtons(
+                    $session->phone,
+                    "✅ *Ethi!*\n\n" .
+                    "{$job->category_icon} {$job->title}\n" .
+                    "📍 {$job->location_display}\n\n" .
+                    "Poster-nu ariyichittund. 👍\n\n" .
+                    "_Pani kazhinjhal 'Done' press cheyyuka_",
+                    [
+                        ['id' => "work_done_{$job->id}", 'title' => '✅ Done'],
+                        ['id' => 'menu', 'title' => '📋 Menu'],
+                    ]
+                );
+            }
 
         } catch (\Exception $e) {
-            $this->logError('Failed to process arrival photo', [
+            Log::error('Failed to process arrival photo', [
                 'error' => $e->getMessage(),
                 'job_id' => $job->id,
             ]);
 
-            $this->sendErrorWithOptions(
+            $this->sendButtons(
                 $session->phone,
-                "❌ Failed to upload photo. Please try again.",
+                "❌ Photo upload failed. Try again?",
                 [
-                    ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    ['id' => 'skip_arrival_photo_' . $job->id, 'title' => '⏭️ Skip'],
+                    ['id' => "skip_photo_{$job->id}", 'title' => '⏭️ Skip Photo'],
+                    ['id' => 'menu', 'title' => '📋 Menu'],
                 ]
             );
         }
     }
 
+    /**
+     * Skip arrival photo.
+     */
     protected function skipArrivalPhoto(ConversationSession $session): void
     {
         $job = $this->getCurrentJob($session);
@@ -594,263 +530,21 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
         // Notify poster
         $this->notifyPosterOfArrival($job, $verification);
 
-        // Move to work in progress
-        $this->nextStep($session, self::STEP_WORK_IN_PROGRESS);
-        $this->promptWorkInProgress($session, $job);
-    }
+        // Next step
+        $isHandoverJob = $this->getTempData($session, 'is_handover_job', false);
 
-    /**
-     * Step 2: Work in progress.
-     */
-    protected function handleWorkInProgress(IncomingMessage $message, ConversationSession $session): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        $selectionId = $this->getSelectionId($message);
-
-        // Handle completion buttons
-        if ($selectionId === 'confirm_complete_' . $job->id || $selectionId === 'job_complete') {
-            $this->nextStep($session, self::STEP_COMPLETION_CONFIRM_WORKER);
-            $this->promptWorkerCompletion($session, $job);
-            return;
-        }
-
-        // Handle completion photo
-        if ($selectionId === 'send_completion_photo_' . $job->id || $selectionId === 'send_photo') {
-            $this->nextStep($session, self::STEP_COMPLETION_PHOTO);
-            $this->promptCompletionPhoto($session, $job);
-            return;
-        }
-
-        // Check for image (completion photo sent directly)
-        if ($message->isImage()) {
-            $this->nextStep($session, self::STEP_COMPLETION_PHOTO);
-            $this->handleCompletionPhoto($message, $session);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptWorkInProgress($session, $job);
-    }
-
-    protected function promptWorkInProgress(ConversationSession $session, JobPost $job): void
-    {
-        $this->sendButtons(
-            $session->phone,
-            "⏳ *Work in Progress*\n" .
-            "*ജോലി നടക്കുന്നു*\n\n" .
-            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-            "📍 {$job->location_display}\n" .
-            "💰 {$job->pay_display}\n\n" .
-            "When you're done, mark the job as complete.\n" .
-            "ജോലി കഴിഞ്ഞാൽ Complete അമർത്തുക.",
-            [
-                ['id' => 'confirm_complete_' . $job->id, 'title' => '✅ ജോലി കഴിഞ്ഞു'],
-                ['id' => 'send_completion_photo_' . $job->id, 'title' => '📸 ഫോട്ടോ അയക്കുക'],
-                self::MENU_BUTTON,
-            ],
-            '⏳ Work in Progress'
-        );
-    }
-
-    /**
-     * Step 3: Completion photo.
-     */
-    protected function handleCompletionPhoto(IncomingMessage $message, ConversationSession $session): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        // Check for skip
-        $selectionId = $this->getSelectionId($message);
-        if ($selectionId === 'skip_completion_photo' || $selectionId === 'skip') {
-            $this->nextStep($session, self::STEP_COMPLETION_CONFIRM_WORKER);
-            $this->promptWorkerCompletion($session, $job);
-            return;
-        }
-
-        // Check for image
-        if ($message->isImage()) {
-            $this->processCompletionPhoto($session, $message, $job);
-            return;
-        }
-
-        // Invalid input
-        $this->sendErrorWithOptions(
-            $session->phone,
-            "📸 Please send a completion photo.\n\nഅല്ലെങ്കിൽ Skip ചെയ്യാം.",
-            [
-                ['id' => 'skip_completion_photo', 'title' => '⏭️ Skip'],
-                self::MENU_BUTTON,
-            ]
-        );
-    }
-
-    protected function promptCompletionPhoto(ConversationSession $session, JobPost $job): void
-    {
-        $this->sendButtons(
-            $session->phone,
-            "📸 *Completion Photo*\n" .
-            "*പൂർത്തിയായ ഫോട്ടോ*\n\n" .
-            ($job->category?->icon ?? '📋') . " {$job->title}\n\n" .
-            "Please send a photo showing the completed work.\n" .
-            "പണി കഴിഞ്ഞതിന്റെ ഫോട്ടോ അയക്കുക.\n\n" .
-            "_ഫോട്ടോ ഇല്ലെങ്കിൽ Skip ചെയ്യാം_",
-            [
-                ['id' => 'skip_completion_photo', 'title' => '⏭️ Skip'],
-                self::MENU_BUTTON,
-            ],
-            '📸 Completion Photo'
-        );
-    }
-
-    protected function processCompletionPhoto(ConversationSession $session, IncomingMessage $message, JobPost $job): void
-    {
-        try {
-            // Download and store photo
-            $mediaId = $message->getMediaId();
-            $result = $this->mediaService->downloadAndStore($mediaId, 'job-completions');
-
-            // Extract URL from result array
-            $photoUrl = $result['url'] ?? null;
-
-            if (!$photoUrl && isset($result['path'])) {
-                // Fallback to path if URL not provided
-                $photoUrl = $result['path'];
-            }
-
-            // Record completion photo
-            $verification = $job->verification;
-            if ($verification) {
-                $this->executionService->recordCompletion($verification, $photoUrl);
-            }
-
-            $this->setTemp($session, 'completion_photo_url', $photoUrl);
-
-            // Move to worker confirmation
-            $this->nextStep($session, self::STEP_COMPLETION_CONFIRM_WORKER);
-            $this->promptWorkerCompletion($session, $job);
-
-        } catch (\Exception $e) {
-            $this->logError('Failed to process completion photo', [
-                'error' => $e->getMessage(),
-                'job_id' => $job->id,
-            ]);
-
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ Failed to upload photo. Please try again.",
-                [
-                    ['id' => 'retry', 'title' => '🔄 Try Again'],
-                    ['id' => 'skip_completion_photo', 'title' => '⏭️ Skip'],
-                ]
-            );
-        }
-    }
-
-    /**
-     * Step 4: Worker confirms completion.
-     */
-    protected function handleWorkerCompletion(IncomingMessage $message, ConversationSession $session): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        $selectionId = $this->getSelectionId($message);
-
-        if ($selectionId === 'confirm_complete' || $selectionId === 'yes' || 
-            $selectionId === 'confirm_complete_' . $job->id) {
-            $this->confirmWorkerCompletion($session);
-            return;
-        }
-
-        if ($selectionId === 'back' || $selectionId === 'not_done') {
-            $this->nextStep($session, self::STEP_WORK_IN_PROGRESS);
-            $this->promptWorkInProgress($session, $job);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptWorkerCompletion($session, $job);
-    }
-
-    protected function promptWorkerCompletion(ConversationSession $session, JobPost $job): void
-    {
-        $response = JobMessages::requestCompletionConfirmation($job);
-        $this->sendJobMessage($session->phone, $response);
-    }
-
-    protected function confirmWorkerCompletion(ConversationSession $session): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        try {
-            $verification = $job->verification;
-
-            if (!$verification) {
-                $verification = $this->executionService->startJobExecution($job);
-            }
-
-            // Confirm by worker
-            $this->executionService->confirmCompletion($verification, 'worker');
-
-            $this->logInfo('Worker confirmed completion', [
-                'job_id' => $job->id,
-                'worker_id' => $job->assigned_worker_id,
-            ]);
-
-            // Notify poster for confirmation
-            $this->notifyPosterForCompletion($job, $verification);
-
-            // Worker waits for payment confirmation
-            $this->nextStep($session, self::STEP_CONFIRM_PAYMENT);
-
-            $this->sendTextWithMenu(
-                $session->phone,
-                "✅ *Marked as Complete!*\n" .
-                "*പൂർത്തിയായി എന്ന് രേഖപ്പെടുത്തി!*\n\n" .
-                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-                "💰 {$job->pay_display}\n\n" .
-                "Task giver has been notified to confirm and pay.\n" .
-                "ടാസ്ക് ഗിവറിനോട് സ്ഥിരീകരിക്കാനും പേയ്മെന്റ് ചെയ്യാനും ആവശ്യപ്പെട്ടു.\n\n" .
-                "⏳ _Waiting for confirmation..._"
-            );
-
-        } catch (\Exception $e) {
-            $this->logError('Failed to confirm worker completion', [
-                'error' => $e->getMessage(),
-                'job_id' => $job->id,
-            ]);
-
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ Failed to confirm completion: " . $e->getMessage(),
-                [['id' => 'retry', 'title' => '🔄 Try Again'], self::MENU_BUTTON]
-            );
+        if ($isHandoverJob) {
+            $this->setStep($session, JobExecutionStep::HANDOVER_WORKER->value);
+            $this->promptHandoverWorker($session, $job);
+        } else {
+            $this->setStep($session, JobExecutionStep::COMPLETION_WORKER->value);
+            $this->promptCompletionWorker($session, $job);
         }
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Poster Flow Steps
+    | Poster Flow: Arrival Confirmation (NP-023)
     |--------------------------------------------------------------------------
     */
 
@@ -865,23 +559,280 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        // Send arrival photo if available
+        $worker = $job->assignedWorker;
+        $time = $verification->arrival_time_formatted ?? now()->format('g:i A');
+
+        // Send photo if available
         if ($verification->arrival_photo_url) {
             $this->sendImage(
                 $poster->phone,
                 $verification->arrival_photo_url,
-                "📸 Worker arrival photo"
+                "📸 Arrival photo"
             );
         }
 
-        $response = JobMessages::workerArrived($job, $job->assignedWorker);
-        $this->sendJobMessage($poster->phone, $response);
+        // Send notification with confirm button
+        $this->sendButtons(
+            $poster->phone,
+            "✅ *{$worker->name} ethi!*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "📍 {$job->location_display}\n" .
+            "⏰ {$time}",
+            [
+                ['id' => "arrival_ok_{$job->id}", 'title' => '👍 Confirmed'],
+            ]
+        );
 
-        $this->logInfo('Poster notified of arrival', [
+        Log::info('Poster notified of arrival (NP-023)', [
             'job_id' => $job->id,
             'poster_phone' => $this->maskPhone($poster->phone),
         ]);
     }
+
+    /**
+     * Prompt poster to confirm arrival.
+     */
+    protected function promptArrivalConfirmed(ConversationSession $session, JobPost $job): void
+    {
+        $verification = $job->verification;
+        $worker = $job->assignedWorker;
+        $time = $verification?->arrival_time_formatted ?? '?';
+
+        $this->sendButtons(
+            $session->phone,
+            "✅ *{$worker->name} ethi!*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "📍 {$job->location_display}\n" .
+            "⏰ {$time}",
+            [
+                ['id' => "arrival_ok_{$job->id}", 'title' => '👍 Confirmed'],
+            ]
+        );
+    }
+
+    /**
+     * Handle arrival confirmation.
+     */
+    protected function handleArrivalConfirmed(IncomingMessage $message, ConversationSession $session): void
+    {
+        $this->processArrivalConfirmed($session);
+    }
+
+    /**
+     * Process arrival confirmation by poster.
+     */
+    protected function processArrivalConfirmed(ConversationSession $session): void
+    {
+        $job = $this->getCurrentJob($session);
+
+        if (!$job || !$job->verification) {
+            $this->start($session);
+            return;
+        }
+
+        $this->executionService->confirmArrival($job->verification);
+
+        $isHandoverJob = $job->is_handover_job;
+
+        if ($isHandoverJob) {
+            $this->setStep($session, JobExecutionStep::HANDOVER_POSTER->value);
+            $this->promptHandoverPoster($session, $job);
+        } else {
+            $this->sendText(
+                $session->phone,
+                "👍 *Confirmed!*\n\nPani kazhiyumbol ariyikkam."
+            );
+            // Wait for worker to complete
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Handover Flow (NP-024)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Prompt worker for handover confirmation.
+     */
+    protected function promptHandoverWorker(ConversationSession $session, JobPost $job): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            "🤝 *Handover cheytho?*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "📍 {$job->location_display}\n\n" .
+            "Poster-nu position handover cheytho?",
+            [
+                ['id' => "handover_done_{$job->id}", 'title' => '✅ Handover Done'],
+                ['id' => 'menu', 'title' => '📋 Menu'],
+            ]
+        );
+    }
+
+    /**
+     * Handle worker handover.
+     */
+    protected function handleHandoverWorker(IncomingMessage $message, ConversationSession $session): void
+    {
+        $this->processHandoverWorker($session);
+    }
+
+    /**
+     * Process worker handover confirmation.
+     */
+    protected function processHandoverWorker(ConversationSession $session): void
+    {
+        $job = $this->getCurrentJob($session);
+
+        if (!$job || !$job->verification) {
+            $this->start($session);
+            return;
+        }
+
+        $this->executionService->confirmHandoverByWorker($job->verification);
+
+        // Notify poster
+        $poster = $job->poster;
+        if ($poster && $poster->phone) {
+            $this->sendButtons(
+                $poster->phone,
+                "🤝 *Handover!*\n\n" .
+                "{$job->category_icon} {$job->title}\n" .
+                "👤 {$job->assignedWorker->name} handover cheythu.\n\n" .
+                "Confirm cheyyuka:",
+                [
+                    ['id' => "handover_ok_{$job->id}", 'title' => '✅ Handover Confirmed'],
+                ]
+            );
+        }
+
+        $this->setStep($session, JobExecutionStep::COMPLETION_WORKER->value);
+        $this->sendText(
+            $session->phone,
+            "✅ *Handover done!*\n\nPoster confirm cheyyum. Pani thudanguka!"
+        );
+    }
+
+    /**
+     * Prompt poster for handover confirmation.
+     */
+    protected function promptHandoverPoster(ConversationSession $session, JobPost $job): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            "🤝 *Handover Confirm cheyyuka*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "👤 {$job->assignedWorker->name}\n\n" .
+            "Worker position edutho?",
+            [
+                ['id' => "handover_ok_{$job->id}", 'title' => '✅ Handover Confirmed'],
+                ['id' => 'menu', 'title' => '📋 Menu'],
+            ]
+        );
+    }
+
+    /**
+     * Handle poster handover.
+     */
+    protected function handleHandoverPoster(IncomingMessage $message, ConversationSession $session): void
+    {
+        $this->processHandoverPoster($session);
+    }
+
+    /**
+     * Process poster handover confirmation.
+     */
+    protected function processHandoverPoster(ConversationSession $session): void
+    {
+        $job = $this->getCurrentJob($session);
+
+        if (!$job || !$job->verification) {
+            $this->start($session);
+            return;
+        }
+
+        $this->executionService->confirmHandoverByPoster($job->verification);
+
+        $this->sendText(
+            $session->phone,
+            "✅ *Handover confirmed!*\n\nPani kazhiyumbol ariyikkam."
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Worker Completion (NP-025)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Prompt worker to confirm completion.
+     */
+    protected function promptCompletionWorker(ConversationSession $session, JobPost $job): void
+    {
+        $this->sendButtons(
+            $session->phone,
+            "✅ *Pani kazhinjho?*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "📍 {$job->location_display}\n" .
+            "💰 {$job->pay_display}",
+            [
+                ['id' => "work_done_{$job->id}", 'title' => '✅ Done'],
+                ['id' => 'menu', 'title' => '📋 Menu'],
+            ]
+        );
+    }
+
+    /**
+     * Handle worker completion.
+     */
+    protected function handleCompletionWorker(IncomingMessage $message, ConversationSession $session): void
+    {
+        $this->processCompletionWorker($session);
+    }
+
+    /**
+     * Process worker completion confirmation.
+     */
+    protected function processCompletionWorker(ConversationSession $session): void
+    {
+        $job = $this->getCurrentJob($session);
+
+        if (!$job) {
+            $this->start($session);
+            return;
+        }
+
+        $verification = $this->executionService->getOrCreateVerification($job);
+        $this->executionService->confirmCompletionByWorker($verification);
+
+        // Notify poster for confirmation
+        $this->notifyPosterForCompletion($job, $verification);
+
+        $this->showWaitingForPoster($session, $job);
+    }
+
+    /**
+     * Show waiting for poster message.
+     */
+    protected function showWaitingForPoster(ConversationSession $session, JobPost $job): void
+    {
+        $this->sendText(
+            $session->phone,
+            "✅ *Pani kazhinjhu!*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "💰 {$job->pay_display}\n\n" .
+            "Poster-nu ariyichittund.\n" .
+            "⏳ Payment confirm cheyyumbol ariyikkam..."
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Poster Completion (NP-025)
+    |--------------------------------------------------------------------------
+    */
 
     /**
      * Notify poster for completion confirmation.
@@ -894,207 +845,127 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        // Send completion photo if available
-        if ($verification->completion_photo_url) {
-            $this->sendImage(
-                $poster->phone,
-                $verification->completion_photo_url,
-                "📸 Completion photo"
-            );
-        }
-
         $worker = $job->assignedWorker;
 
         $this->sendButtons(
             $poster->phone,
-            "✅ *Worker Marked Complete!*\n" .
-            "*പണിക്കാരൻ പൂർത്തിയായി എന്ന് പറഞ്ഞു!*\n\n" .
-            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-            "👤 {$worker->name}\n" .
+            "✅ *{$worker->name} pani kazhichu!*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
             "💰 {$job->pay_display}\n\n" .
-            "Please verify the work is done and confirm payment.",
+            "*Worker pani kazhicho?*",
             [
-                ['id' => 'confirm_work_done_' . $job->id, 'title' => '✅ പണി ശരിയാണ്'],
-                ['id' => 'dispute_work_' . $job->id, 'title' => '❌ പ്രശ്നം ഉണ്ട്'],
-                ['id' => 'call_worker_' . $worker->id, 'title' => '📞 വിളിക്കുക'],
-            ],
-            '✅ Confirm Work'
+                ['id' => "work_ok_{$job->id}", 'title' => '✅ Yes, Completed'],
+                ['id' => "dispute_{$job->id}", 'title' => '❌ Problem'],
+            ]
         );
     }
 
     /**
-     * Handle poster arrival notification response.
+     * Prompt poster to confirm completion.
      */
-    protected function handlePosterArrivalNotification(IncomingMessage $message, ConversationSession $session): void
-    {
-        // Poster acknowledged arrival, nothing special needed
-        $this->sendTextWithMenu(
-            $session->phone,
-            "👍 *Noted!*\n\nYou'll be notified when the work is complete."
-        );
-    }
-
-    /**
-     * Handle poster completion confirmation.
-     */
-    protected function handlePosterCompletion(IncomingMessage $message, ConversationSession $session): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        $selectionId = $this->getSelectionId($message);
-
-        // Confirm work done
-        if ($selectionId === 'confirm_work_done_' . $job->id || $selectionId === 'yes' || $selectionId === 'confirm') {
-            $this->confirmPosterCompletion($session, $job);
-            return;
-        }
-
-        // Dispute
-        if ($selectionId === 'dispute_work_' . $job->id || $selectionId === 'dispute') {
-            $this->handleDispute($session, $job);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptPosterCompletion($session, $job);
-    }
-
-    protected function promptPosterCompletion(ConversationSession $session, JobPost $job): void
+    protected function promptCompletionPoster(ConversationSession $session, JobPost $job): void
     {
         $worker = $job->assignedWorker;
 
         $this->sendButtons(
             $session->phone,
-            "✅ *Confirm Work Completion*\n" .
-            "*പണി പൂർത്തിയായോ?*\n\n" .
-            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-            "👤 {$worker->name}\n\n" .
-            "Is the work done satisfactorily?",
+            "✅ *Worker pani kazhicho?*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "👤 {$worker->name}\n" .
+            "💰 {$job->pay_display}",
             [
-                ['id' => 'confirm_work_done_' . $job->id, 'title' => '✅ ശരിയാണ്'],
-                ['id' => 'dispute_work_' . $job->id, 'title' => '❌ പ്രശ്നം'],
-                self::MENU_BUTTON,
-            ],
-            '✅ Confirm'
+                ['id' => "work_ok_{$job->id}", 'title' => '✅ Yes, Completed'],
+                ['id' => "dispute_{$job->id}", 'title' => '❌ Problem'],
+            ]
         );
     }
 
-    protected function confirmPosterCompletion(ConversationSession $session, JobPost $job): void
+    /**
+     * Handle poster completion.
+     */
+    protected function handleCompletionPoster(IncomingMessage $message, ConversationSession $session): void
     {
-        try {
-            $verification = $job->verification;
-
-            if (!$verification) {
-                throw new \Exception('Verification record not found');
-            }
-
-            // Confirm by poster
-            $this->executionService->confirmCompletion($verification, 'poster');
-
-            // Move to payment
-            $this->nextStep($session, self::STEP_SELECT_PAYMENT_METHOD);
-            $this->promptSelectPaymentMethod($session, $job);
-
-        } catch (\Exception $e) {
-            $this->logError('Failed to confirm poster completion', [
-                'error' => $e->getMessage(),
-                'job_id' => $job->id,
-            ]);
-
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ Failed: " . $e->getMessage(),
-                [['id' => 'retry', 'title' => '🔄 Try Again'], self::MENU_BUTTON]
-            );
-        }
+        $this->processCompletionPoster($session);
     }
 
     /**
-     * Handle selecting payment method.
+     * Process poster completion confirmation.
      */
-    protected function handleSelectPaymentMethod(IncomingMessage $message, ConversationSession $session): void
+    protected function processCompletionPoster(ConversationSession $session): void
     {
         $job = $this->getCurrentJob($session);
 
-        if (!$job) {
+        if (!$job || !$job->verification) {
             $this->start($session);
             return;
         }
 
-        $selectionId = $this->getSelectionId($message);
+        $this->executionService->confirmCompletionByPoster($job->verification);
 
-        // Payment method buttons
-        if (preg_match('/^paid_(cash|upi|other)/', $selectionId, $matches)) {
-            $method = $matches[1];
-            $this->processPaymentMethod($session, $method);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptSelectPaymentMethod($session, $job);
+        // Move to payment
+        $this->setStep($session, JobExecutionStep::PAYMENT->value);
+        $this->promptPayment($session, $job);
     }
 
-    protected function promptSelectPaymentMethod(ConversationSession $session, JobPost $job): void
+    /*
+    |--------------------------------------------------------------------------
+    | Payment (NP-027)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Prompt for payment method.
+     */
+    protected function promptPayment(ConversationSession $session, JobPost $job): void
     {
-        $response = JobMessages::requestPaymentConfirmation($job);
-        $this->sendJobMessage($session->phone, $response);
+        $this->sendButtons(
+            $session->phone,
+            "💰 *Payment engane?*\n\n" .
+            "{$job->category_icon} {$job->title}\n" .
+            "👤 {$job->assignedWorker->name}\n" .
+            "💵 Amount: *{$job->pay_display}*",
+            [
+                ['id' => "pay_cash_{$job->id}", 'title' => '💵 Cash'],
+                ['id' => "pay_upi_{$job->id}", 'title' => '📱 UPI'],
+            ]
+        );
     }
 
-    protected function processPaymentMethod(ConversationSession $session, string $method): void
+    /**
+     * Handle payment selection.
+     */
+    protected function handlePayment(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Handled by button click
+        $this->promptPayment($session, $this->getCurrentJob($session));
+    }
+
+    /**
+     * Process payment confirmation.
+     */
+    protected function processPayment(ConversationSession $session, string $method): void
     {
         $job = $this->getCurrentJob($session);
 
-        if (!$job) {
+        if (!$job || !$job->verification) {
             $this->start($session);
             return;
         }
 
-        try {
-            $paymentMethod = match($method) {
-                'cash' => PaymentMethod::CASH,
-                'upi' => PaymentMethod::UPI,
-                'other' => PaymentMethod::OTHER,
-                default => PaymentMethod::CASH,
-            };
+        $paymentMethod = match ($method) {
+            'cash' => PaymentMethod::CASH,
+            'upi' => PaymentMethod::UPI,
+            default => PaymentMethod::CASH,
+        };
 
-            $verification = $job->verification;
+        $this->executionService->confirmPayment($job->verification, $paymentMethod);
 
-            if (!$verification) {
-                throw new \Exception('Verification record not found');
-            }
+        // Notify worker of payment
+        $this->notifyWorkerOfPayment($job, $paymentMethod);
 
-            // Confirm payment
-            $this->executionService->confirmPayment($verification, $paymentMethod);
-
-            $this->logInfo('Payment confirmed', [
-                'job_id' => $job->id,
-                'method' => $paymentMethod->value,
-            ]);
-
-            // Notify worker of payment
-            $this->notifyWorkerOfPayment($job, $paymentMethod);
-
-            // Move to rating
-            $this->nextStep($session, self::STEP_RATE_WORKER);
-            $this->promptRateWorker($session, $job);
-
-        } catch (\Exception $e) {
-            $this->logError('Failed to confirm payment', [
-                'error' => $e->getMessage(),
-                'job_id' => $job->id,
-            ]);
-
-            $this->sendErrorWithOptions(
-                $session->phone,
-                "❌ Failed to confirm payment: " . $e->getMessage(),
-                [['id' => 'retry', 'title' => '🔄 Try Again'], self::MENU_BUTTON]
-            );
-        }
+        // Move to rating
+        $this->setStep($session, JobExecutionStep::RATING->value);
+        $this->promptRating($session, $job);
     }
 
     /**
@@ -1108,258 +979,159 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
             return;
         }
 
-        $methodDisplay = $method->display();
+        $methodDisplay = $method->label();
 
-        $this->sendButtons(
+        // Get updated stats
+        $stats = $this->executionService->getWorkerCompletionSummary($job);
+
+        $this->sendText(
             $worker->user->phone,
-            "💰 *Payment Confirmed!*\n" .
-            "*പേയ്മെന്റ് സ്ഥിരീകരിച്ചു!*\n\n" .
-            ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-            "💵 Amount: *{$job->pay_display}*\n" .
-            "💳 Method: {$methodDisplay}\n\n" .
-            "Task giver has confirmed payment! 🎉",
-            [
-                ['id' => 'rate_poster_' . $job->id, 'title' => '⭐ Rate Task Giver'],
-                ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
-                self::MENU_BUTTON,
-            ]
-        );
-    }
-
-    /**
-     * Handle rating worker.
-     */
-    protected function handleRateWorker(IncomingMessage $message, ConversationSession $session): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        $selectionId = $this->getSelectionId($message);
-
-        // Rating selection
-        if (preg_match('/^rate_(\d)/', $selectionId, $matches)) {
-            $rating = (int) $matches[1];
-            $this->processRating($session, $rating);
-            return;
-        }
-
-        // Skip rating
-        if ($selectionId === 'skip_rating' || $selectionId === 'skip') {
-            $this->completeJobFlow($session, $job);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptRateWorker($session, $job);
-    }
-
-    protected function promptRateWorker(ConversationSession $session, JobPost $job): void
-    {
-        $worker = $job->assignedWorker;
-        $response = JobMessages::requestWorkerRating($job, $worker);
-        $this->sendJobMessage($session->phone, $response);
-    }
-
-    protected function processRating(ConversationSession $session, int $rating): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        $isWorker = $this->getTemp($session, 'is_worker', false);
-
-        try {
-            if ($isWorker) {
-                // Worker rating poster
-                $this->executionService->ratePoster($job, $rating);
-                $this->logInfo('Worker rated poster', ['job_id' => $job->id, 'rating' => $rating]);
-            } else {
-                // Poster rating worker
-                $this->executionService->rateWorker($job, $rating);
-                $this->logInfo('Poster rated worker', ['job_id' => $job->id, 'rating' => $rating]);
-            }
-
-            // Complete the flow
-            $this->completeJobFlow($session, $job);
-
-        } catch (\Exception $e) {
-            $this->logError('Failed to save rating', [
-                'error' => $e->getMessage(),
-                'job_id' => $job->id,
-            ]);
-
-            $this->sendTextWithMenu(
-                $session->phone,
-                "⚠️ Couldn't save rating, but job is complete!"
-            );
-
-            $this->completeJobFlow($session, $job);
-        }
-    }
-
-    /**
-     * Handle rating poster (by worker).
-     */
-    protected function handleRatePoster(IncomingMessage $message, ConversationSession $session): void
-    {
-        $job = $this->getCurrentJob($session);
-
-        if (!$job) {
-            $this->start($session);
-            return;
-        }
-
-        $selectionId = $this->getSelectionId($message);
-
-        // Rating selection
-        if (preg_match('/^rate_poster_(\d)/', $selectionId, $matches)) {
-            $rating = (int) $matches[1];
-            $this->processRating($session, $rating);
-            return;
-        }
-
-        // Skip
-        if ($selectionId === 'skip_rating' || $selectionId === 'skip') {
-            $this->completeJobFlow($session, $job);
-            return;
-        }
-
-        // Re-prompt
-        $this->promptRatePoster($session, $job);
-    }
-
-    protected function promptRatePoster(ConversationSession $session, JobPost $job): void
-    {
-        $this->sendList(
-            $session->phone,
-            "⭐ *Rate Task Giver*\n" .
-            "*ടാസ്ക് ഗിവറിനെ റേറ്റ് ചെയ്യുക*\n\n" .
-            "How was your experience with the task giver?",
-            'Rate',
-            [
-                [
-                    'title' => 'Rating',
-                    'rows' => [
-                        ['id' => 'rate_poster_5', 'title' => '⭐⭐⭐⭐⭐ Excellent', 'description' => 'Great experience!'],
-                        ['id' => 'rate_poster_4', 'title' => '⭐⭐⭐⭐ Very Good', 'description' => 'Good experience'],
-                        ['id' => 'rate_poster_3', 'title' => '⭐⭐⭐ Good', 'description' => 'Satisfactory'],
-                        ['id' => 'rate_poster_2', 'title' => '⭐⭐ Fair', 'description' => 'Could be better'],
-                        ['id' => 'rate_poster_1', 'title' => '⭐ Poor', 'description' => 'Not satisfied'],
-                        ['id' => 'skip_rating', 'title' => '⏭️ Skip', 'description' => 'Skip rating'],
-                    ],
-                ],
-            ],
-            '⭐ Rate'
+            "✅ *Job complete!* 🎉\n\n" .
+            "{$job->category_icon} {$job->title}\n\n" .
+            "💰 *{$job->pay_display}* earned!\n" .
+            "💳 Via: {$methodDisplay}\n\n" .
+            "📊 Total: {$stats['total_jobs']} jobs | ⭐ {$stats['avg_rating']}"
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | Shared Steps
+    | Rating (NP-026)
     |--------------------------------------------------------------------------
     */
 
     /**
-     * Handle payment confirmation (both parties).
+     * Prompt for worker rating.
      */
-    protected function handleConfirmPayment(IncomingMessage $message, ConversationSession $session): void
+    protected function promptRating(ConversationSession $session, JobPost $job): void
+    {
+        $worker = $job->assignedWorker;
+
+        $this->sendButtons(
+            $session->phone,
+            "⭐ *{$worker->name}-ne rate cheyyuka:*\n\n" .
+            "{$job->category_icon} {$job->title}",
+            [
+                ['id' => "rate_5_{$job->id}", 'title' => '⭐⭐⭐⭐⭐'],
+                ['id' => "rate_4_{$job->id}", 'title' => '⭐⭐⭐⭐'],
+                ['id' => "rate_3_{$job->id}", 'title' => '⭐⭐⭐'],
+            ]
+        );
+
+        // Send additional rating options as list
+        $this->sendList(
+            $session->phone,
+            "More ratings:",
+            'Select Rating',
+            [
+                [
+                    'title' => 'Rating',
+                    'rows' => [
+                        ['id' => "rate_2_{$job->id}", 'title' => '⭐⭐ Fair'],
+                        ['id' => "rate_1_{$job->id}", 'title' => '⭐ Poor'],
+                        ['id' => "skip_review_{$job->id}", 'title' => '⏭️ Skip Rating'],
+                    ],
+                ],
+            ]
+        );
+    }
+
+    /**
+     * Handle rating selection.
+     */
+    protected function handleRating(IncomingMessage $message, ConversationSession $session): void
+    {
+        // Handled by button click
+        $this->promptRating($session, $this->getCurrentJob($session));
+    }
+
+    /**
+     * Process rating.
+     */
+    protected function processRating(ConversationSession $session, int $rating): void
     {
         $job = $this->getCurrentJob($session);
-        $isWorker = $this->getTemp($session, 'is_worker', true);
 
-        if (!$job) {
+        if (!$job || !$job->verification) {
             $this->start($session);
             return;
         }
 
-        // For worker, this is just waiting
-        if ($isWorker) {
-            $verification = $job->verification;
+        $this->setTempData($session, 'rating', $rating);
 
-            if ($verification && $verification->is_payment_confirmed) {
-                // Payment confirmed, proceed to rating
-                $this->nextStep($session, self::STEP_RATE_POSTER);
-                $this->promptRatePoster($session, $job);
-            } else {
-                $this->sendTextWithMenu(
-                    $session->phone,
-                    "⏳ *Waiting for payment confirmation...*\n\n" .
-                    "Task giver hasn't confirmed payment yet.\n" .
-                    "You'll be notified when they do."
-                );
-            }
-            return;
-        }
-
-        // For poster, handled in handleSelectPaymentMethod
-        $this->promptSelectPaymentMethod($session, $job);
-    }
-
-    protected function promptConfirmPayment(ConversationSession $session, JobPost $job): void
-    {
-        $isWorker = $this->getTemp($session, 'is_worker', true);
-
-        if ($isWorker) {
-            $this->sendTextWithMenu(
-                $session->phone,
-                "⏳ *Waiting for payment...*\n\n" .
-                ($job->category?->icon ?? '📋') . " {$job->title}\n" .
-                "💰 {$job->pay_display}\n\n" .
-                "Task giver is confirming payment."
-            );
-        } else {
-            $this->promptSelectPaymentMethod($session, $job);
-        }
+        // Ask for optional review
+        $this->setStep($session, JobExecutionStep::RATING_COMMENT->value);
+        $this->promptRatingComment($session, $job);
     }
 
     /**
-     * Handle completion.
+     * Prompt for optional review.
      */
-    protected function handleComplete(IncomingMessage $message, ConversationSession $session): void
+    protected function promptRatingComment(ConversationSession $session, JobPost $job): void
+    {
+        $rating = $this->getTempData($session, 'rating', 5);
+
+        $this->sendButtons(
+            $session->phone,
+            "⭐ Rating: {$rating}/5\n\n" .
+            "*Review ezhuthano? (optional)*\n\n" .
+            "Type your review or skip:",
+            [
+                ['id' => "skip_review_{$job->id}", 'title' => '⏭️ Skip'],
+            ]
+        );
+    }
+
+    /**
+     * Handle rating comment.
+     */
+    protected function handleRatingComment(IncomingMessage $message, ConversationSession $session): void
     {
         $job = $this->getCurrentJob($session);
 
-        if ($job) {
-            $isWorker = $this->getTemp($session, 'is_worker', true);
-            $this->showCompletionSummary($session, $job, $isWorker);
+        if (!$job || !$job->verification) {
+            $this->start($session);
+            return;
         }
 
-        $this->goToMainMenu($session);
+        $rating = $this->getTempData($session, 'rating', 5);
+        $comment = $message->isText() ? trim($message->getText()) : null;
+
+        // Save rating with optional comment
+        $this->executionService->rateWorker($job->verification, $rating, $comment);
+
+        // Complete the flow
+        $this->completeJobFlow($session);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Job Completion (NP-028)
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Complete the job flow.
+     * Complete job flow.
      */
-    protected function completeJobFlow(ConversationSession $session, JobPost $job): void
+    protected function completeJobFlow(ConversationSession $session): void
     {
-        $isWorker = $this->getTemp($session, 'is_worker', true);
+        $job = $this->getCurrentJob($session);
 
-        try {
-            // Complete job if not already
-            $this->executionService->completeJob($job);
-
-            // Show completion summary
-            $this->showCompletionSummary($session, $job, $isWorker);
-
-        } catch (\Exception $e) {
-            $this->logError('Error completing job flow', [
-                'error' => $e->getMessage(),
-                'job_id' => $job->id,
-            ]);
-
-            $this->showCompletionSummary($session, $job, $isWorker);
+        if (!$job) {
+            $this->goToMenu($session);
+            return;
         }
 
-        // Clear temp and go to menu
-        $this->clearTemp($session);
-        $this->nextStep($session, self::STEP_COMPLETE);
+        // Complete job and update stats (NP-028)
+        $this->executionService->completeJob($job);
+
+        // Show completion summary
+        $isWorker = $this->getTempData($session, 'is_worker', false);
+        $this->showCompletionSummary($session, $job, $isWorker);
+
+        // Clear temp and done
+        $this->clearTempData($session);
+        $this->setStep($session, JobExecutionStep::DONE->value);
     }
 
     /**
@@ -1367,54 +1139,55 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
      */
     protected function showCompletionSummary(ConversationSession $session, JobPost $job, bool $isWorker): void
     {
-        $response = JobMessages::jobCompleted($job, $isWorker);
-        $this->sendJobMessage($session->phone, $response);
+        $verification = $job->verification;
 
-        // For worker, also show earnings if badges earned
         if ($isWorker) {
-            $worker = $job->assignedWorker;
-            if ($worker) {
-                $badges = $this->executionService->checkAndAwardBadges($worker);
-                
-                if (!empty($badges)) {
-                    $badgeList = implode("\n", array_map(fn($b) => "🏅 {$b}", $badges));
-                    $this->sendText(
-                        $session->phone,
-                        "🎉 *New Badge(s) Earned!*\n\n{$badgeList}"
-                    );
-                }
-            }
+            // Worker summary (NP-028)
+            $stats = $this->executionService->getWorkerCompletionSummary($job);
+
+            $ratingLine = $stats['rating_received'] 
+                ? "⭐ Rating: {$stats['rating_received']}/5" 
+                : "";
+
+            $this->sendButtons(
+                $session->phone,
+                "✅ *Job complete!* 🎉\n\n" .
+                "{$job->category_icon} {$job->title}\n\n" .
+                "💰 *{$stats['amount_earned']}* earned!\n" .
+                "{$ratingLine}\n\n" .
+                "📊 Total: {$stats['total_jobs']} jobs | ⭐ {$stats['avg_rating']}",
+                [
+                    ['id' => 'browse_jobs', 'title' => '🔍 More Jobs'],
+                    ['id' => 'menu', 'title' => '📋 Menu'],
+                ]
+            );
+        } else {
+            // Poster summary
+            $rating = $verification?->rating;
+            $ratingDisplay = $rating ? str_repeat('⭐', $rating) : 'Not rated';
+
+            $this->sendButtons(
+                $session->phone,
+                "✅ *Job completed!* 🎉\n\n" .
+                "{$job->category_icon} {$job->title}\n" .
+                "👤 {$job->assignedWorker->name}\n" .
+                "💰 {$job->pay_display}\n" .
+                "Rating: {$ratingDisplay}\n\n" .
+                "Nanni! 🙏",
+                [
+                    ['id' => 'post_job', 'title' => '📝 Post New Job'],
+                    ['id' => 'menu', 'title' => '📋 Menu'],
+                ]
+            );
         }
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Dispute Handling
-    |--------------------------------------------------------------------------
-    */
-
     /**
-     * Handle dispute from poster.
+     * Handle done step.
      */
-    protected function handleDispute(ConversationSession $session, JobPost $job): void
+    protected function handleDone(IncomingMessage $message, ConversationSession $session): void
     {
-        $this->sendButtons(
-            $session->phone,
-            "⚠️ *Report Issue*\n\n" .
-            "What's the problem with the work?\n\n" .
-            "We'll help resolve this.",
-            [
-                ['id' => 'dispute_incomplete_' . $job->id, 'title' => '❌ Not Complete'],
-                ['id' => 'dispute_quality_' . $job->id, 'title' => '⚠️ Poor Quality'],
-                ['id' => 'call_worker_' . $job->assigned_worker_id, 'title' => '📞 Call Worker'],
-            ]
-        );
-
-        // Log dispute
-        $this->logInfo('Poster raised dispute concern', [
-            'job_id' => $job->id,
-            'poster_id' => $job->poster_user_id,
-        ]);
+        $this->goToMenu($session);
     }
 
     /*
@@ -1424,17 +1197,18 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
     */
 
     /**
-     * Get the current job from session.
+     * Get current job from session.
      */
     protected function getCurrentJob(ConversationSession $session): ?JobPost
     {
-        $jobId = $this->getTemp($session, 'execution_job_id');
+        $jobId = $this->getTempData($session, 'job_id');
 
         if (!$jobId) {
             return null;
         }
 
-        return JobPost::with(['assignedWorker.user', 'poster', 'category', 'verification'])->find($jobId);
+        return JobPost::with(['assignedWorker.user', 'poster', 'category', 'verification'])
+            ->find($jobId);
     }
 
     /**
@@ -1442,54 +1216,26 @@ class JobExecutionFlowHandler extends AbstractFlowHandler
      */
     protected function isUserWorker(?User $user, JobPost $job): bool
     {
-        if (!$user) {
+        if (!$user || !$job->assignedWorker) {
             return false;
         }
 
-        $worker = $job->assignedWorker;
-
-        if (!$worker) {
-            return false;
-        }
-
-        return $worker->user_id === $user->id;
+        return $job->assignedWorker->user_id === $user->id;
     }
 
     /**
-     * Send a JobMessages response via WhatsApp.
+     * Set the current step.
      */
-    protected function sendJobMessage(string $phone, array $response): void
+    protected function setStep(ConversationSession $session, string $step): void
     {
-        $type = $response['type'] ?? 'text';
+        $this->sessionManager->setFlowStep($session, FlowType::JOB_EXECUTION, $step);
+    }
 
-        switch ($type) {
-            case 'text':
-                $this->sendText($phone, $response['text'] ?? $response['body'] ?? '');
-                break;
-
-            case 'buttons':
-                $this->sendButtons(
-                    $phone,
-                    $response['body'] ?? $response['text'] ?? '',
-                    $response['buttons'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
-
-            case 'list':
-                $this->sendList(
-                    $phone,
-                    $response['body'] ?? '',
-                    $response['button'] ?? 'Select',
-                    $response['sections'] ?? [],
-                    $response['header'] ?? null,
-                    $response['footer'] ?? null
-                );
-                break;
-
-            default:
-                $this->sendText($phone, $response['text'] ?? $response['body'] ?? 'Message sent.');
-        }
+    /**
+     * Mask phone number for logging.
+     */
+    protected function maskPhone(string $phone): string
+    {
+        return substr($phone, 0, 4) . '****' . substr($phone, -4);
     }
 }

@@ -1,20 +1,30 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Enums;
 
 /**
  * Steps in the job application flow (worker applying to a job).
  *
- * @srs-ref Section 3.4 - Job Applications
+ * Simplified flow:
+ * 1. VIEW_JOB - Worker sees job details from notification
+ * 2. ENTER_MESSAGE - Optional message entry (only if "Apply + Message" tapped)
+ * 3. APPLIED - Application submitted confirmation
+ *
+ * Entry points:
+ * - Worker taps [✅ Apply] → instant apply → APPLIED
+ * - Worker taps [💬 Apply + Message] → ENTER_MESSAGE → APPLIED
+ * - Worker taps [📋 View Details] → VIEW_JOB → buttons
+ *
+ * @srs-ref NP-015 to NP-017
  * @module Njaanum Panikkar (Basic Jobs Marketplace)
  */
 enum JobApplicationStep: string
 {
-    case VIEW_DETAILS = 'view_details';
+    case VIEW_JOB = 'view_job';
     case ENTER_MESSAGE = 'enter_message';
-    case PROPOSE_AMOUNT = 'propose_amount';
-    case CONFIRM_APPLICATION = 'confirm_application';
-    case COMPLETE = 'complete';
+    case APPLIED = 'applied';
 
     /**
      * Get the display label.
@@ -22,11 +32,9 @@ enum JobApplicationStep: string
     public function label(): string
     {
         return match ($this) {
-            self::VIEW_DETAILS => 'View Job Details',
+            self::VIEW_JOB => 'View Job Details',
             self::ENTER_MESSAGE => 'Add Message',
-            self::PROPOSE_AMOUNT => 'Propose Amount',
-            self::CONFIRM_APPLICATION => 'Confirm Application',
-            self::COMPLETE => 'Application Sent',
+            self::APPLIED => 'Application Sent',
         };
     }
 
@@ -36,12 +44,18 @@ enum JobApplicationStep: string
     public function stepNumber(): int
     {
         return match ($this) {
-            self::VIEW_DETAILS => 1,
+            self::VIEW_JOB => 1,
             self::ENTER_MESSAGE => 2,
-            self::PROPOSE_AMOUNT => 3,
-            self::CONFIRM_APPLICATION => 4,
-            self::COMPLETE => 5,
+            self::APPLIED => 3,
         };
+    }
+
+    /**
+     * Get total steps count.
+     */
+    public static function totalSteps(): int
+    {
+        return 3;
     }
 
     /**
@@ -50,25 +64,9 @@ enum JobApplicationStep: string
     public function progress(): int
     {
         return match ($this) {
-            self::VIEW_DETAILS => 20,
-            self::ENTER_MESSAGE => 40,
-            self::PROPOSE_AMOUNT => 60,
-            self::CONFIRM_APPLICATION => 80,
-            self::COMPLETE => 100,
-        };
-    }
-
-    /**
-     * Get WhatsApp instruction message.
-     */
-    public function instruction(): string
-    {
-        return match ($this) {
-            self::VIEW_DETAILS => "📋 *Job Details*\n\n{job_details}\n\nDo you want to apply for this job?\nഈ പണിക്ക് അപേക്ഷിക്കണോ?",
-            self::ENTER_MESSAGE => "✉️ *Your Message*\n\nWant to add a message to the job poster? (optional)\n\nഒരു സന്ദേശം ചേർക്കണോ? (ഓപ്ഷണൽ)\n\nSend your message or tap 'Skip'",
-            self::PROPOSE_AMOUNT => "💰 *Propose Amount*\n\nThe posted pay is ₹{amount}\n\nWant to propose a different amount? (optional)\n\nവേറെ തുക നിർദ്ദേശിക്കണോ?",
-            self::CONFIRM_APPLICATION => "✅ *Confirm Application*\n\n📋 Job: {job_title}\n💰 Pay: ₹{amount}\n📍 Location: {location}\n\nConfirm your application?\nഅപേക്ഷ സ്ഥിരീകരിക്കണോ?",
-            self::COMPLETE => "🎉 *Application Sent!*\n\nYour application has been sent to the job poster. You'll be notified when they respond.\n\nനിങ്ങളുടെ അപേക്ഷ അയച്ചു! മറുപടി വരുമ്പോൾ അറിയിക്കും.",
+            self::VIEW_JOB => 33,
+            self::ENTER_MESSAGE => 66,
+            self::APPLIED => 100,
         };
     }
 
@@ -78,11 +76,9 @@ enum JobApplicationStep: string
     public function next(): ?self
     {
         return match ($this) {
-            self::VIEW_DETAILS => self::ENTER_MESSAGE,
-            self::ENTER_MESSAGE => self::PROPOSE_AMOUNT,
-            self::PROPOSE_AMOUNT => self::CONFIRM_APPLICATION,
-            self::CONFIRM_APPLICATION => self::COMPLETE,
-            self::COMPLETE => null,
+            self::VIEW_JOB => self::ENTER_MESSAGE,
+            self::ENTER_MESSAGE => self::APPLIED,
+            self::APPLIED => null,
         };
     }
 
@@ -92,11 +88,9 @@ enum JobApplicationStep: string
     public function previous(): ?self
     {
         return match ($this) {
-            self::VIEW_DETAILS => null,
-            self::ENTER_MESSAGE => self::VIEW_DETAILS,
-            self::PROPOSE_AMOUNT => self::ENTER_MESSAGE,
-            self::CONFIRM_APPLICATION => self::PROPOSE_AMOUNT,
-            self::COMPLETE => self::CONFIRM_APPLICATION,
+            self::VIEW_JOB => null,
+            self::ENTER_MESSAGE => self::VIEW_JOB,
+            self::APPLIED => self::ENTER_MESSAGE,
         };
     }
 
@@ -105,7 +99,7 @@ enum JobApplicationStep: string
      */
     public function canGoBack(): bool
     {
-        return $this->previous() !== null && $this !== self::COMPLETE;
+        return $this->previous() !== null && $this !== self::APPLIED;
     }
 
     /**
@@ -114,11 +108,9 @@ enum JobApplicationStep: string
     public function expectedInput(): string
     {
         return match ($this) {
-            self::VIEW_DETAILS => 'button',
+            self::VIEW_JOB => 'button',
             self::ENTER_MESSAGE => 'text',
-            self::PROPOSE_AMOUNT => 'text',
-            self::CONFIRM_APPLICATION => 'button',
-            self::COMPLETE => 'none',
+            self::APPLIED => 'button',
         };
     }
 
@@ -127,10 +119,7 @@ enum JobApplicationStep: string
      */
     public function isOptional(): bool
     {
-        return in_array($this, [
-            self::ENTER_MESSAGE,
-            self::PROPOSE_AMOUNT,
-        ]);
+        return $this === self::ENTER_MESSAGE;
     }
 
     /**
